@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App -->
+    <string name="app_name">OpusIDE</string>
+    
+    <!-- Navigation -->
+    <string name="nav_creator">Creator</string>
+    <string name="nav_analyzer">Analyzer</string>
+    <string name="nav_settings">Settings</string>
+    
+    <!-- Creator Screen -->
+    <string name="creator_title">Creator Space</string>
+    <string name="creator_file_browser">File Browser</string>
+    <string name="creator_editor">Code Editor</string>
+    <string name="creator_add_to_cache">Add to Cache</string>
+    <string name="creator_commit">Commit</string>
+    <string name="creator_push">Push</string>
+    <string name="creator_new_file">New File</string>
+    
+    <!-- Analyzer Screen -->
+    <string name="analyzer_title">Analyzer Lab</string>
+    <string name="analyzer_cache_panel">Cached Files</string>
+    <string name="analyzer_chat">Chat with Claude</string>
+    <string name="analyzer_actions">GitHub Actions</string>
+    <string name="analyzer_clear_cache">Clear Cache</string>
+    <string name="analyzer_send">Send</string>
+    <string name="analyzer_timer">Time remaining: %1$s</string>
+    
+    <!-- Settings Screen -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_api_keys">API Keys</string>
+    <string name="settings_anthropic_key">Anthropic API Key</string>
+    <string name="settings_github_token">GitHub Token</string>
+    <string name="settings_repository">Repository</string>
+    <string name="settings_owner">Owner</string>
+    <string name="settings_repo_name">Repository Name</string>
+    <string name="settings_cache">Cache Settings</string>
+    <string name="settings_cache_timeout">Cache Timeout (minutes)</string>
+    <string name="settings_max_files">Max Cached Files</string>
+    
+    <!-- Common -->
+    <string name="loading">Loading…</string>
+    <string name="error">Error</string>
+    <string name="retry">Retry</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="delete">Delete</string>
+    <string name="ok">OK</string>
+    
+    <!-- Errors -->
+    <string name="error_network">Network error. Please check your connection.</string>
+    <string name="error_api_key">Invalid API key. Please check settings.</string>
+    <string name="error_rate_limit">Rate limit exceeded. Please wait.</string>
+    <string name="error_unknown">Unknown error occurred.</string>
+</resources>

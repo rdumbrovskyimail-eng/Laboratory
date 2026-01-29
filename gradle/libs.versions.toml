@@ -1,0 +1,150 @@
+[versions]
+# ═══════════════════════════════════════════════════════════════════════════════
+# CORE BUILD TOOLS
+# ═══════════════════════════════════════════════════════════════════════════════
+agp = "8.8.0"
+kotlin = "2.1.0"
+ksp = "2.1.0-1.0.29"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANDROIDX CORE
+# ═══════════════════════════════════════════════════════════════════════════════
+coreKtx = "1.15.0"
+lifecycleRuntimeKtx = "2.8.7"
+activityCompose = "1.9.3"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JETPACK COMPOSE (BOM 2025)
+# ═══════════════════════════════════════════════════════════════════════════════
+composeBom = "2025.01.01"
+navigationCompose = "2.8.5"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KTOR 3.x - КРИТИЧНО ДЛЯ SSE STREAMING
+# ═══════════════════════════════════════════════════════════════════════════════
+ktor = "3.1.0"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KOTLINX
+# ═══════════════════════════════════════════════════════════════════════════════
+kotlinxSerializationJson = "1.8.0"
+kotlinxCoroutines = "1.10.1"
+kotlinxDatetime = "0.6.1"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DEPENDENCY INJECTION - HILT
+# ═══════════════════════════════════════════════════════════════════════════════
+hilt = "2.54"
+hiltNavigationCompose = "1.2.0"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATABASE - ROOM
+# ═══════════════════════════════════════════════════════════════════════════════
+room = "2.7.0-alpha12"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATASTORE
+# ═══════════════════════════════════════════════════════════════════════════════
+datastorePreferences = "1.1.2"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SECURITY
+# ═══════════════════════════════════════════════════════════════════════════════
+biometric = "1.4.0-alpha02"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTING
+# ═══════════════════════════════════════════════════════════════════════════════
+junit = "4.13.2"
+junitVersion = "1.2.1"
+espressoCore = "3.6.1"
+coroutinesTest = "1.10.1"
+
+
+[libraries]
+# ═══════════════════════════════════════════════════════════════════════════════
+# ANDROID CORE
+# ═══════════════════════════════════════════════════════════════════════════════
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-lifecycle-runtime-ktx = { group = "androidx.lifecycle", name = "lifecycle-runtime-ktx", version.ref = "lifecycleRuntimeKtx" }
+androidx-lifecycle-viewmodel-compose = { group = "androidx.lifecycle", name = "lifecycle-viewmodel-compose", version.ref = "lifecycleRuntimeKtx" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# JETPACK COMPOSE
+# ═══════════════════════════════════════════════════════════════════════════════
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
+androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NAVIGATION
+# ═══════════════════════════════════════════════════════════════════════════════
+androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KTOR 3.x CLIENT
+# ═══════════════════════════════════════════════════════════════════════════════
+ktor-client-core = { group = "io.ktor", name = "ktor-client-core", version.ref = "ktor" }
+ktor-client-okhttp = { group = "io.ktor", name = "ktor-client-okhttp", version.ref = "ktor" }
+ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-client-logging = { group = "io.ktor", name = "ktor-client-logging", version.ref = "ktor" }
+ktor-client-auth = { group = "io.ktor", name = "ktor-client-auth", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { group = "io.ktor", name = "ktor-serialization-kotlinx-json", version.ref = "ktor" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# KOTLINX
+# ═══════════════════════════════════════════════════════════════════════════════
+kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
+kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinxCoroutines" }
+kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
+kotlinx-datetime = { group = "org.jetbrains.kotlinx", name = "kotlinx-datetime", version.ref = "kotlinxDatetime" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HILT
+# ═══════════════════════════════════════════════════════════════════════════════
+hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
+hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
+hilt-navigation-compose = { group = "androidx.hilt", name = "hilt-navigation-compose", version.ref = "hiltNavigationCompose" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ROOM
+# ═══════════════════════════════════════════════════════════════════════════════
+androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATASTORE
+# ═══════════════════════════════════════════════════════════════════════════════
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePreferences" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BIOMETRIC
+# ═══════════════════════════════════════════════════════════════════════════════
+androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TESTING
+# ═══════════════════════════════════════════════════════════════════════════════
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
+
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+hilt-android = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

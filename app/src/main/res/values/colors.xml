@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- PRIMARY COLORS (Claude/Anthropic inspired) -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <color name="primary">#D97706</color>           <!-- Amber/Orange -->
+    <color name="primary_variant">#B45309</color>
+    <color name="on_primary">#FFFFFF</color>
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- SECONDARY COLORS -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <color name="secondary">#7C3AED</color>         <!-- Purple -->
+    <color name="secondary_variant">#5B21B6</color>
+    <color name="on_secondary">#FFFFFF</color>
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- BACKGROUND COLORS -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <color name="background_light">#FAFAFA</color>
+    <color name="background_dark">#121212</color>
+    <color name="surface_light">#FFFFFF</color>
+    <color name="surface_dark">#1E1E1E</color>
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- CODE EDITOR COLORS (Dark Theme - VS Code inspired) -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <color name="code_background">#1E1E1E</color>
+    <color name="code_text">#D4D4D4</color>
+    <color name="code_keyword">#569CD6</color>       <!-- Blue - fun, class, val -->
+    <color name="code_string">#CE9178</color>        <!-- Orange - "strings" -->
+    <color name="code_number">#B5CEA8</color>        <!-- Green - numbers -->
+    <color name="code_comment">#6A9955</color>       <!-- Green - // comments -->
+    <color name="code_function">#DCDCAA</color>      <!-- Yellow - function names -->
+    <color name="code_type">#4EC9B0</color>          <!-- Cyan - types/classes -->
+    <color name="code_annotation">#D7BA7D</color>    <!-- Gold - @annotations -->
+    <color name="code_line_number">#858585</color>
+    <color name="code_selection">#264F78</color>
+    <color name="code_cursor">#FFFFFF</color>
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- STATUS COLORS -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <color name="status_success">#22C55E</color>     <!-- Green -->
+    <color name="status_error">#EF4444</color>       <!-- Red -->
+    <color name="status_warning">#F59E0B</color>     <!-- Amber -->
+    <color name="status_info">#3B82F6</color>        <!-- Blue -->
+    <color name="status_pending">#A855F7</color>     <!-- Purple -->
+    
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <!-- CHAT COLORS -->
+    <!-- ═══════════════════════════════════════════════════════════════════════ -->
+    <color name="chat_user_bubble">#2563EB</color>
+    <color name="chat_claude_bubble">#374151</color>
+    <color name="chat_user_text">#FFFFFF</color>
+    <color name="chat_claude_text">#F3F4F6</color>
+</resources>
