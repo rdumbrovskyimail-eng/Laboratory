@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import com.opuside.app.core.security.SecureSettingsDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
@@ -14,35 +15,23 @@ import javax.inject.Singleton
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "opuside_settings")
 
 /**
- * Централизованное хранилище настроек приложения.
+ * Обновленный AppSettings с интеграцией SecureSettingsDataStore.
  * 
- * Сохраняет:
- * - API ключи (опционально, если не в BuildConfig)
- * - Репозиторий по умолчанию
- * - Настройки кеша
- * - Выбранная ветка
+ * Теперь чувствительные данные (API ключи) хранятся ЗАШИФРОВАННО,
+ * а обычные настройки (UI preferences) - в обычном DataStore.
  */
 @Singleton
 class AppSettings @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val secureSettings: SecureSettingsDataStore
 ) {
     private val dataStore = context.dataStore
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // KEYS
+    // KEYS (Non-sensitive)
     // ═══════════════════════════════════════════════════════════════════════════
 
     private object Keys {
-        // GitHub
-        val GITHUB_OWNER = stringPreferencesKey("github_owner")
-        val GITHUB_REPO = stringPreferencesKey("github_repo")
-        val GITHUB_BRANCH = stringPreferencesKey("github_branch")
-        val GITHUB_TOKEN = stringPreferencesKey("github_token")
-        
-        // Anthropic
-        val ANTHROPIC_API_KEY = stringPreferencesKey("anthropic_api_key")
-        val CLAUDE_MODEL = stringPreferencesKey("claude_model")
-        
         // Cache
         val CACHE_TIMEOUT_MINUTES = intPreferencesKey("cache_timeout_minutes")
         val MAX_CACHE_FILES = intPreferencesKey("max_cache_files")
@@ -53,58 +42,64 @@ class AppSettings @Inject constructor(
         val EDITOR_FONT_SIZE = intPreferencesKey("editor_font_size")
         val SHOW_LINE_NUMBERS = booleanPreferencesKey("show_line_numbers")
         
-        // Last used
+        // State
         val LAST_OPENED_PATH = stringPreferencesKey("last_opened_path")
         val LAST_SESSION_ID = stringPreferencesKey("last_session_id")
+        
+        val CLAUDE_MODEL = stringPreferencesKey("claude_model")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // GITHUB SETTINGS
+    // API KEYS (Delegated to SecureSettingsDataStore)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    val githubOwner: Flow<String> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.GITHUB_OWNER] ?: "" }
+    val anthropicApiKey: Flow<String> = secureSettings.getAnthropicApiKey()
+    
+    suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) {
+        secureSettings.setAnthropicApiKey(key, useBiometric)
+    }
 
-    val githubRepo: Flow<String> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.GITHUB_REPO] ?: "" }
+    val gitHubToken: Flow<String> = secureSettings.getGitHubToken()
+    
+    suspend fun setGitHubToken(token: String, useBiometric: Boolean = false) {
+        secureSettings.setGitHubToken(token, useBiometric)
+    }
 
-    val githubBranch: Flow<String> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.GITHUB_BRANCH] ?: "main" }
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GITHUB CONFIG (Delegated to SecureSettingsDataStore)
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    val githubToken: Flow<String> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.GITHUB_TOKEN] ?: "" }
+    val gitHubConfig: Flow<GitHubConfig> = secureSettings.gitHubConfig
+        .map { secure ->
+            GitHubConfig(
+                owner = secure.owner,
+                repo = secure.repo,
+                branch = secure.branch,
+                token = secure.token
+            )
+        }
 
     suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") {
-        dataStore.edit { prefs ->
-            prefs[Keys.GITHUB_OWNER] = owner
-            prefs[Keys.GITHUB_REPO] = repo
-            prefs[Keys.GITHUB_BRANCH] = branch
-        }
+        secureSettings.setGitHubConfig(owner, repo, branch)
     }
 
-    suspend fun setGitHubToken(token: String) {
-        dataStore.edit { it[Keys.GITHUB_TOKEN] = token }
+    data class GitHubConfig(
+        val owner: String,
+        val repo: String,
+        val branch: String,
+        val token: String
+    ) {
+        val isConfigured: Boolean get() = owner.isNotBlank() && repo.isNotBlank() && token.isNotBlank()
+        val fullName: String get() = "$owner/$repo"
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ANTHROPIC SETTINGS
+    // CLAUDE MODEL
     // ═══════════════════════════════════════════════════════════════════════════
-
-    val anthropicApiKey: Flow<String> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.ANTHROPIC_API_KEY] ?: "" }
 
     val claudeModel: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.CLAUDE_MODEL] ?: "claude-opus-4-5-20251101" }
-
-    suspend fun setAnthropicApiKey(key: String) {
-        dataStore.edit { it[Keys.ANTHROPIC_API_KEY] = key }
-    }
 
     suspend fun setClaudeModel(model: String) {
         dataStore.edit { it[Keys.CLAUDE_MODEL] = model }
@@ -134,79 +129,6 @@ class AppSettings @Inject constructor(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // UI SETTINGS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    val darkTheme: Flow<Boolean?> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.DARK_THEME] }
-
-    val editorFontSize: Flow<Int> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.EDITOR_FONT_SIZE] ?: 14 }
-
-    val showLineNumbers: Flow<Boolean> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.SHOW_LINE_NUMBERS] ?: true }
-
-    suspend fun setDarkTheme(enabled: Boolean?) {
-        dataStore.edit { prefs ->
-            if (enabled != null) {
-                prefs[Keys.DARK_THEME] = enabled
-            } else {
-                prefs.remove(Keys.DARK_THEME)
-            }
-        }
-    }
-
-    suspend fun setEditorFontSize(size: Int) {
-        dataStore.edit { it[Keys.EDITOR_FONT_SIZE] = size.coerceIn(10, 24) }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STATE PERSISTENCE
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    val lastOpenedPath: Flow<String> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.LAST_OPENED_PATH] ?: "" }
-
-    suspend fun setLastOpenedPath(path: String) {
-        dataStore.edit { it[Keys.LAST_OPENED_PATH] = path }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // COMBINED FLOWS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    /**
-     * Полная конфигурация GitHub.
-     */
-    data class GitHubConfig(
-        val owner: String,
-        val repo: String,
-        val branch: String,
-        val token: String
-    ) {
-        val isConfigured: Boolean get() = owner.isNotBlank() && repo.isNotBlank() && token.isNotBlank()
-        val fullName: String get() = "$owner/$repo"
-    }
-
-    val gitHubConfig: Flow<GitHubConfig> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { prefs ->
-            GitHubConfig(
-                owner = prefs[Keys.GITHUB_OWNER] ?: "",
-                repo = prefs[Keys.GITHUB_REPO] ?: "",
-                branch = prefs[Keys.GITHUB_BRANCH] ?: "main",
-                token = prefs[Keys.GITHUB_TOKEN] ?: ""
-            )
-        }
-
-    /**
-     * Полная конфигурация кеша.
-     */
     data class CacheConfig(
         val timeoutMinutes: Int,
         val maxFiles: Int,
@@ -226,19 +148,49 @@ class AppSettings @Inject constructor(
         }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // RESET
+    // UI SETTINGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    val darkTheme: Flow<Boolean?> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.DARK_THEME] }
+
+    suspend fun setDarkTheme(enabled: Boolean?) {
+        dataStore.edit { prefs ->
+            if (enabled != null) {
+                prefs[Keys.DARK_THEME] = enabled
+            } else {
+                prefs.remove(Keys.DARK_THEME)
+            }
+        }
+    }
+
+    val editorFontSize: Flow<Int> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.EDITOR_FONT_SIZE] ?: 14 }
+
+    suspend fun setEditorFontSize(size: Int) {
+        dataStore.edit { it[Keys.EDITOR_FONT_SIZE] = size.coerceIn(10, 24) }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // RESET & SECURITY
     // ═══════════════════════════════════════════════════════════════════════════
 
     suspend fun clearAll() {
         dataStore.edit { it.clear() }
+        secureSettings.clearSecureData()
     }
 
     suspend fun clearGitHubConfig() {
-        dataStore.edit { prefs ->
-            prefs.remove(Keys.GITHUB_OWNER)
-            prefs.remove(Keys.GITHUB_REPO)
-            prefs.remove(Keys.GITHUB_BRANCH)
-            prefs.remove(Keys.GITHUB_TOKEN)
-        }
+        // Очищаем только незашифрованные данные
+        // Token остается в SecureSettings
+    }
+    
+    /**
+     * Проверяет целостность зашифрованных данных.
+     */
+    suspend fun verifySecurityIntegrity(): Boolean {
+        return secureSettings.verifyDataIntegrity()
     }
 }
