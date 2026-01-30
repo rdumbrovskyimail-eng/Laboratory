@@ -1,9 +1,11 @@
 package com.opuside.app.feature.settings.presentation
 
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.BuildConfig
 import com.opuside.app.core.data.AppSettings
+import com.opuside.app.core.data.SecureSettings
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.network.anthropic.model.ClaudeMessage
 import com.opuside.app.core.network.github.GitHubApiClient
@@ -16,6 +18,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val appSettings: AppSettings,
+    private val secureSettings: SecureSettings,  // ✅ НОВОЕ
     private val claudeClient: ClaudeApiClient,
     private val gitHubClient: GitHubApiClient
 ) : ViewModel() {
@@ -193,14 +196,28 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun saveAnthropicSettings() {
+    /**
+     * ✅ ОБНОВЛЕНО: Сохранение с опциональной биометрией
+     */
+    fun saveAnthropicSettings(useBiometric: Boolean = false) {
         viewModelScope.launch {
             _isSaving.value = true
             
-            appSettings.setAnthropicApiKey(_anthropicKeyInput.value)
+            if (useBiometric) {
+                // Сохраняем в защищённое хранилище
+                secureSettings.setAnthropicApiKey(_anthropicKeyInput.value)
+            } else {
+                // Обычное сохранение
+                appSettings.setAnthropicApiKey(_anthropicKeyInput.value)
+            }
+            
             appSettings.setClaudeModel(_claudeModelInput.value)
             
-            _message.value = "Anthropic settings saved!"
+            _message.value = if (useBiometric) {
+                "Anthropic settings saved with biometric protection!"
+            } else {
+                "Anthropic settings saved!"
+            }
             _isSaving.value = false
             
             testClaudeConnection()
@@ -287,6 +304,21 @@ class SettingsViewModel @Inject constructor(
     fun testAllConnections() {
         testGitHubConnection()
         testClaudeConnection()
+    }
+
+    /**
+     * ✅ НОВОЕ: Тестирование биометрического доступа
+     */
+    fun testBiometricAccess(
+        activity: FragmentActivity,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        secureSettings.getAnthropicApiKeyWithBiometric(
+            activity = activity,
+            onSuccess = onSuccess,
+            onError = onError
+        )
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
