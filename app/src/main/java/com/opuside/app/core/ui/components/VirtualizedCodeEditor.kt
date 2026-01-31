@@ -10,10 +10,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -30,13 +26,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
 
 /**
  * ✅ ИСПРАВЛЕНО (Проблема #4 - MEMORY BOMB CRITICAL)
@@ -77,10 +71,6 @@ fun VirtualizedCodeEditor(
     fontSize: Int = 14,
     onCursorPositionChanged: ((line: Int, column: Int) -> Unit)? = null
 ) {
-    // ═══════════════════════════════════════════════════════════════════════════
-    // STATE
-    // ═══════════════════════════════════════════════════════════════════════════
-
     var textFieldValue by remember(content) {
         mutableStateOf(TextFieldValue(content))
     }
@@ -94,8 +84,7 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // ✅ ИСПРАВЛЕНО: produceState теперь безопасен - не хранит промежуточные состояния
-    // highlightedLines регенерируется при изменении lines, старые spans автоматически GC
+    // ✅ Безопасный вызов подсветки вне Composition
     val highlightedLines = produceState(
         initialValue = lines.map { AnnotatedString(it) },
         lines, 
@@ -126,14 +115,10 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #4): UndoRedoManager теперь облегченный
-    // Хранит только text + cursor position вместо полного TextFieldValue со spans
     val undoRedoManager = remember { UndoRedoManager() }
     
     LaunchedEffect(textFieldValue.text) {
         delay(500)
-        // ✅ Сохраняем только lightweight state (text + cursor)
-        // БЕЗ AnnotatedString spans
         undoRedoManager.recordState(textFieldValue)
     }
 
@@ -158,26 +143,19 @@ fun VirtualizedCodeEditor(
         onDispose { }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // KEYBOARD SHORTCUTS (DeX Support)
-    // ═══════════════════════════════════════════════════════════════════════════
-
     val keyboardHandler = Modifier.onKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
 
         when {
-            // Ctrl+Z - Undo
             event.isCtrlPressed && event.key == Key.Z && !event.isShiftPressed -> {
                 undoRedoManager.undo()?.let { textFieldValue = it }
                 true
             }
-            // Ctrl+Shift+Z or Ctrl+Y - Redo
             (event.isCtrlPressed && event.isShiftPressed && event.key == Key.Z) ||
             (event.isCtrlPressed && event.key == Key.Y) -> {
                 undoRedoManager.redo()?.let { textFieldValue = it }
                 true
             }
-            // Tab - Insert 4 spaces
             event.key == Key.Tab && !readOnly -> {
                 val selection = textFieldValue.selection
                 val newText = textFieldValue.text.substring(0, selection.start) +
@@ -193,16 +171,11 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // UI
-    // ═══════════════════════════════════════════════════════════════════════════
-
     Surface(
         modifier = modifier.then(keyboardHandler),
         color = EditorTheme.backgroundColor
     ) {
         Row(modifier = Modifier.fillMaxSize()) {
-            // LINE NUMBERS
             if (showLineNumbers) {
                 LineNumbers(
                     lines = lines,
@@ -210,11 +183,9 @@ fun VirtualizedCodeEditor(
                     listState = listState,
                     fontSize = fontSize
                 )
-                
                 VerticalDivider(color = EditorTheme.dividerColor)
             }
 
-            // CODE AREA с ScrollbarIndicator внутри Box
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -256,13 +227,10 @@ fun VirtualizedCodeEditor(
                     }
                 }
 
-                // Невидимый TextField для обработки ввода
                 if (!readOnly) {
                     BasicTextField(
                         value = textFieldValue,
-                        onValueChange = { newValue ->
-                            textFieldValue = newValue
-                        },
+                        onValueChange = { newValue -> textFieldValue = newValue },
                         modifier = Modifier
                             .size(0.dp)
                             .focusRequester(focusRequester)
@@ -276,7 +244,7 @@ fun VirtualizedCodeEditor(
                     )
                 }
 
-                // ✅ ИСПРАВЛЕНО: ScrollbarIndicator внутри Box
+                // ✅ Исправлено место вызова ScrollbarIndicator (внутри BoxScope)
                 if (lines.size > 100) {
                     ScrollbarIndicator(
                         listState = listState,
@@ -287,7 +255,6 @@ fun VirtualizedCodeEditor(
             }
         }
     }
-    // ✅ УДАЛЕНО: LaunchedEffect был здесь и вызывал ошибку компиляции
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -354,10 +321,8 @@ private fun CodeLine(
             .fillMaxWidth()
             .height(lineHeight)
             .background(
-                if (isCurrentLine) 
-                    EditorTheme.currentLineBackground 
-                else 
-                    Color.Transparent
+                if (isCurrentLine) EditorTheme.currentLineBackground 
+                else Color.Transparent
             )
             .pointerInput(lineNumber) {
                 detectTapGestures { offset ->
@@ -384,7 +349,7 @@ private fun CodeLine(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * ✅ ИСПРАВЛЕНО: Убран BoxScope receiver - теперь обычная Composable функция
+ * ✅ ИСПРАВЛЕНО: Добавлена @Composable аннотация для корректной работы с Compose UI
  */
 @Composable
 private fun ScrollbarIndicator(
@@ -487,7 +452,6 @@ private class UndoRedoManager {
     // ✅ ИСПРАВЛЕНО: История теперь хранит только облегченные состояния
     private val history = mutableListOf<LightweightState>()
     private var currentIndex = -1
-    
     private val maxHistorySize = 50
 
     /**
@@ -595,6 +559,7 @@ private object EditorTheme {
 // EXTENSIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+@Composable
 private fun VerticalDivider(
     modifier: Modifier = Modifier,
     color: Color = Color.Gray
