@@ -26,6 +26,8 @@ import javax.inject.Inject
  * - Commit и Push с обработкой конфликтов
  * - Работа с ветками
  * - Добавление файлов в кеш (для Analyzer)
+ * 
+ * ✅ ОБНОВЛЕНО: Добавлена индикация прогресса загрузки (Проблема №14)
  */
 @HiltViewModel
 class CreatorViewModel @Inject constructor(
@@ -73,6 +75,10 @@ class CreatorViewModel @Inject constructor(
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
+
+    // ✅ НОВОЕ (Проблема №14): Прогресс загрузки файлов в кеш
+    private val _loadingProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val loadingProgress: StateFlow<Pair<Int, Int>?> = _loadingProgress.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EDITOR STATE
@@ -465,7 +471,8 @@ class CreatorViewModel @Inject constructor(
     }
 
     /**
-     * Добавить выбранные файлы в кеш (batch через GraphQL).
+     * ✅ ОБНОВЛЕНО (Проблема №14): Добавить выбранные файлы в кеш с индикацией прогресса.
+     * Загружаем файлы по одному для отображения прогресса вместо batch GraphQL.
      */
     fun addSelectedToCache() {
         val paths = _selectedForCache.value.toList()
@@ -474,30 +481,44 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
+            _loadingProgress.value = 0 to paths.size
 
-            // Используем GraphQL для batch-загрузки (до 20 файлов за раз)
-            graphQLClient.getMultipleFiles(paths, _currentBranch.value)
-                .onSuccess { filesMap ->
-                    val cachedFiles = filesMap.mapNotNull { (path, content) ->
-                        content.content?.let { text ->
-                            createCachedFile(
-                                filePath = path,
-                                content = text,
-                                repoOwner = _currentOwner.value,
-                                repoName = _currentRepo.value,
-                                branch = _currentBranch.value,
-                                sha = content.oid
-                            )
-                        }
+            val cachedFiles = mutableListOf<com.opuside.app.core.database.entity.CachedFileEntity>()
+            var loaded = 0
+
+            // Загружаем по одному для прогресса
+            paths.forEach { path ->
+                gitHubClient.getFileContentDecoded(path, _currentBranch.value)
+                    .onSuccess { content ->
+                        // Получаем SHA через getContent
+                        gitHubClient.getFileContent(path, _currentBranch.value)
+                            .onSuccess { fileInfo ->
+                                val cachedFile = createCachedFile(
+                                    filePath = path,
+                                    content = content,
+                                    repoOwner = _currentOwner.value,
+                                    repoName = _currentRepo.value,
+                                    branch = _currentBranch.value,
+                                    sha = fileInfo.sha
+                                )
+                                cachedFiles.add(cachedFile)
+                            }
+                        
+                        loaded++
+                        _loadingProgress.value = loaded to paths.size
                     }
-                    
-                    cacheManager.addFiles(cachedFiles)
-                    _selectedForCache.value = emptySet()
-                }
-                .onFailure { e ->
-                    _error.value = "Failed to cache files: ${e.message}"
-                }
+                    .onFailure { e ->
+                        _error.value = "Failed to load $path: ${e.message}"
+                    }
+            }
 
+            // Добавляем все файлы в кеш
+            if (cachedFiles.isNotEmpty()) {
+                cacheManager.addFiles(cachedFiles)
+            }
+            
+            _selectedForCache.value = emptySet()
+            _loadingProgress.value = null
             _isLoading.value = false
         }
     }
