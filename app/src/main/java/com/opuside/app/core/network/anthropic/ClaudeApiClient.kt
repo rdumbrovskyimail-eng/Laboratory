@@ -21,6 +21,7 @@ import io.ktor.http.contentType
 import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Named
@@ -33,6 +34,10 @@ import javax.inject.Singleton
  * - Streaming ответы через SSE
  * - Non-streaming ответы
  * - Обработка ошибок
+ * 
+ * ✅ ИСПРАВЛЕНО:
+ * - Проблема №4: Добавлена валидация API ключа
+ * - Проблема №9: Добавлены timeouts для предотвращения зависания streaming
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -43,7 +48,14 @@ class ClaudeApiClient @Inject constructor(
         private const val API_URL = "https://api.anthropic.com/v1/messages"
         private const val API_VERSION = "2023-06-01"
         private const val ANTHROPIC_BETA = "messages-2023-12-15"
+        private const val READ_TIMEOUT_MS = 30_000L // ✅ ДОБАВЛЕНО: 30 секунд на строку
+        private const val MAX_STREAMING_TIME_MS = 5 * 60 * 1000L // ✅ ДОБАВЛЕНО: 5 минут макс
     }
+
+    // ✅ ИСПРАВЛЕНО: Проблема №4 - Валидация API ключа
+    private val apiKey: String
+        get() = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("ANTHROPIC_API_KEY not configured in local.properties")
 
     // ═══════════════════════════════════════════════════════════════════════════
     // STREAMING API
@@ -75,7 +87,7 @@ class ClaudeApiClient @Inject constructor(
         try {
             val response = httpClient.post(API_URL) {
                 contentType(ContentType.Application.Json)
-                header("x-api-key", BuildConfig.ANTHROPIC_API_KEY)
+                header("x-api-key", apiKey)
                 header("anthropic-version", API_VERSION)
                 header("anthropic-beta", ANTHROPIC_BETA)
                 setBody(request)
@@ -90,9 +102,31 @@ class ClaudeApiClient @Inject constructor(
             val channel = response.bodyAsChannel()
             var currentText = StringBuilder()
             var totalUsage: Usage? = null
+            
+            // ✅ ДОБАВЛЕНО: Проблема №9 - Отслеживание времени streaming
+            val startTime = System.currentTimeMillis()
 
             while (!channel.isClosedForRead) {
-                val line = channel.readUTF8Line() ?: continue
+                // ✅ ДОБАВЛЕНО: Проблема №9 - Проверка общего времени
+                if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
+                    emit(StreamingResult.Error(
+                        ClaudeApiException("timeout", "Streaming exceeded 5 minutes")
+                    ))
+                    break
+                }
+
+                // ✅ ДОБАВЛЕНО: Проблема №9 - Timeout на чтение строки
+                val line = withTimeoutOrNull(READ_TIMEOUT_MS) {
+                    channel.readUTF8Line()
+                }
+
+                if (line == null) {
+                    // Timeout - закрываем с ошибкой
+                    emit(StreamingResult.Error(
+                        ClaudeApiException("timeout", "Stream timeout after 30s")
+                    ))
+                    break
+                }
                 
                 // SSE формат: "data: {...}"
                 if (line.startsWith("data: ")) {
@@ -189,7 +223,7 @@ class ClaudeApiClient @Inject constructor(
         return try {
             val response = httpClient.post(API_URL) {
                 contentType(ContentType.Application.Json)
-                header("x-api-key", BuildConfig.ANTHROPIC_API_KEY)
+                header("x-api-key", apiKey)
                 header("anthropic-version", API_VERSION)
                 setBody(request)
             }
