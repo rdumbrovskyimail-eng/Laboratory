@@ -4,6 +4,7 @@ import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubApiException
 import com.opuside.app.core.network.github.model.GitHubContent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -24,6 +25,7 @@ import javax.inject.Singleton
  * - SAVE_AS_COPY: сохранить как новый файл
  * 
  * ✅ ОБНОВЛЕНО: Добавлен retry loop для быстрых конфликтов (Проблема №15)
+ * ✅ ИСПРАВЛЕНО: Проблема №20 (BUG #20) - Добавлена delay protection против бесконечного retry loop
  */
 @Singleton
 class GitConflictResolver @Inject constructor(
@@ -32,6 +34,7 @@ class GitConflictResolver @Inject constructor(
 
     companion object {
         private const val MAX_RETRY_ATTEMPTS = 3
+        private const val MIN_RETRY_DELAY_MS = 1000L // ✅ ДОБАВЛЕНО: Минимальная задержка между retry
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -41,6 +44,7 @@ class GitConflictResolver @Inject constructor(
     /**
      * ✅ ОБНОВЛЕНО (Проблема №15): Безопасное сохранение файла с автоматической 
      * обработкой конфликтов и retry loop для быстрых изменений.
+     * ✅ ИСПРАВЛЕНО (Проблема №20): Добавлена delay protection против spam-retry.
      * 
      * @return ConflictResult с информацией о результате
      */
@@ -54,8 +58,16 @@ class GitConflictResolver @Inject constructor(
         
         var attempts = 0
         var latestSha = currentSha
+        var lastRetryTime = 0L // ✅ ДОБАВЛЕНО: Отслеживание времени последнего retry
         
         while (attempts < MAX_RETRY_ATTEMPTS) {
+            // ✅ ДОБАВЛЕНО: Защита от spam-retry
+            val now = System.currentTimeMillis()
+            if (attempts > 0 && now - lastRetryTime < MIN_RETRY_DELAY_MS) {
+                delay(MIN_RETRY_DELAY_MS - (now - lastRetryTime))
+            }
+            lastRetryTime = System.currentTimeMillis()
+            
             // Попытка сохранить с текущим SHA
             val saveResult = gitHubClient.createOrUpdateFile(
                 path = path,
@@ -173,6 +185,7 @@ class GitConflictResolver @Inject constructor(
 
     /**
      * ✅ ОБНОВЛЕНО (Проблема №15): Стратегия KEEP_MINE с retry loop.
+     * ✅ ИСПРАВЛЕНО (Проблема №20): Добавлена delay protection.
      */
     suspend fun resolveKeepMine(
         conflict: ConflictResult.Conflict,
@@ -182,8 +195,16 @@ class GitConflictResolver @Inject constructor(
         
         var attempts = 0
         var latestSha = conflict.remoteSha
+        var lastRetryTime = 0L // ✅ ДОБАВЛЕНО
         
         while (attempts < MAX_RETRY_ATTEMPTS) {
+            // ✅ ДОБАВЛЕНО: Защита от spam-retry
+            val now = System.currentTimeMillis()
+            if (attempts > 0 && now - lastRetryTime < MIN_RETRY_DELAY_MS) {
+                delay(MIN_RETRY_DELAY_MS - (now - lastRetryTime))
+            }
+            lastRetryTime = System.currentTimeMillis()
+            
             val result = gitHubClient.createOrUpdateFile(
                 path = conflict.path,
                 content = conflict.localContent,
@@ -241,6 +262,7 @@ class GitConflictResolver @Inject constructor(
 
     /**
      * ✅ ОБНОВЛЕНО (Проблема №15): Стратегия MANUAL_MERGE с retry loop.
+     * ✅ ИСПРАВЛЕНО (Проблема №20): Добавлена delay protection.
      */
     suspend fun resolveManualMerge(
         conflict: ConflictResult.Conflict,
@@ -251,8 +273,16 @@ class GitConflictResolver @Inject constructor(
         
         var attempts = 0
         var latestSha = conflict.remoteSha
+        var lastRetryTime = 0L // ✅ ДОБАВЛЕНО
         
         while (attempts < MAX_RETRY_ATTEMPTS) {
+            // ✅ ДОБАВЛЕНО: Защита от spam-retry
+            val now = System.currentTimeMillis()
+            if (attempts > 0 && now - lastRetryTime < MIN_RETRY_DELAY_MS) {
+                delay(MIN_RETRY_DELAY_MS - (now - lastRetryTime))
+            }
+            lastRetryTime = System.currentTimeMillis()
+            
             val result = gitHubClient.createOrUpdateFile(
                 path = conflict.path,
                 content = mergedContent,
