@@ -1,5 +1,6 @@
 package com.opuside.app.core.database
 
+import android.util.Log
 import androidx.room.TypeConverter
 import com.opuside.app.core.database.entity.MessageRole
 import kotlinx.datetime.Instant
@@ -12,8 +13,8 @@ import kotlinx.datetime.Instant
  * - List<String>
  * - MessageRole (enum) - ✅ ДОБАВЛЕНО (Проблема №19)
  * 
- * ✅ ОБНОВЛЕНО: Добавлен безопасный TypeConverter для MessageRole enum,
- * который использует String вместо ordinal для защиты от изменения порядка enum.
+ * ✅ ИСПРАВЛЕНО (Проблема #13): Добавлена защита от corrupted data в enum converter.
+ * При невалидном значении возвращается SYSTEM вместо краша.
  */
 class Converters {
 
@@ -40,11 +41,11 @@ class Converters {
     fun toStringList(value: String?): List<String>? = value?.split(SEPARATOR)?.filter { it.isNotEmpty() }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MESSAGE ROLE ENUM (Проблема №19)
+    // MESSAGE ROLE ENUM (Проблема №19 + Исправление #13)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ НОВОЕ: Конвертирует MessageRole enum в String для безопасного хранения.
+     * ✅ Конвертирует MessageRole enum в String для безопасного хранения.
      * 
      * Использует name вместо ordinal, чтобы избежать проблем при изменении
      * порядка значений enum в будущем.
@@ -56,12 +57,36 @@ class Converters {
     fun fromMessageRole(role: MessageRole): String = role.name
 
     /**
-     * ✅ НОВОЕ: Конвертирует String обратно в MessageRole enum.
+     * ✅ ИСПРАВЛЕНО (Проблема #13): Безопасный fallback при corrupted data.
+     * 
+     * ПРОБЛЕМА:
+     * - MessageRole.valueOf("INVALID") → IllegalArgumentException → CRASH
+     * - При повреждении БД или неправильной миграции приложение падает
+     * - При добавлении новых enum значений старые версии app не могут их прочитать
+     * 
+     * РЕШЕНИЕ:
+     * - Используем try-catch для обработки неизвестных значений
+     * - При ошибке возвращаем MessageRole.SYSTEM как безопасный fallback
+     * - Логируем warning для отладки
+     * 
+     * ПРИМЕРЫ ПРОБЛЕМ БЕЗ ЭТОГО:
+     * 1. БД повреждена → значение "INVALID" → CRASH
+     * 2. Добавили MessageRole.TOOL в новой версии → старая версия видит "TOOL" → CRASH
+     * 3. Ручная миграция БД с ошибкой → невалидные значения → CRASH
      */
     @TypeConverter
-    fun toMessageRole(name: String): MessageRole = MessageRole.valueOf(name)
+    fun toMessageRole(name: String): MessageRole {
+        return try {
+            MessageRole.valueOf(name)
+        } catch (e: IllegalArgumentException) {
+            // Неизвестное значение enum - используем fallback
+            Log.w(TAG, "Unknown MessageRole: '$name', using SYSTEM as fallback", e)
+            MessageRole.SYSTEM
+        }
+    }
 
     companion object {
+        private const val TAG = "Converters"
         private const val SEPARATOR = "|||"
     }
 }
