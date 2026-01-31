@@ -19,10 +19,18 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.opuside.app.core.security.SecureSettingsDataStore
 
+/**
+ * ✅ ОБНОВЛЕНО (Проблема №8): Использует Event pattern для биометрии
+ * вместо передачи Activity в ViewModel.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
+fun SettingsScreen(
+    viewModel: SettingsViewModel = hiltViewModel(),
+    secureSettings: SecureSettingsDataStore // ✅ НОВОЕ: Инжектим через Hilt
+) {
     val gitHubConfig by viewModel.gitHubConfig.collectAsState()
     val githubStatus by viewModel.githubStatus.collectAsState()
     val repoInfo by viewModel.repoInfo.collectAsState()
@@ -40,9 +48,12 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
     val isSaving by viewModel.isSaving.collectAsState()
     val message by viewModel.message.collectAsState()
     
-    // ✅ НОВОЕ: State для биометрии
+    // ✅ НОВОЕ (Проблема №8): Event для биометрии
+    val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
+    
     var useBiometric by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val activity = context as? FragmentActivity
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -50,6 +61,31 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
         message?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearMessage()
+        }
+    }
+
+    // ✅ НОВОЕ (Проблема №8): Обработка биометрического запроса через LaunchedEffect
+    if (biometricAuthRequest && activity != null) {
+        LaunchedEffect(Unit) {
+            secureSettings.getAnthropicApiKeyWithBiometric(
+                activity = activity,
+                onSuccess = { key ->
+                    Toast.makeText(
+                        context,
+                        "Key retrieved: ${key.take(10)}...",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    viewModel.clearBiometricRequest()
+                },
+                onError = { error ->
+                    Toast.makeText(
+                        context,
+                        "Auth failed: $error",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    viewModel.clearBiometricRequest()
+                }
+            )
         }
     }
 
@@ -172,7 +208,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                 }
                 Spacer(Modifier.height(12.dp))
                 
-                // ✅ НОВОЕ: Биометрическая защита
+                // Биометрическая защита
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -207,30 +243,13 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                     }
                 }
                 
-                // ✅ НОВОЕ: Кнопка тестирования биометрии
+                // ✅ ОБНОВЛЕНО (Проблема №8): Используем Event pattern вместо прямого вызова
                 if (useBiometric) {
                     Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick = {
-                            viewModel.testBiometricAccess(
-                                activity = context as FragmentActivity,
-                                onSuccess = { key ->
-                                    Toast.makeText(
-                                        context, 
-                                        "Key: ${key.take(10)}...", 
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                },
-                                onError = { error ->
-                                    Toast.makeText(
-                                        context, 
-                                        "Auth failed: $error", 
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            )
-                        },
-                        modifier = Modifier.fillMaxWidth()
+                        onClick = { viewModel.requestBiometricAuth() }, // ✅ Event
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = activity != null
                     ) {
                         Icon(Icons.Default.Fingerprint, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
