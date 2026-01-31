@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -34,6 +35,20 @@ object CacheNotificationHelper {
         notificationManager.createNotificationChannel(channel)
     }
 
+    /**
+     * Проверяет есть ли разрешение на показ уведомлений
+     */
+    fun hasNotificationPermission(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ActivityCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true // До Android 13 разрешение не требуется
+        }
+    }
+
     fun showCacheWarningNotification(context: Context) {
         createNotificationChannel(context)
 
@@ -54,11 +69,7 @@ object CacheNotificationHelper {
             .setAutoCancel(true)
             .build()
 
-        if (ActivityCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (hasNotificationPermission(context)) {
             NotificationManagerCompat.from(context)
                 .notify(WARNING_NOTIFICATION_ID, notification)
         }
@@ -84,11 +95,7 @@ object CacheNotificationHelper {
             .setAutoCancel(true)
             .build()
 
-        if (ActivityCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        ) {
+        if (hasNotificationPermission(context)) {
             NotificationManagerCompat.from(context)
                 .notify(EXPIRED_NOTIFICATION_ID, notification)
         }
