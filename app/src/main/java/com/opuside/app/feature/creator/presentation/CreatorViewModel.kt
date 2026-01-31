@@ -3,9 +3,11 @@ package com.opuside.app.feature.creator.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
+import com.opuside.app.core.git.ConflictResult
+import com.opuside.app.core.git.ConflictStrategy
+import com.opuside.app.core.git.GitConflictResolver
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
-import com.opuside.app.core.network.github.TreeEntry
 import com.opuside.app.core.network.github.model.GitHubBranch
 import com.opuside.app.core.network.github.model.GitHubContent
 import com.opuside.app.core.util.CacheManager
@@ -21,7 +23,7 @@ import javax.inject.Inject
  * Функции:
  * - Навигация по файлам репозитория
  * - Создание/редактирование/удаление файлов
- * - Commit и Push
+ * - Commit и Push с обработкой конфликтов
  * - Работа с ветками
  * - Добавление файлов в кеш (для Analyzer)
  */
@@ -30,7 +32,8 @@ class CreatorViewModel @Inject constructor(
     private val gitHubClient: GitHubApiClient,
     private val graphQLClient: GitHubGraphQLClient,
     private val cacheManager: CacheManager,
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val conflictResolver: GitConflictResolver
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -89,6 +92,10 @@ class CreatorViewModel @Inject constructor(
 
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
+
+    // ✅ НОВОЕ: State для Git конфликтов
+    private val _conflictState = MutableStateFlow<ConflictResult?>(null)
+    val conflictState: StateFlow<ConflictResult?> = _conflictState.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // MULTI-SELECT FOR CACHE
@@ -241,7 +248,7 @@ class CreatorViewModel @Inject constructor(
     }
 
     /**
-     * Сохранить файл (Commit).
+     * ✅ ОБНОВЛЕНО: Сохранить файл с обработкой конфликтов через GitConflictResolver.
      */
     fun saveFile(commitMessage: String) {
         val file = _selectedFile.value ?: return
@@ -250,28 +257,95 @@ class CreatorViewModel @Inject constructor(
             _isSaving.value = true
             _error.value = null
 
-            gitHubClient.createOrUpdateFile(
+            val result = conflictResolver.saveFileWithConflictHandling(
                 path = file.path,
-                content = _fileContent.value,
-                message = commitMessage,
-                sha = file.sha,
-                branch = _currentBranch.value
+                localContent = _fileContent.value,
+                currentSha = file.sha,
+                branch = _currentBranch.value,
+                commitMessage = commitMessage
             )
-                .onSuccess { response ->
-                    _selectedFile.value = file.copy(sha = response.content.sha)
+
+            when (result) {
+                is ConflictResult.Success -> {
+                    _selectedFile.value = file.copy(sha = result.newSha)
                     _originalContent.value = _fileContent.value
+                    result.message?.let { _error.value = it }
                     
                     // Обновляем в кеше, если файл там есть
                     if (cacheManager.hasFile(file.path)) {
                         cacheManager.updateFileContent(file.path, _fileContent.value)
                     }
                 }
-                .onFailure { e ->
-                    _error.value = "Failed to save: ${e.message}"
+                
+                is ConflictResult.Conflict -> {
+                    // Показываем UI для разрешения конфликта
+                    _conflictState.value = result
                 }
+                
+                is ConflictResult.Error -> {
+                    _error.value = result.message
+                }
+            }
 
             _isSaving.value = false
         }
+    }
+
+    /**
+     * ✅ НОВОЕ: Разрешить Git конфликт.
+     */
+    fun resolveConflict(strategy: ConflictStrategy, mergedContent: String?) {
+        val conflict = (_conflictState.value as? ConflictResult.Conflict) ?: return
+
+        viewModelScope.launch {
+            _isSaving.value = true
+
+            val result = when (strategy) {
+                ConflictStrategy.KEEP_MINE -> 
+                    conflictResolver.resolveKeepMine(conflict, _currentBranch.value)
+                
+                ConflictStrategy.KEEP_THEIRS -> 
+                    conflictResolver.resolveKeepTheirs(conflict)
+                
+                ConflictStrategy.MANUAL_MERGE -> {
+                    if (mergedContent != null) {
+                        conflictResolver.resolveManualMerge(
+                            conflict, mergedContent, _currentBranch.value
+                        )
+                    } else {
+                        ConflictResult.Error("No merged content provided")
+                    }
+                }
+                
+                ConflictStrategy.SAVE_AS_COPY -> 
+                    conflictResolver.resolveSaveAsCopy(conflict, _currentBranch.value)
+            }
+
+            when (result) {
+                is ConflictResult.Success -> {
+                    _conflictState.value = null
+                    _error.value = result.message ?: "Conflict resolved successfully"
+                    
+                    // Обновляем файл после разрешения
+                    _selectedFile.value?.let { file ->
+                        _selectedFile.value = file.copy(sha = result.newSha)
+                    }
+                }
+                is ConflictResult.Error -> {
+                    _error.value = result.message
+                }
+                else -> {}
+            }
+
+            _isSaving.value = false
+        }
+    }
+
+    /**
+     * ✅ НОВОЕ: Закрыть диалог конфликтов.
+     */
+    fun dismissConflict() {
+        _conflictState.value = null
     }
 
     /**
