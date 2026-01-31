@@ -1,5 +1,9 @@
 package com.opuside.app.feature.analyzer.presentation
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -20,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -51,6 +56,39 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
 
     var userInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+
+    // ✅ ДОБАВЛЕНО: Проблема №17 (BUG #17) - Обработка notification permission
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val requestPermission by viewModel.requestNotificationPermission.collectAsState()
+        val showCacheWarning by viewModel.showCacheWarningInApp.collectAsState()
+        val context = LocalContext.current
+        
+        if (requestPermission) {
+            val launcher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { granted ->
+                if (!granted) {
+                    viewModel.showCacheWarningFallback(
+                        context,
+                        "Enable notifications to receive cache expiry warnings"
+                    )
+                }
+                viewModel.clearNotificationPermissionRequest()
+            }
+            
+            LaunchedEffect(Unit) {
+                launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+        
+        // Показываем in-app warning если нет permission
+        showCacheWarning?.let { message ->
+            NotificationPermissionWarning(
+                message = message,
+                onDismiss = viewModel::clearCacheWarningInApp
+            )
+        }
+    }
 
     LaunchedEffect(chatMessages.size, currentStreamingText) {
         if (chatMessages.isNotEmpty()) listState.animateScrollToItem(chatMessages.size)
@@ -136,6 +174,46 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
             onRefresh = viewModel::loadWorkflowRuns,
             onSelectRun = viewModel::selectWorkflowRun
         )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION PERMISSION WARNING (BUG #17)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * ✅ ДОБАВЛЕНО: Проблема №17 (BUG #17) - Warning для случая когда нет notification permission
+ */
+@Composable
+private fun NotificationPermissionWarning(message: String, onDismiss: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth().padding(16.dp),
+        colors = CardDefaults.cardColors(MaterialTheme.colorScheme.secondaryContainer)
+    ) {
+        Row(
+            Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.NotificationsOff,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                message,
+                Modifier.weight(1f),
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    Icons.Default.Close,
+                    "Dismiss",
+                    tint = MaterialTheme.colorScheme.onSecondaryContainer
+                )
+            }
+        }
     }
 }
 
