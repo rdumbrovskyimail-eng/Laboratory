@@ -493,7 +493,8 @@ Cache active: ${cacheContext.isActive}
         viewModelScope.launch {
             _actionsLoading.value = true
             
-            val branch = appSettings.githubBranch.first().ifEmpty { "main" }
+            // ✅ ИСПРАВЛЕНО: Используем gitHubConfig вместо несуществующего githubBranch
+            val branch = appSettings.gitHubConfig.first().branch.ifEmpty { "main" }
             
             gitHubClient.triggerWorkflow(workflowId, branch)
                 .onSuccess {
@@ -577,16 +578,3 @@ Cache active: ${cacheContext.isActive}
         pollingJob?.cancel()
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DATA CLASSES (для компиляции)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-data class CacheContext(
-    val fileCount: Int = 0,
-    val filePaths: List<String> = emptyList(),
-    val formattedContext: String = "",
-    val totalTokensEstimate: Int = 0,
-    val isActive: Boolean = false,
-    val isEmpty: Boolean = fileCount == 0
-)
