@@ -15,7 +15,7 @@ import com.opuside.app.core.network.github.model.Artifact
 import com.opuside.app.core.network.github.model.WorkflowJob
 import com.opuside.app.core.network.github.model.WorkflowRun
 import com.opuside.app.core.util.CacheContext
-import com.opuside.app.core.util.CacheManager
+import com.opuside.app.core.util.PersistentCacheManager
 import com.opuside.app.core.util.TimerState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -34,10 +34,12 @@ import javax.inject.Inject
  * 3. Все запросы к Claude используют ТОЛЬКО файлы из кеша как контекст
  * 4. Claude НЕ сканирует весь проект — только кеш!
  * 5. Таймер истёк = кеш очищен = нужно заново выбрать файлы
+ * 
+ * ✅ ОБНОВЛЕНО: Использует PersistentCacheManager с фоновым таймером
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
-    private val cacheManager: CacheManager,
+    private val cacheManager: PersistentCacheManager,  // ✅ Изменено с CacheManager
     private val claudeClient: ClaudeApiClient,
     private val gitHubClient: GitHubApiClient,
     private val chatDao: ChatDao,
