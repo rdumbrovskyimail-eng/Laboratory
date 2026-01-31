@@ -243,10 +243,9 @@ class SettingsViewModel @Inject constructor(
             _githubStatus.value = ConnectionStatus.Testing
 
             try {
-                val result = gitHubClient.getRepository(
-                    owner = _githubOwnerInput.value,
-                    repo = _githubRepoInput.value
-                )
+                // ✅ ИСПРАВЛЕНО: gitHubClient.getRepository() не принимает параметры
+                // Он использует настройки из appSettings.gitHubConfig
+                val result = gitHubClient.getRepository()
 
                 result.onSuccess { repo ->
                     _repoInfo.value = repo
