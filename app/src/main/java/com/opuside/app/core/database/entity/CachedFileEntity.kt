@@ -11,6 +11,31 @@ import kotlinx.datetime.Instant
  * 
  * Хранит файлы, выбранные пользователем для анализа в Окне 2.
  * Таймер 5 минут отсчитывается от [addedAt].
+ * 
+ * ✅ ИСПРАВЛЕНО (Проблема #15): Добавлено поле [isEncrypted] для маркировки
+ * зашифрованного контента. Рекомендуется шифровать чувствительные данные
+ * с помощью EncryptedSharedPreferences или androidx.security.crypto.
+ * 
+ * Пример использования шифрования:
+ * ```
+ * // При сохранении
+ * val masterKey = MasterKey.Builder(context)
+ *     .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+ *     .build()
+ * val encryptedContent = encryptData(content, masterKey)
+ * val entity = CachedFileEntity(
+ *     content = encryptedContent,
+ *     isEncrypted = true,
+ *     ...
+ * )
+ * 
+ * // При чтении
+ * val decryptedContent = if (entity.isEncrypted) {
+ *     decryptData(entity.content, masterKey)
+ * } else {
+ *     entity.content
+ * }
+ * ```
  */
 @Entity(tableName = "cached_files")
 data class CachedFileEntity(
@@ -43,7 +68,15 @@ data class CachedFileEntity(
     val branch: String = "main",
     
     @ColumnInfo(name = "sha")
-    val sha: String? = null // Git SHA для версионирования
+    val sha: String? = null, // Git SHA для версионирования
+    
+    /**
+     * ✅ ИСПРАВЛЕНО (Проблема #15): Флаг для обозначения зашифрованного контента.
+     * Если true, поле [content] содержит зашифрованные данные и требует
+     * расшифровки перед использованием.
+     */
+    @ColumnInfo(name = "is_encrypted", defaultValue = "0")
+    val isEncrypted: Boolean = false
 ) {
     /**
      * Проверяет, истёк ли кеш для файла.
