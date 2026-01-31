@@ -1,6 +1,7 @@
 package com.opuside.app.core.util
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
@@ -19,6 +20,7 @@ import kotlinx.datetime.Instant
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
 
 private val Context.cacheTimerDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "cache_timer_state"
@@ -52,6 +54,8 @@ private val Context.cacheTimerDataStore: DataStore<Preferences> by preferencesDa
  * ✅ ИСПРАВЛЕНО:
  * - Проблема №5: Race condition в init - сначала загружаем config, потом восстанавливаем таймер
  * - Проблема №13: Добавлен лимит MAX_FILE_SIZE (1MB) для защиты от переполнения БД
+ * - Проблема №16: Детекция прыжков системного времени с использованием монотонных часов
+ * - Проблема №20: Проверка дубликатов перед добавлением в кеш
  */
 @Singleton
 class PersistentCacheManager @Inject constructor(
@@ -63,6 +67,7 @@ class PersistentCacheManager @Inject constructor(
         private const val TIMER_WORK_TAG = "cache_timer_cleanup"
         private const val NOTIFICATION_WORK_TAG = "cache_timer_warning"
         private const val MAX_FILE_SIZE = 1 * 1024 * 1024  // ✅ ДОБАВЛЕНО: 1MB лимит
+        private const val TIME_JUMP_THRESHOLD_MS = 5000L  // ✅ ДОБАВЛЕНО: Порог детекции прыжка времени
         
         // DataStore keys
         private val KEY_END_TIMESTAMP = longPreferencesKey("cache_end_timestamp")
@@ -78,6 +83,10 @@ class PersistentCacheManager @Inject constructor(
 
     private var tickerJob: Job? = null
     private var currentTimeoutMs: Long = 5 * 60 * 1000L
+
+    // ✅ ДОБАВЛЕНО: Проблема №16 - Монотонные часы для детекции прыжков времени
+    private var tickerStartMonotonicTime: Long = 0L
+    private var tickerStartWallTime: Long = 0L
 
     // ═══════════════════════════════════════════════════════════════════════════
     // TIMER STATE (Reactive)
@@ -197,6 +206,9 @@ class PersistentCacheManager @Inject constructor(
     // CACHE OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * ✅ ОБНОВЛЕНО: Проблема №13, №20 - Проверка размера и дубликатов
+     */
     suspend fun addFile(file: CachedFileEntity): Result<Unit> {
         return try {
             // ✅ ДОБАВЛЕНО: Проблема №13 - Проверка размера файла
@@ -204,6 +216,13 @@ class PersistentCacheManager @Inject constructor(
                 return Result.failure(IllegalArgumentException(
                     "File too large: ${file.sizeBytes} bytes (max ${MAX_FILE_SIZE / 1024 / 1024}MB)"
                 ))
+            }
+            
+            // ✅ ДОБАВЛЕНО: Проблема №20 - Проверка дубликатов
+            val existing = cacheDao.getByPath(file.filePath)
+            if (existing != null) {
+                android.util.Log.d("CacheManager", "⚠️ File already in cache: ${file.filePath}")
+                return Result.success(Unit) // Уже есть, не добавляем повторно
             }
             
             val maxFiles = appSettings.maxCacheFiles.first()
@@ -222,6 +241,9 @@ class PersistentCacheManager @Inject constructor(
         }
     }
 
+    /**
+     * ✅ ОБНОВЛЕНО: Проблема №13, №20 - Проверка размера и дубликатов
+     */
     suspend fun addFiles(files: List<CachedFileEntity>): Result<Int> {
         return try {
             // ✅ ДОБАВЛЕНО: Проблема №13 - Проверка размера каждого файла
@@ -232,15 +254,35 @@ class PersistentCacheManager @Inject constructor(
                 ))
             }
             
+            // ✅ ДОБАВЛЕНО: Проблема №20 - Фильтрация дубликатов
+            val newFiles = mutableListOf<CachedFileEntity>()
+            val duplicates = mutableListOf<String>()
+            
+            files.forEach { file ->
+                if (cacheDao.getByPath(file.filePath) != null) {
+                    duplicates.add(file.filePath)
+                } else {
+                    newFiles.add(file)
+                }
+            }
+            
+            if (duplicates.isNotEmpty()) {
+                android.util.Log.d("CacheManager", "⚠️ Skipped ${duplicates.size} duplicate files")
+            }
+            
+            if (newFiles.isEmpty()) {
+                return Result.success(0) // Все файлы были дубликатами
+            }
+            
             val maxFiles = appSettings.maxCacheFiles.first()
             val currentCount = cacheDao.getCount()
             val availableSlots = maxFiles - currentCount
 
-            val filesToAdd = if (files.size > availableSlots) {
-                cacheDao.trimToSize(maxFiles - files.size)
-                files
+            val filesToAdd = if (newFiles.size > availableSlots) {
+                cacheDao.trimToSize(maxFiles - newFiles.size)
+                newFiles
             } else {
-                files
+                newFiles
             }
 
             cacheDao.insertAll(filesToAdd)
@@ -348,13 +390,49 @@ class PersistentCacheManager @Inject constructor(
     }
 
     /**
-     * Ticker для обновления UI каждую секунду.
+     * ✅ ОБНОВЛЕНО: Проблема №16 - Ticker с детекцией прыжков системного времени.
      */
     private fun startTicker() {
         tickerJob?.cancel()
+        
+        // ✅ ДОБАВЛЕНО: Запоминаем точки отсчета для обоих типов часов
+        tickerStartMonotonicTime = SystemClock.elapsedRealtime()
+        tickerStartWallTime = System.currentTimeMillis()
+        
         tickerJob = scope.launch {
             while (isActive && _remainingSeconds.value > 0) {
                 delay(1000)
+                
+                // ✅ ДОБАВЛЕНО: Проверка прыжка времени
+                val currentMonotonicTime = SystemClock.elapsedRealtime()
+                val currentWallTime = System.currentTimeMillis()
+                
+                val monotonicElapsed = currentMonotonicTime - tickerStartMonotonicTime
+                val wallElapsed = currentWallTime - tickerStartWallTime
+                
+                val timeDrift = abs(monotonicElapsed - wallElapsed)
+                
+                if (timeDrift > TIME_JUMP_THRESHOLD_MS) {
+                    android.util.Log.w(
+                        "CacheManager", 
+                        "⚠️ Time jump detected! Drift: ${timeDrift}ms. Recalculating based on monotonic clock..."
+                    )
+                    
+                    // Пересчитываем endTimestamp на основе монотонного времени
+                    val prefs = timerDataStore.data.first()
+                    val oldEndTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
+                    
+                    // Вычисляем сколько РЕАЛЬНО прошло времени (по монотонным часам)
+                    val realElapsedSinceStart = monotonicElapsed
+                    
+                    // Обновляем endTimestamp
+                    val newEndTimestamp = currentWallTime + (currentTimeoutMs - realElapsedSinceStart)
+                    saveTimerState(isActive = true, endTimestamp = newEndTimestamp)
+                    
+                    // Сбрасываем точки отсчета
+                    tickerStartMonotonicTime = currentMonotonicTime
+                    tickerStartWallTime = currentWallTime
+                }
                 
                 // Пересчитываем оставшееся время из saved endTimestamp
                 val prefs = timerDataStore.data.first()
