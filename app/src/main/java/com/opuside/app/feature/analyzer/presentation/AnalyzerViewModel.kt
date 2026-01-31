@@ -1,5 +1,10 @@
 package com.opuside.app.feature.analyzer.presentation
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
@@ -36,6 +41,7 @@ import javax.inject.Inject
  * 5. Таймер истёк = кеш очищен = нужно заново выбрать файлы
  * 
  * ✅ ОБНОВЛЕНО: Использует PersistentCacheManager с фоновым таймером
+ * ✅ ОБНОВЛЕНО: Добавлен запрос notification permission (Проблема №7)
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -68,6 +74,59 @@ class AnalyzerViewModel @Inject constructor(
     val isTimerCritical: StateFlow<Boolean> = cacheManager.isTimerCritical
 
     val isCacheActive: StateFlow<Boolean> = cacheManager.isCacheActive
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // NOTIFICATION PERMISSION (Проблема №7)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val _requestNotificationPermission = MutableStateFlow(false)
+    val requestNotificationPermission: StateFlow<Boolean> = _requestNotificationPermission.asStateFlow()
+
+    private val _showCacheWarningInApp = MutableStateFlow<String?>(null)
+    val showCacheWarningInApp: StateFlow<String?> = _showCacheWarningInApp.asStateFlow()
+
+    /**
+     * Проверяет permission и запрашивает если нужно (вызывается при первом добавлении в кеш)
+     */
+    fun checkNotificationPermission(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (!hasPermission) {
+                _requestNotificationPermission.value = true
+            }
+        }
+    }
+
+    fun clearNotificationPermissionRequest() {
+        _requestNotificationPermission.value = false
+    }
+
+    /**
+     * Показывает предупреждение в UI если нет notification permission
+     */
+    fun showCacheWarningFallback(context: Context, message: String) {
+        val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+
+        if (!hasPermission) {
+            // Показываем in-app warning вместо notification
+            _showCacheWarningInApp.value = message
+        }
+    }
+
+    fun clearCacheWarningInApp() {
+        _showCacheWarningInApp.value = null
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CHAT STATE
