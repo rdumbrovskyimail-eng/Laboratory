@@ -25,6 +25,7 @@ import javax.inject.Singleton
  * ✅ ИСПРАВЛЕНО:
  * - Проблема №4: Добавлена валидация BuildConfig полей
  * - Проблема №10: Добавлена проверка размера файлов и разбиение на batches
+ * - Проблема №18 (BUG #18): Добавлен escaping для GraphQL query
  */
 @Singleton
 class GitHubGraphQLClient @Inject constructor(
@@ -184,7 +185,7 @@ class GitHubGraphQLClient @Inject constructor(
                     
                     results[path] = FileContent(
                         path = path,
-                        content = text,
+                        content = text ?: "", // ✅ ИСПРАВЛЕНО: Пустая строка для binary
                         isBinary = isBinary,
                         byteSize = byteSize,
                         oid = oid
@@ -346,10 +347,15 @@ class GitHubGraphQLClient @Inject constructor(
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * ✅ ИСПРАВЛЕНО: Проблема №18 (BUG #18) - Добавлен escaping для путей с кавычками.
+     */
     private fun buildBatchQuery(paths: List<String>, ref: String): String {
         val fileQueries = paths.mapIndexed { index, path ->
+            // ✅ ДОБАВЛЕНО: Escaping для кавычек и обратных слэшей
+            val escapedPath = path.replace("\\", "\\\\").replace("\"", "\\\"")
             """
-            file$index: object(expression: "$ref:$path") {
+            file$index: object(expression: "$ref:$escapedPath") {
                 ... on Blob {
                     text
                     byteSize
