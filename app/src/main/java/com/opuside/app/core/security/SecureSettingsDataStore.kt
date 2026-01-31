@@ -369,6 +369,7 @@ class SecureSettingsDataStore @Inject constructor(
         activity: FragmentActivity
     ): String = suspendCancellableCoroutine { continuation ->
         
+        // Получаем настройки
         val prefs = runCatching { 
             kotlinx.coroutines.runBlocking { 
                 dataStore.data.first() 
@@ -379,34 +380,29 @@ class SecureSettingsDataStore @Inject constructor(
         
         if (!useBiometric) {
             // Биометрия не требуется - возвращаем ключ сразу
-            val key = runCatching {
-                kotlinx.coroutines.runBlocking {
+            try {
+                val key = kotlinx.coroutines.runBlocking {
                     getAnthropicApiKey().first()
                 }
-            }.getOrElse { e ->
-                // ✅ ИСПРАВЛЕНО (строка 162): Правильное завершение с ошибкой
+                if (continuation.isActive) {
+                    continuation.resume(key)
+                }
+            } catch (e: Exception) {
                 if (continuation.isActive) {
                     continuation.resumeWith(Result.failure(e))
                 }
-                return@suspendCancellableCoroutine
             }
-            continuation.resume(key)
             return@suspendCancellableCoroutine
         }
 
-        // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Больше НЕ используем GlobalScope!
-        // Вместо этого используем suspendCancellableCoroutine для structured concurrency
-        
+        // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем suspendCancellableCoroutine для structured concurrency
         BiometricAuthHelper.authenticate(
             activity = activity,
             title = "Unlock API Key",
             subtitle = "Authentication required to access Anthropic API key",
             onSuccess = {
-                // ✅ НЕ запускаем корутину! Просто возобновляем continuation
-                // Вызывающая сторона уже в viewModelScope, который привязан к lifecycle
-                
+                // Получаем ключ после успешной аутентификации
                 val key = runCatching {
-                    // Синхронное получение ключа (уже расшифрован выше)
                     kotlinx.coroutines.runBlocking {
                         getAnthropicApiKey().first()
                     }
@@ -436,11 +432,8 @@ class SecureSettingsDataStore @Inject constructor(
         )
         
         // ✅ Обработка отмены корутины
-        // Если Activity destroyed во время биометрии → корутина отменяется
         continuation.invokeOnCancellation {
             android.util.Log.d(TAG, "🛑 Biometric auth cancelled (Activity destroyed or coroutine cancelled)")
-            // BiometricPrompt автоматически закроется при destroy Activity
-            // Ничего дополнительного делать не нужно
         }
     }
 
