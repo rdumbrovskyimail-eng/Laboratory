@@ -287,12 +287,7 @@ fun VirtualizedCodeEditor(
             }
         }
     }
-
-    LaunchedEffect(Unit) {
-        if (!readOnly) {
-            focusRequester.requestFocus()
-        }
-    }
+    // ✅ УДАЛЕНО: LaunchedEffect был здесь и вызывал ошибку компиляции
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
