@@ -31,7 +31,8 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
     secureSettings: SecureSettingsDataStore // ✅ НОВОЕ: Инжектим через Hilt
 ) {
-    val gitHubConfig by viewModel.gitHubConfig.collectAsState()
+    // ✅ ИСПРАВЛЕНО: Добавлен параметр initial для gitHubConfig
+    val gitHubConfig by viewModel.gitHubConfig.collectAsState(initial = SecureSettingsDataStore.GitHubConfig("", "", "main", ""))
     val githubStatus by viewModel.githubStatus.collectAsState()
     val repoInfo by viewModel.repoInfo.collectAsState()
     val claudeStatus by viewModel.claudeStatus.collectAsState()
