@@ -28,6 +28,7 @@ import javax.inject.Inject
  * - Добавление файлов в кеш (для Analyzer)
  * 
  * ✅ ОБНОВЛЕНО: Добавлена индикация прогресса загрузки (Проблема №14)
+ * ✅ ИСПРАВЛЕНО: Проблема №13 (BUG #13) - Breadcrumbs split error
  */
 @HiltViewModel
 class CreatorViewModel @Inject constructor(
@@ -585,10 +586,14 @@ class CreatorViewModel @Inject constructor(
         _error.value = null
     }
 
+    // ✅ ИСПРАВЛЕНО: Проблема №13 (BUG #13) - Breadcrumbs split error
     val breadcrumbs: StateFlow<List<String>> = _currentPath
         .map { path ->
-            if (path.isEmpty()) listOf("root")
-            else listOf("root") + path.split("/")
+            if (path.isEmpty()) {
+                listOf("root")
+            } else {
+                listOf("root") + path.split("/").filter { it.isNotEmpty() }
+            }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), listOf("root"))
 }
