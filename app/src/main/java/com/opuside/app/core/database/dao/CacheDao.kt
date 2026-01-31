@@ -82,8 +82,11 @@ interface CacheDao {
      * 
      * ⚠️ ВАЖНО: Используйте с debounce в ViewModel, чтобы избежать
      * избыточных запросов при вводе в поле поиска (см. документацию класса).
+     * 
+     * ✅ ИСПРАВЛЕНО (Проблема #8): Используется параметризованный запрос
+     * вместо конкатенации строк для защиты от SQL injection.
      */
-    @Query("SELECT * FROM cached_files WHERE file_name LIKE '%' || :query || '%'")
+    @Query("SELECT * FROM cached_files WHERE file_name LIKE :query")
     suspend fun search(query: String): List<CachedFileEntity>
 
     /**
