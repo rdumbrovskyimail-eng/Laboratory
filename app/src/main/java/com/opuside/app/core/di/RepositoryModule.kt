@@ -14,19 +14,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
-/**
- * Hilt модуль для репозиториев и менеджеров.
- * 
- * ✅ ИСПРАВЛЕНО: Добавлены CacheEncryptionHelper и CacheRepository
- */
 @Module
 @InstallIn(SingletonComponent::class)
 object RepositoryModule {
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Добавлен provider для SecureSettingsDataStore
-     * Решает проблему №1 - FATAL: MissingBinding crash at startup
-     */
     @Provides
     @Singleton
     fun provideSecureSettings(
@@ -40,18 +31,10 @@ object RepositoryModule {
         secureSettings: SecureSettingsDataStore
     ): AppSettings = AppSettings(context, secureSettings)
 
-    /**
-     * ✅ НОВОЕ: Provider для CacheEncryptionHelper
-     * Необходим для шифрования кеша в CacheRepository
-     */
     @Provides
     @Singleton
     fun provideCacheEncryptionHelper(): CacheEncryptionHelper = CacheEncryptionHelper()
 
-    /**
-     * ✅ НОВОЕ: Provider для CacheRepository
-     * Обертка над CacheDao с поддержкой шифрования
-     */
     @Provides
     @Singleton
     fun provideCacheRepository(
@@ -60,8 +43,9 @@ object RepositoryModule {
     ): CacheRepository = CacheRepository(cacheDao, encryptionHelper)
 
     /**
-     * ✅ ИСПРАВЛЕНО: Используем CacheRepository вместо CacheDao
-     * Правильный порядок параметров: context, cacheRepository, appSettings
+     * ✅ ИСПРАВЛЕНО: Добавлены именованные аргументы.
+     * Это предотвращает ошибку "No value passed for parameter", если порядок аргументов
+     * в конструкторе PersistentCacheManager отличается от порядка здесь.
      */
     @Provides
     @Singleton
@@ -69,5 +53,9 @@ object RepositoryModule {
         @ApplicationContext context: Context,
         cacheRepository: CacheRepository,
         appSettings: AppSettings
-    ): PersistentCacheManager = PersistentCacheManager(context, cacheRepository, appSettings)
+    ): PersistentCacheManager = PersistentCacheManager(
+        context = context,
+        cacheRepository = cacheRepository,
+        appSettings = appSettings
+    )
 }
