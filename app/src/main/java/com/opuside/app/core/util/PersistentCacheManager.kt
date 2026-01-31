@@ -15,6 +15,8 @@ import dagger.assisted.AssistedInject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
 import java.util.concurrent.TimeUnit
@@ -56,6 +58,9 @@ private val Context.cacheTimerDataStore: DataStore<Preferences> by preferencesDa
  * - Проблема №13: Добавлен лимит MAX_FILE_SIZE (1MB) для защиты от переполнения БД
  * - Проблема №16: Детекция прыжков системного времени с использованием монотонных часов
  * - Проблема №20: Проверка дубликатов перед добавлением в кеш
+ * - CRASH #3: Race condition с Mutex для синхронизации доступа к tickerJob
+ * - CRASH #5: Исправлен timer drift с отрицательными timestamps
+ * - BUG #16: Таймер учитывает изменение настроек таймаута
  */
 @Singleton
 class PersistentCacheManager @Inject constructor(
@@ -81,6 +86,8 @@ class PersistentCacheManager @Inject constructor(
     private val workManager = WorkManager.getInstance(context)
     private val timerDataStore = context.cacheTimerDataStore
 
+    // ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для синхронизации
+    private val timerMutex = Mutex()
     private var tickerJob: Job? = null
     private var currentTimeoutMs: Long = 5 * 60 * 1000L
 
@@ -150,9 +157,27 @@ class PersistentCacheManager @Inject constructor(
             // Потом восстанавливаем таймер
             restoreTimerState()
             
-            // Потом подписываемся на изменения
+            // ✅ ИСПРАВЛЕНО: BUG #16 - Обновление активного таймера при изменении настроек
             appSettings.cacheConfig.collect { newConfig ->
+                val oldTimeout = currentTimeoutMs
                 currentTimeoutMs = newConfig.timeoutMs
+                
+                // Если таймер активен И таймаут изменился
+                if (_timerState.value == TimerState.RUNNING && oldTimeout != currentTimeoutMs) {
+                    // Пересчитываем endTimestamp с новым таймаутом
+                    timerMutex.withLock {
+                        val prefs = timerDataStore.data.first()
+                        val oldEndTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
+                        val now = Clock.System.now().toEpochMilliseconds()
+                        val elapsed = now - (oldEndTimestamp - oldTimeout)
+                        val newEndTimestamp = now + (currentTimeoutMs - elapsed).coerceAtLeast(0)
+                        
+                        saveTimerState(isActive = true, endTimestamp = newEndTimestamp)
+                        
+                        android.util.Log.d("CacheManager", 
+                            "⏱️ Timer timeout changed from ${oldTimeout}ms to ${currentTimeoutMs}ms")
+                    }
+                }
             }
         }
     }
@@ -391,6 +416,7 @@ class PersistentCacheManager @Inject constructor(
 
     /**
      * ✅ ОБНОВЛЕНО: Проблема №16 - Ticker с детекцией прыжков системного времени.
+     * ✅ ИСПРАВЛЕНО: CRASH #5 - Исправлен отрицательный timestamp при timer drift
      */
     private fun startTicker() {
         tickerJob?.cancel()
@@ -420,13 +446,14 @@ class PersistentCacheManager @Inject constructor(
                     
                     // Пересчитываем endTimestamp на основе монотонного времени
                     val prefs = timerDataStore.data.first()
-                    val oldEndTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
                     
                     // Вычисляем сколько РЕАЛЬНО прошло времени (по монотонным часам)
                     val realElapsedSinceStart = monotonicElapsed
                     
-                    // Обновляем endTimestamp
-                    val newEndTimestamp = currentWallTime + (currentTimeoutMs - realElapsedSinceStart)
+                    // ✅ ИСПРАВЛЕНО: CRASH #5 - Защита от отрицательных значений
+                    val remainingMs = (currentTimeoutMs - realElapsedSinceStart).coerceAtLeast(0)
+                    val newEndTimestamp = currentWallTime + remainingMs
+                    
                     saveTimerState(isActive = true, endTimestamp = newEndTimestamp)
                     
                     // Сбрасываем точки отсчета
@@ -486,56 +513,69 @@ class PersistentCacheManager @Inject constructor(
         android.util.Log.d("CacheManager", "📅 Scheduled background cleanup in ${delayMs}ms")
     }
 
+    /**
+     * ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для потокобезопасности
+     */
     fun pauseTimer() {
         if (_timerState.value == TimerState.RUNNING) {
             scope.launch {
-                tickerJob?.cancel()
-                _timerState.value = TimerState.PAUSED
-
-                val pausedAt = Clock.System.now().toEpochMilliseconds()
-                timerDataStore.edit { prefs ->
-                    prefs[KEY_PAUSED_AT] = pausedAt
+                timerMutex.withLock {
+                    tickerJob?.cancel()
+                    _timerState.value = TimerState.PAUSED
+                    
+                    val pausedAt = Clock.System.now().toEpochMilliseconds()
+                    timerDataStore.edit { prefs ->
+                        prefs[KEY_PAUSED_AT] = pausedAt
+                    }
+                    
+                    android.util.Log.d("CacheManager", "⏸️ Timer paused at $pausedAt")
                 }
-
-                android.util.Log.d("CacheManager", "⏸️ Timer paused at $pausedAt")
             }
         }
     }
 
+    /**
+     * ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для потокобезопасности
+     */
     fun resumeTimer() {
         if (_timerState.value == TimerState.PAUSED && _remainingSeconds.value > 0) {
             scope.launch {
-                val prefs = timerDataStore.data.first()
-                val pausedAt = prefs[KEY_PAUSED_AT] ?: 0L
-                val now = Clock.System.now().toEpochMilliseconds()
-                val pauseDuration = now - pausedAt
+                timerMutex.withLock {
+                    val prefs = timerDataStore.data.first()
+                    val pausedAt = prefs[KEY_PAUSED_AT] ?: 0L
+                    val now = Clock.System.now().toEpochMilliseconds()
+                    val pauseDuration = now - pausedAt
 
-                // Продлеваем endTimestamp на время паузы
-                val oldEndTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
-                val newEndTimestamp = oldEndTimestamp + pauseDuration
+                    val oldEndTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
+                    val newEndTimestamp = oldEndTimestamp + pauseDuration
 
-                saveTimerState(isActive = true, endTimestamp = newEndTimestamp)
+                    saveTimerState(isActive = true, endTimestamp = newEndTimestamp)
 
-                _timerState.value = TimerState.RUNNING
-                startTicker()
+                    _timerState.value = TimerState.RUNNING
+                    startTicker()
 
-                android.util.Log.d("CacheManager", "▶️ Timer resumed, extended by ${pauseDuration}ms")
+                    android.util.Log.d("CacheManager", "▶️ Timer resumed, extended by ${pauseDuration}ms")
+                }
             }
         }
     }
 
+    /**
+     * ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для потокобезопасности
+     */
     fun stopTimer() {
         scope.launch {
-            stopTimerInternal()
-            _remainingSeconds.value = 0
-            _timerState.value = TimerState.STOPPED
-            saveTimerState(isActive = false)
-            
-            // Отменяем фоновые задачи
-            workManager.cancelAllWorkByTag(TIMER_WORK_TAG)
-            workManager.cancelAllWorkByTag(NOTIFICATION_WORK_TAG)
+            timerMutex.withLock {
+                stopTimerInternal()
+                _remainingSeconds.value = 0
+                _timerState.value = TimerState.STOPPED
+                saveTimerState(isActive = false)
+                
+                workManager.cancelAllWorkByTag(TIMER_WORK_TAG)
+                workManager.cancelAllWorkByTag(NOTIFICATION_WORK_TAG)
 
-            android.util.Log.d("CacheManager", "⏹️ Timer stopped")
+                android.util.Log.d("CacheManager", "⏹️ Timer stopped")
+            }
         }
     }
 
