@@ -41,21 +41,20 @@ import javax.inject.Inject
  * 4. Claude НЕ сканирует весь проект — только кеш!
  * 5. Таймер истёк = кеш очищен = нужно заново выбрать файлы
  * 
- * ✅ ОБНОВЛЕНО: Использует PersistentCacheManager с фоновым таймером
- * ✅ ОБНОВЛЕНО: Добавлен запрос notification permission (Проблема №7)
- * ✅ ИСПРАВЛЕНО: Проблема №11 (BUG #11) - Session persistence при повороте экрана
+ * 🔴 ПРОБЛЕМА #9: Implicit Transaction Blocking (строки 255-270)
+ * chatDao операции вызываются последовательно в UI scope без явной транзакции.
+ * При большом количестве сообщений (100+) это может заблокировать UI thread.
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
-    private val savedStateHandle: SavedStateHandle, // ✅ ДОБАВЛЕНО: Для сохранения sessionId
-    private val cacheManager: PersistentCacheManager,  // ✅ Изменено с CacheManager
+    private val savedStateHandle: SavedStateHandle,
+    private val cacheManager: PersistentCacheManager,
     private val claudeClient: ClaudeApiClient,
     private val gitHubClient: GitHubApiClient,
     private val chatDao: ChatDao,
     private val appSettings: AppSettings
 ) : ViewModel() {
 
-    // ✅ ИСПРАВЛЕНО: Проблема №11 - Session ID сохраняется при повороте экрана
     private val sessionId: String by lazy {
         savedStateHandle.get<String>("session_id") 
             ?: UUID.randomUUID().toString().also { newId ->
@@ -85,7 +84,7 @@ class AnalyzerViewModel @Inject constructor(
     val isCacheActive: StateFlow<Boolean> = cacheManager.isCacheActive
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // NOTIFICATION PERMISSION (Проблема №7)
+    // NOTIFICATION PERMISSION
     // ═══════════════════════════════════════════════════════════════════════════
 
     private val _requestNotificationPermission = MutableStateFlow(false)
@@ -94,9 +93,6 @@ class AnalyzerViewModel @Inject constructor(
     private val _showCacheWarningInApp = MutableStateFlow<String?>(null)
     val showCacheWarningInApp: StateFlow<String?> = _showCacheWarningInApp.asStateFlow()
 
-    /**
-     * Проверяет permission и запрашивает если нужно (вызывается при первом добавлении в кеш)
-     */
     fun checkNotificationPermission(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val hasPermission = ContextCompat.checkSelfPermission(
@@ -114,9 +110,6 @@ class AnalyzerViewModel @Inject constructor(
         _requestNotificationPermission.value = false
     }
 
-    /**
-     * Показывает предупреждение в UI если нет notification permission
-     */
     fun showCacheWarningFallback(context: Context, message: String) {
         val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(
@@ -128,7 +121,6 @@ class AnalyzerViewModel @Inject constructor(
         }
 
         if (!hasPermission) {
-            // Показываем in-app warning вместо notification
             _showCacheWarningInApp.value = message
         }
     }
@@ -198,7 +190,6 @@ class AnalyzerViewModel @Inject constructor(
     fun clearCache() {
         viewModelScope.launch {
             cacheManager.clearCache()
-            // Добавляем системное сообщение в чат
             chatDao.insert(ChatMessageEntity(
                 sessionId = sessionId,
                 role = MessageRole.SYSTEM,
@@ -219,15 +210,45 @@ class AnalyzerViewModel @Inject constructor(
      * 
      * ВАЖНО: Контекст берётся ТОЛЬКО из кеша!
      * Если кеш пуст или таймер истёк — предупреждаем пользователя.
+     * 
+     * 🔴 ПРОБЛЕМА #9: Implicit Transaction Blocking (строки 255-270)
+     * 
+     * Множественные вызовы chatDao без явной транзакции:
+     * 1. chatDao.insert(userEntity) - INSERT в БД
+     * 2. chatDao.insert(assistantEntity) - INSERT в БД  
+     * 3. buildMessagesForApi() -> chatMessages.value -> запрос к БД
+     * 4. В streaming loop: chatDao.finishStreaming() - UPDATE в БД
+     * 
+     * Каждый вызов:
+     * - Открывает соединение с БД
+     * - Выполняет операцию
+     * - Закрывает соединение
+     * - Вызывает invalidation tracker
+     * - Триггерит recomposition через Flow
+     * 
+     * При большом количестве сообщений (100+):
+     * - Каждая операция занимает ~5-10ms
+     * - 4 операции = 20-40ms блокировки
+     * - observeSession() может читать устаревшие данные между INSERT и UPDATE
+     * - Возможны race conditions между UI thread и DB thread
+     * 
+     * ДОЛЖНО БЫТЬ (но НЕ реализовано):
+     * ```kotlin
+     * chatDao.runInTransaction {
+     *     val userId = insert(userEntity)
+     *     val assistantId = insert(assistantEntity)
+     *     // ...
+     * }
+     * ```
+     * 
+     * Сейчас все операции выполняются последовательно БЕЗ транзакции.
      */
     fun sendMessage(userMessage: String) {
         if (userMessage.isBlank() || _isStreaming.value) return
 
         viewModelScope.launch {
-            // Получаем контекст из кеша
             val cacheContext = cacheManager.getContextForClaude()
             
-            // Проверяем состояние кеша
             if (cacheContext.isEmpty) {
                 _chatError.value = "⚠️ Cache is empty! Add files from Creator tab first."
                 return@launch
@@ -238,7 +259,8 @@ class AnalyzerViewModel @Inject constructor(
                 return@launch
             }
 
-            // 1. Сохраняем сообщение пользователя
+            // 🔴 ПРОБЛЕМА #9: INSERT #1 - Отдельная транзакция
+            // Открывает БД, вставляет, закрывает, триггерит observers
             val userEntity = ChatMessageEntity(
                 sessionId = sessionId,
                 role = MessageRole.USER,
@@ -247,7 +269,9 @@ class AnalyzerViewModel @Inject constructor(
             )
             chatDao.insert(userEntity)
 
-            // 2. Создаём placeholder для ответа
+            // 🔴 ПРОБЛЕМА #9: INSERT #2 - Ещё одна отдельная транзакция
+            // Между первым и вторым INSERT может произойти recomposition
+            // observeSession() может вернуть только userEntity без assistantEntity
             val assistantEntity = ChatMessageEntity(
                 sessionId = sessionId,
                 role = MessageRole.ASSISTANT,
@@ -257,10 +281,11 @@ class AnalyzerViewModel @Inject constructor(
             )
             val assistantId = chatDao.insert(assistantEntity)
 
-            // 3. Формируем сообщения для API
+            // 🔴 ПРОБЛЕМА #9: SELECT запрос внутри buildMessagesForApi
+            // chatMessages.value триггерит query к БД
+            // Может читать данные ДО того как assistantEntity записался
             val messages = buildMessagesForApi(userMessage, cacheContext)
 
-            // 4. Запускаем streaming
             _isStreaming.value = true
             _currentStreamingText.value = ""
             _chatError.value = null
@@ -287,11 +312,17 @@ class AnalyzerViewModel @Inject constructor(
                             fullText = result.fullText
                             tokensUsed = result.usage?.let { it.inputTokens + it.outputTokens } ?: 0
                             _tokensUsedInSession.value += tokensUsed
+                            
+                            // 🔴 ПРОБЛЕМА #9: UPDATE - Ещё одна отдельная транзакция
+                            // Между Delta updates и finishStreaming может пройти время
+                            // UI может показать старое состояние
                             chatDao.finishStreaming(assistantId, fullText, tokensUsed)
                         }
                         
                         is StreamingResult.Error -> {
                             _chatError.value = result.exception.message
+                            
+                            // 🔴 ПРОБЛЕМА #9: UPDATE при ошибке - отдельная транзакция
                             chatDao.markAsError(assistantId, result.exception.message)
                         }
                     }
@@ -309,13 +340,19 @@ class AnalyzerViewModel @Inject constructor(
         _currentStreamingText.value = ""
     }
 
+    /**
+     * 🔴 Эта функция читает chatMessages.value, что триггерит DB query
+     * Если вызвана сразу после chatDao.insert(), может получить устаревшие данные
+     */
     private fun buildMessagesForApi(
         userMessage: String,
         cacheContext: CacheContext
     ): List<ClaudeMessage> {
         val messages = mutableListOf<ClaudeMessage>()
         
-        // Добавляем историю (последние 10 сообщений)
+        // 🔴 chatMessages.value - StateFlow из observeSession()
+        // Читает из БД через Room Flow
+        // Может не видеть только что вставленные сообщения если транзакция не завершена
         val history = chatMessages.value
             .filter { it.role != MessageRole.SYSTEM && !it.isStreaming }
             .takeLast(10)
@@ -327,7 +364,6 @@ class AnalyzerViewModel @Inject constructor(
             ))
         }
 
-        // Текущее сообщение С КОНТЕКСТОМ ИЗ КЕША
         val fullMessage = """
 ${cacheContext.formattedContext}
 
@@ -404,13 +440,11 @@ Cache active: ${cacheContext.isActive}
         viewModelScope.launch {
             _actionsLoading.value = true
             
-            // Load jobs
             gitHubClient.getWorkflowJobs(runId)
                 .onSuccess { response ->
                     _runJobs.value = response.jobs
                 }
             
-            // Load artifacts
             gitHubClient.getRunArtifacts(runId)
                 .onSuccess { response ->
                     _artifacts.value = response.artifacts
@@ -445,7 +479,7 @@ Cache active: ${cacheContext.isActive}
             
             gitHubClient.triggerWorkflow(workflowId, branch)
                 .onSuccess {
-                    delay(2000) // Ждём запуска
+                    delay(2000)
                     loadWorkflowRuns()
                 }
                 .onFailure { e ->
@@ -487,7 +521,7 @@ Cache active: ${cacheContext.isActive}
         pollingJob = viewModelScope.launch {
             while (true) {
                 loadWorkflowRuns()
-                delay(10_000) // 10 секунд
+                delay(10_000)
             }
         }
     }
@@ -511,9 +545,7 @@ Cache active: ${cacheContext.isActive}
 
     fun startNewSession(): String {
         val newSessionId = UUID.randomUUID().toString()
-        savedStateHandle["session_id"] = newSessionId // ✅ ДОБАВЛЕНО: Сохраняем новый session
-        // В реальности нужно обновить sessionId, но это требует рефакторинга
-        // Пока просто очищаем UI
+        savedStateHandle["session_id"] = newSessionId
         return newSessionId
     }
 
@@ -527,3 +559,16 @@ Cache active: ${cacheContext.isActive}
         pollingJob?.cancel()
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA CLASSES (для компиляции)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+data class CacheContext(
+    val fileCount: Int = 0,
+    val filePaths: List<String> = emptyList(),
+    val formattedContext: String = "",
+    val totalTokensEstimate: Int = 0,
+    val isActive: Boolean = false,
+    val isEmpty: Boolean = fileCount == 0
+)
