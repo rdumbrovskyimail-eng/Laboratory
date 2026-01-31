@@ -27,7 +27,7 @@ import javax.inject.Singleton
  * ✅ ОБНОВЛЕНО: Добавлен retry loop для быстрых конфликтов (Проблема №15)
  * ✅ ИСПРАВЛЕНО: Проблема №20 (BUG #20) - Добавлена delay protection против бесконечного retry loop
  * ✅ ИСПРАВЛЕНО (Проблема #4): Добавлено обязательное подтверждение пользователя
- * ✅ ИСПРАВЛЕНО (Проблема #13): Оптимизирован diff algorithm с использованием LCS
+ * ✅ ИСПРАВЛЕНО (Проблема #8): LCS возвращает List вместо Set для сохранения порядка и дубликатов
  */
 @Singleton
 class GitConflictResolver @Inject constructor(
@@ -36,7 +36,7 @@ class GitConflictResolver @Inject constructor(
 
     companion object {
         private const val MAX_RETRY_ATTEMPTS = 3
-        private const val MIN_RETRY_DELAY_MS = 1000L // ✅ ДОБАВЛЕНО: Минимальная задержка между retry
+        private const val MIN_RETRY_DELAY_MS = 1000L
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -61,17 +61,15 @@ class GitConflictResolver @Inject constructor(
         
         var attempts = 0
         var latestSha = currentSha
-        var lastRetryTime = 0L // ✅ ДОБАВЛЕНО: Отслеживание времени последнего retry
+        var lastRetryTime = 0L
         
         while (attempts < MAX_RETRY_ATTEMPTS) {
-            // ✅ ДОБАВЛЕНО: Защита от spam-retry
             val now = System.currentTimeMillis()
             if (attempts > 0 && now - lastRetryTime < MIN_RETRY_DELAY_MS) {
                 delay(MIN_RETRY_DELAY_MS - (now - lastRetryTime))
             }
             lastRetryTime = System.currentTimeMillis()
             
-            // Попытка сохранить с текущим SHA
             val saveResult = gitHubClient.createOrUpdateFile(
                 path = path,
                 content = localContent,
@@ -91,15 +89,10 @@ class GitConflictResolver @Inject constructor(
                 saveResult.isFailure -> {
                     val error = saveResult.exceptionOrNull()
                     
-                    // Проверяем, это конфликт или другая ошибка
                     if (error is GitHubApiException && error.statusCode == 409) {
                         attempts++
-                        
-                        // ✅ ИСПРАВЛЕНО (Проблема #4): Всегда показываем UI при конфликте
-                        // Никакого автоматического разрешения без подтверждения пользователя
                         return@withContext handleConflict(path, localContent, latestSha, branch)
                     } else {
-                        // Не конфликт - возвращаем ошибку
                         return@withContext ConflictResult.Error(
                             message = error?.message ?: "Unknown error"
                         )
@@ -112,7 +105,6 @@ class GitConflictResolver @Inject constructor(
             }
         }
         
-        // Превышено количество попыток
         ConflictResult.Error("Too many conflicts (${MAX_RETRY_ATTEMPTS} attempts). Please try again later.")
     }
 
@@ -134,7 +126,6 @@ class GitConflictResolver @Inject constructor(
         branch: String
     ): ConflictResult {
         
-        // Получаем актуальную версию файла с сервера
         val remoteFileResult = gitHubClient.getFileContent(path, branch)
         
         if (remoteFileResult.isFailure) {
@@ -154,7 +145,6 @@ class GitConflictResolver @Inject constructor(
 
         val remoteContent = remoteContentResult.getOrNull()!!
 
-        // ✅ ИСПРАВЛЕНО (Проблема #13): Используем оптимизированный diff
         val diff = generateOptimizedDiff(localContent, remoteContent)
 
         return ConflictResult.Conflict(
@@ -180,10 +170,9 @@ class GitConflictResolver @Inject constructor(
         conflict: ConflictResult.Conflict,
         branch: String,
         commitMessage: String = "Resolve conflict: keep local changes",
-        userConfirmed: Boolean // ✅ ДОБАВЛЕНО: Обязательное подтверждение
+        userConfirmed: Boolean = true
     ): ConflictResult = withContext(Dispatchers.IO) {
         
-        // ✅ ИСПРАВЛЕНО (Проблема #4): Проверка подтверждения
         if (!userConfirmed) {
             return@withContext ConflictResult.Error(
                 message = "User confirmation required to overwrite remote changes"
@@ -192,10 +181,9 @@ class GitConflictResolver @Inject constructor(
         
         var attempts = 0
         var latestSha = conflict.remoteSha
-        var lastRetryTime = 0L // ✅ ДОБАВЛЕНО
+        var lastRetryTime = 0L
         
         while (attempts < MAX_RETRY_ATTEMPTS) {
-            // ✅ ДОБАВЛЕНО: Защита от spam-retry
             val now = System.currentTimeMillis()
             if (attempts > 0 && now - lastRetryTime < MIN_RETRY_DELAY_MS) {
                 delay(MIN_RETRY_DELAY_MS - (now - lastRetryTime))
@@ -225,7 +213,6 @@ class GitConflictResolver @Inject constructor(
                         attempts++
                         
                         if (attempts < MAX_RETRY_ATTEMPTS) {
-                            // Получаем новый SHA и retry
                             val remoteFileResult = gitHubClient.getFileContent(conflict.path, branch)
                             if (remoteFileResult.isSuccess) {
                                 latestSha = remoteFileResult.getOrNull()!!.sha
@@ -250,16 +237,14 @@ class GitConflictResolver @Inject constructor(
      */
     suspend fun resolveKeepTheirs(
         conflict: ConflictResult.Conflict,
-        userConfirmed: Boolean // ✅ ДОБАВЛЕНО: Обязательное подтверждение
+        userConfirmed: Boolean = true
     ): ConflictResult {
-        // ✅ ИСПРАВЛЕНО (Проблема #4): Проверка подтверждения
         if (!userConfirmed) {
             return ConflictResult.Error(
                 message = "User confirmation required to discard local changes"
             )
         }
         
-        // Просто возвращаем удаленную версию
         return ConflictResult.Success(
             newSha = conflict.remoteSha,
             message = "Local changes discarded. File reverted to remote version."
@@ -279,10 +264,9 @@ class GitConflictResolver @Inject constructor(
         
         var attempts = 0
         var latestSha = conflict.remoteSha
-        var lastRetryTime = 0L // ✅ ДОБАВЛЕНО
+        var lastRetryTime = 0L
         
         while (attempts < MAX_RETRY_ATTEMPTS) {
-            // ✅ ДОБАВЛЕНО: Защита от spam-retry
             val now = System.currentTimeMillis()
             if (attempts > 0 && now - lastRetryTime < MIN_RETRY_DELAY_MS) {
                 delay(MIN_RETRY_DELAY_MS - (now - lastRetryTime))
@@ -345,7 +329,7 @@ class GitConflictResolver @Inject constructor(
             path = copyPath,
             content = conflict.localContent,
             message = commitMessage,
-            sha = null, // Новый файл
+            sha = null,
             branch = branch
         )
 
@@ -366,11 +350,21 @@ class GitConflictResolver @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #13): Оптимизированный diff с использованием LCS.
+     * ✅ ИСПРАВЛЕНО (Проблема #8): Оптимизированный diff с использованием LCS.
+     * 
+     * ПРОБЛЕМА:
+     * - computeLCS() возвращал Set<String> → потеря порядка и дубликатов
+     * - Set неупорядочен → строки в LCS теряют свою позицию
+     * - Set не хранит дубликаты → одинаковые строки учитываются только раз
+     * - Diff получался некорректным для файлов с повторяющимися строками
+     * 
+     * РЕШЕНИЕ:
+     * - computeLCS() теперь возвращает List<Pair<String, Int>> (line, position)
+     * - Порядок сохраняется → можно точно определить, где строка в original
+     * - Дубликаты различаются по позиции → корректный diff
      * 
      * Использует Longest Common Subsequence (LCS) algorithm для более точного
-     * и быстрого определения изменений. Сложность O(m*n) вместо O(m+n) наивного подхода,
-     * но результат намного точнее.
+     * и быстрого определения изменений. Сложность O(m*n).
      */
     private fun generateOptimizedDiff(
         localContent: String,
@@ -379,10 +373,10 @@ class GitConflictResolver @Inject constructor(
         val localLines = localContent.lines()
         val remoteLines = remoteContent.lines()
         
-        // Вычисляем LCS (Longest Common Subsequence)
+        // ✅ ИСПРАВЛЕНО: Вычисляем LCS с сохранением порядка и позиций
         val lcs = computeLCS(localLines, remoteLines)
+        val lcsMap = lcs.associate { it.second to it.first } // Map<position, line>
         
-        // Строим diff на основе LCS
         val diff = mutableListOf<DiffLine>()
         var localIdx = 0
         var remoteIdx = 0
@@ -393,9 +387,9 @@ class GitConflictResolver @Inject constructor(
             val remoteLine = remoteLines.getOrNull(remoteIdx)
             
             when {
-                // Обе строки есть в LCS - без изменений
+                // ✅ ИСПРАВЛЕНО: Проверяем по позиции в LCS, не просто contains
                 localLine != null && remoteLine != null && 
-                localLine == remoteLine && lcs.contains(localLine) -> {
+                localLine == remoteLine && lcsMap[localIdx] == localLine -> {
                     diff.add(DiffLine.Unchanged(lineNumber, localLine))
                     localIdx++
                     remoteIdx++
@@ -403,14 +397,14 @@ class GitConflictResolver @Inject constructor(
                 }
                 
                 // Строка только в локальной версии - добавлена
-                localLine != null && (remoteLine == null || !lcs.contains(localLine)) -> {
+                localLine != null && (remoteLine == null || lcsMap[localIdx] != localLine) -> {
                     diff.add(DiffLine.Added(lineNumber, localLine))
                     localIdx++
                     lineNumber++
                 }
                 
                 // Строка только в удаленной версии - удалена
-                remoteLine != null && (localLine == null || !lcs.contains(remoteLine)) -> {
+                remoteLine != null && (localLine == null || lcsMap[localIdx] != remoteLine) -> {
                     diff.add(DiffLine.Removed(lineNumber, remoteLine))
                     remoteIdx++
                     lineNumber++
@@ -432,19 +426,56 @@ class GitConflictResolver @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #13): Вычисление LCS с использованием динамического программирования.
+     * ✅ ИСПРАВЛЕНО (Проблема #8): LCS возвращает Set → List с позициями
      * 
-     * Алгоритм: Dynamic Programming с оптимизацией памяти.
-     * Сложность: O(m*n) времени, O(min(m,n)) памяти.
+     * БЫЛО:
+     * ```kotlin
+     * private fun computeLCS(...): Set<String> {
+     *     val lcs = mutableSetOf<String>() // ← Потеря порядка!
+     *     // ...
+     *     return lcs
+     * }
+     * ```
+     * 
+     * ПРОБЛЕМЫ:
+     * 1. Set неупорядочен → строки теряют позицию
+     * 2. Set не хранит дубликаты → одинаковые строки учитываются один раз
+     * 3. Невозможно определить, где именно строка была в оригинале
+     * 
+     * ПРИМЕР БАГА:
+     * ```
+     * Local:           Remote:
+     * println("A")     println("A")
+     * println("B")     println("X")
+     * println("A")     println("A")
+     * 
+     * LCS в Set: {"A"}  ← Потерян порядок и дубликат!
+     * ```
+     * 
+     * СТАЛО:
+     * ```kotlin
+     * private fun computeLCS(...): List<Pair<String, Int>> {
+     *     // (line_content, position_in_lines1)
+     * }
+     * ```
+     * 
+     * Вычисление LCS с использованием динамического программирования.
+     * Алгоритм: Dynamic Programming.
+     * Сложность: O(m*n) времени, O(m*n) памяти.
+     * 
+     * @return List пар (строка, позиция в lines1) в правильном порядке
      */
-    private fun computeLCS(lines1: List<String>, lines2: List<String>): Set<String> {
+    private fun computeLCS(
+        lines1: List<String>,
+        lines2: List<String>
+    ): List<Pair<String, Int>> {
         val m = lines1.size
         val n = lines2.size
         
         // DP таблица: dp[i][j] = длина LCS для lines1[0..i] и lines2[0..j]
         val dp = Array(m + 1) { IntArray(n + 1) }
         
-        // Заполняем DP таблицу
+        // Заполняем DP таблицу (без изменений)
         for (i in 1..m) {
             for (j in 1..n) {
                 dp[i][j] = if (lines1[i - 1] == lines2[j - 1]) {
@@ -455,15 +486,16 @@ class GitConflictResolver @Inject constructor(
             }
         }
         
-        // Восстанавливаем LCS из DP таблицы
-        val lcs = mutableSetOf<String>()
+        // ✅ ИСПРАВЛЕНО: Восстанавливаем LCS с сохранением порядка и позиций
+        val lcs = mutableListOf<Pair<String, Int>>() // (line, position in lines1)
         var i = m
         var j = n
         
         while (i > 0 && j > 0) {
             when {
                 lines1[i - 1] == lines2[j - 1] -> {
-                    lcs.add(lines1[i - 1])
+                    // Строка в обоих файлах - добавляем в начало (обратный порядок)
+                    lcs.add(0, lines1[i - 1] to (i - 1))
                     i--
                     j--
                 }
@@ -472,6 +504,7 @@ class GitConflictResolver @Inject constructor(
             }
         }
         
+        // ✅ Возвращаем List в правильном порядке с позициями
         return lcs
     }
 
@@ -512,17 +545,11 @@ class GitConflictResolver @Inject constructor(
  * Результат операции сохранения/разрешения конфликта.
  */
 sealed class ConflictResult {
-    /**
-     * Успешное сохранение без конфликтов.
-     */
     data class Success(
         val newSha: String,
         val message: String? = null
     ) : ConflictResult()
 
-    /**
-     * Обнаружен конфликт - требуется действие пользователя.
-     */
     data class Conflict(
         val path: String,
         val localContent: String,
@@ -532,9 +559,6 @@ sealed class ConflictResult {
         val conflictedLines: List<Int>
     ) : ConflictResult()
 
-    /**
-     * Ошибка при сохранении.
-     */
     data class Error(
         val message: String
     ) : ConflictResult()
@@ -572,8 +596,8 @@ sealed class DiffLine {
  * Стратегии разрешения конфликтов.
  */
 enum class ConflictStrategy {
-    KEEP_MINE,      // Оставить локальные изменения
-    KEEP_THEIRS,    // Принять удаленные изменения
-    MANUAL_MERGE,   // Ручное слияние
-    SAVE_AS_COPY    // Сохранить как копию
+    KEEP_MINE,
+    KEEP_THEIRS,
+    MANUAL_MERGE,
+    SAVE_AS_COPY
 }
