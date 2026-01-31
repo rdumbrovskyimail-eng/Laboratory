@@ -53,14 +53,11 @@ private val Context.cacheTimerDataStore: DataStore<Preferences> by preferencesDa
  *    - UI всегда показывает актуальное время
  *    - Нет рассинхронизации между UI и реальным состоянием
  * 
- * ✅ ИСПРАВЛЕНО:
- * - Проблема №5: Race condition в init - сначала загружаем config, потом восстанавливаем таймер
- * - Проблема №13: Добавлен лимит MAX_FILE_SIZE (1MB) для защиты от переполнения БД
- * - Проблема №16: Детекция прыжков системного времени с использованием монотонных часов
- * - Проблема №20: Проверка дубликатов перед добавлением в кеш
- * - CRASH #3: Race condition с Mutex для синхронизации доступа к tickerJob
- * - CRASH #5: Исправлен timer drift с отрицательными timestamps
- * - BUG #16: Таймер учитывает изменение настроек таймаута
+ * 🔴 ПРОБЛЕМЫ:
+ * - Проблема №1: Race condition в init - restoreTimerState() вызывается до загрузки config
+ * - Проблема №5: Timer drift при sleep/resume - использует wall-clock вместо monotonic
+ * - Проблема №7: WorkManager duplicate enqueue - не проверяет существующие задачи
+ * - Проблема №11: God Object - слишком много ответственностей в одном классе (29KB)
  */
 @Singleton
 class PersistentCacheManager @Inject constructor(
@@ -71,8 +68,8 @@ class PersistentCacheManager @Inject constructor(
     companion object {
         private const val TIMER_WORK_TAG = "cache_timer_cleanup"
         private const val NOTIFICATION_WORK_TAG = "cache_timer_warning"
-        private const val MAX_FILE_SIZE = 1 * 1024 * 1024  // ✅ ДОБАВЛЕНО: 1MB лимит
-        private const val TIME_JUMP_THRESHOLD_MS = 5000L  // ✅ ДОБАВЛЕНО: Порог детекции прыжка времени
+        private const val MAX_FILE_SIZE = 1 * 1024 * 1024
+        private const val TIME_JUMP_THRESHOLD_MS = 5000L
         
         // DataStore keys
         private val KEY_END_TIMESTAMP = longPreferencesKey("cache_end_timestamp")
@@ -86,12 +83,12 @@ class PersistentCacheManager @Inject constructor(
     private val workManager = WorkManager.getInstance(context)
     private val timerDataStore = context.cacheTimerDataStore
 
-    // ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для синхронизации
     private val timerMutex = Mutex()
     private var tickerJob: Job? = null
     private var currentTimeoutMs: Long = 5 * 60 * 1000L
 
-    // ✅ ДОБАВЛЕНО: Проблема №16 - Монотонные часы для детекции прыжков времени
+    // 🔴 ПРОБЛЕМА #5: Timer Drift - Использование wall-clock времени
+    // При sleep/resume устройства wall-clock может прыгать, но мы его не детектируем должным образом
     private var tickerStartMonotonicTime: Long = 0L
     private var tickerStartWallTime: Long = 0L
 
@@ -147,37 +144,16 @@ class PersistentCacheManager @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     init {
-        // ✅ ИСПРАВЛЕНО: Проблема №5 - Race condition
-        // Сначала загружаем настройки, потом восстанавливаем таймер
+        // 🔴 ПРОБЛЕМА #1: Race Condition в init (строки 93-107)
+        // restoreTimerState() вызывается ДО загрузки config из appSettings
+        // Если таймер был активен и сохранен с другим timeout, произойдет рассинхронизация
         scope.launch {
-            // Сначала загружаем настройки
-            val config = appSettings.cacheConfig.first()
-            currentTimeoutMs = config.timeoutMs
-            
-            // Потом восстанавливаем таймер
+            // 🔴 Вызываем восстановление ДО загрузки настроек
             restoreTimerState()
             
-            // ✅ ИСПРАВЛЕНО: BUG #16 - Обновление активного таймера при изменении настроек
-            appSettings.cacheConfig.collect { newConfig ->
-                val oldTimeout = currentTimeoutMs
-                currentTimeoutMs = newConfig.timeoutMs
-                
-                // Если таймер активен И таймаут изменился
-                if (_timerState.value == TimerState.RUNNING && oldTimeout != currentTimeoutMs) {
-                    // Пересчитываем endTimestamp с новым таймаутом
-                    timerMutex.withLock {
-                        val prefs = timerDataStore.data.first()
-                        val oldEndTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
-                        val now = Clock.System.now().toEpochMilliseconds()
-                        val elapsed = now - (oldEndTimestamp - oldTimeout)
-                        val newEndTimestamp = now + (currentTimeoutMs - elapsed).coerceAtLeast(0)
-                        
-                        saveTimerState(isActive = true, endTimestamp = newEndTimestamp)
-                        
-                        android.util.Log.d("CacheManager", 
-                            "⏱️ Timer timeout changed from ${oldTimeout}ms to ${currentTimeoutMs}ms")
-                    }
-                }
+            // Config загружается ПОСЛЕ, но currentTimeoutMs уже использован в restoreTimerState()
+            appSettings.cacheConfig.collect { config ->
+                currentTimeoutMs = config.timeoutMs
             }
         }
     }
@@ -185,6 +161,8 @@ class PersistentCacheManager @Inject constructor(
     /**
      * Восстанавливает состояние таймера из DataStore.
      * Вызывается при старте приложения.
+     * 
+     * 🔴 ПРОБЛЕМА #1: Использует currentTimeoutMs до его инициализации из appSettings
      */
     private suspend fun restoreTimerState() {
         val prefs = timerDataStore.data.first()
@@ -192,6 +170,7 @@ class PersistentCacheManager @Inject constructor(
         val endTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
         val savedTimeoutMs = prefs[KEY_TIMEOUT_MS] ?: currentTimeoutMs
 
+        // 🔴 currentTimeoutMs еще не загружен из appSettings!
         currentTimeoutMs = savedTimeoutMs
 
         if (isActive && endTimestamp > 0) {
@@ -199,14 +178,12 @@ class PersistentCacheManager @Inject constructor(
             val remainingMs = endTimestamp - now
 
             if (remainingMs > 0) {
-                // Таймер ещё не истёк - восстанавливаем
                 _remainingSeconds.value = (remainingMs / 1000).toInt()
                 _timerState.value = TimerState.RUNNING
                 startTicker()
                 
                 android.util.Log.d("CacheManager", "✅ Timer restored: ${_remainingSeconds.value}s remaining")
             } else {
-                // Таймер истёк пока приложение было закрыто
                 onTimerExpired()
                 android.util.Log.d("CacheManager", "⏱️ Timer expired while app was closed")
             }
@@ -231,23 +208,18 @@ class PersistentCacheManager @Inject constructor(
     // CACHE OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ ОБНОВЛЕНО: Проблема №13, №20 - Проверка размера и дубликатов
-     */
     suspend fun addFile(file: CachedFileEntity): Result<Unit> {
         return try {
-            // ✅ ДОБАВЛЕНО: Проблема №13 - Проверка размера файла
             if (file.sizeBytes > MAX_FILE_SIZE) {
                 return Result.failure(IllegalArgumentException(
                     "File too large: ${file.sizeBytes} bytes (max ${MAX_FILE_SIZE / 1024 / 1024}MB)"
                 ))
             }
             
-            // ✅ ДОБАВЛЕНО: Проблема №20 - Проверка дубликатов
             val existing = cacheDao.getByPath(file.filePath)
             if (existing != null) {
                 android.util.Log.d("CacheManager", "⚠️ File already in cache: ${file.filePath}")
-                return Result.success(Unit) // Уже есть, не добавляем повторно
+                return Result.success(Unit)
             }
             
             val maxFiles = appSettings.maxCacheFiles.first()
@@ -266,12 +238,8 @@ class PersistentCacheManager @Inject constructor(
         }
     }
 
-    /**
-     * ✅ ОБНОВЛЕНО: Проблема №13, №20 - Проверка размера и дубликатов
-     */
     suspend fun addFiles(files: List<CachedFileEntity>): Result<Int> {
         return try {
-            // ✅ ДОБАВЛЕНО: Проблема №13 - Проверка размера каждого файла
             val oversizedFiles = files.filter { it.sizeBytes > MAX_FILE_SIZE }
             if (oversizedFiles.isNotEmpty()) {
                 return Result.failure(IllegalArgumentException(
@@ -279,7 +247,6 @@ class PersistentCacheManager @Inject constructor(
                 ))
             }
             
-            // ✅ ДОБАВЛЕНО: Проблема №20 - Фильтрация дубликатов
             val newFiles = mutableListOf<CachedFileEntity>()
             val duplicates = mutableListOf<String>()
             
@@ -296,7 +263,7 @@ class PersistentCacheManager @Inject constructor(
             }
             
             if (newFiles.isEmpty()) {
-                return Result.success(0) // Все файлы были дубликатами
+                return Result.success(0)
             }
             
             val maxFiles = appSettings.maxCacheFiles.first()
@@ -401,13 +368,10 @@ class PersistentCacheManager @Inject constructor(
             _remainingSeconds.value = totalSeconds
             _timerState.value = TimerState.RUNNING
 
-            // Сохраняем в DataStore
             saveTimerState(isActive = true, endTimestamp = endTimestamp)
 
-            // Запускаем UI ticker
             startTicker()
 
-            // Планируем фоновую очистку через WorkManager
             scheduleBackgroundCleanup(currentTimeoutMs)
 
             android.util.Log.d("CacheManager", "✅ Timer started: ${totalSeconds}s, ends at $endTimestamp")
@@ -415,13 +379,24 @@ class PersistentCacheManager @Inject constructor(
     }
 
     /**
-     * ✅ ОБНОВЛЕНО: Проблема №16 - Ticker с детекцией прыжков системного времени.
-     * ✅ ИСПРАВЛЕНО: CRASH #5 - Исправлен отрицательный timestamp при timer drift
+     * 🔴 ПРОБЛЕМА #5: Timer Drift при Sleep/Resume (строки 179-207)
+     * 
+     * Использует System.currentTimeMillis() (wall-clock) для детекции прыжков времени.
+     * При переходе в сон/пробуждении устройства wall-clock может прыгать из-за NTP sync,
+     * смены часовых поясов, ручной настройки времени.
+     * 
+     * SystemClock.elapsedRealtime() (monotonic clock) продолжает идти во время сна,
+     * но здесь используется только для вычисления drift, а не как основной источник времени.
+     * 
+     * При сильном drift (>5 сек) пересчитываем endTimestamp, но:
+     * - Может случиться ложное срабатывание при NTP sync (±1-2 сек)
+     * - Может НЕ сработать если wall-clock скорректировался плавно
+     * - Не учитывает что монотонное время ОСТАНАВЛИВАЕТСЯ в некоторых режимах сна
      */
     private fun startTicker() {
         tickerJob?.cancel()
         
-        // ✅ ДОБАВЛЕНО: Запоминаем точки отсчета для обоих типов часов
+        // 🔴 Запоминаем оба типа часов, но используем wall-clock как основной
         tickerStartMonotonicTime = SystemClock.elapsedRealtime()
         tickerStartWallTime = System.currentTimeMillis()
         
@@ -429,7 +404,7 @@ class PersistentCacheManager @Inject constructor(
             while (isActive && _remainingSeconds.value > 0) {
                 delay(1000)
                 
-                // ✅ ДОБАВЛЕНО: Проверка прыжка времени
+                // 🔴 Проверка drift между монотонным и wall-clock временем
                 val currentMonotonicTime = SystemClock.elapsedRealtime()
                 val currentWallTime = System.currentTimeMillis()
                 
@@ -438,19 +413,24 @@ class PersistentCacheManager @Inject constructor(
                 
                 val timeDrift = abs(monotonicElapsed - wallElapsed)
                 
+                // 🔴 Детекция прыжка только если drift > 5 секунд
+                // Проблемы:
+                // 1. NTP sync может дать ±2 сек - не детектируем
+                // 2. Плавная коррекция времени (adjtime) - не детектируем
+                // 3. SystemClock.elapsedRealtime() ОСТАНАВЛИВАЕТСЯ в некоторых режимах deep sleep
                 if (timeDrift > TIME_JUMP_THRESHOLD_MS) {
                     android.util.Log.w(
                         "CacheManager", 
                         "⚠️ Time jump detected! Drift: ${timeDrift}ms. Recalculating based on monotonic clock..."
                     )
                     
-                    // Пересчитываем endTimestamp на основе монотонного времени
                     val prefs = timerDataStore.data.first()
                     
-                    // Вычисляем сколько РЕАЛЬНО прошло времени (по монотонным часам)
+                    // 🔴 Пересчет на основе монотонного времени, но:
+                    // - Монотонные часы могут остановиться в deep sleep
+                    // - realElapsedSinceStart может быть меньше реального времени сна
                     val realElapsedSinceStart = monotonicElapsed
                     
-                    // ✅ ИСПРАВЛЕНО: CRASH #5 - Защита от отрицательных значений
                     val remainingMs = (currentTimeoutMs - realElapsedSinceStart).coerceAtLeast(0)
                     val newEndTimestamp = currentWallTime + remainingMs
                     
@@ -461,7 +441,7 @@ class PersistentCacheManager @Inject constructor(
                     tickerStartWallTime = currentWallTime
                 }
                 
-                // Пересчитываем оставшееся время из saved endTimestamp
+                // 🔴 Основной расчет через saved endTimestamp (wall-clock based)
                 val prefs = timerDataStore.data.first()
                 val endTimestamp = prefs[KEY_END_TIMESTAMP] ?: 0L
                 val now = Clock.System.now().toEpochMilliseconds()
@@ -485,21 +465,27 @@ class PersistentCacheManager @Inject constructor(
      * - Приложение закрыто
      * - Процесс убит
      * - Устройство перезагружено (после boot)
+     * 
+     * 🔴 ПРОБЛЕМА #7: WorkManager Duplicate Enqueue (строки 249-273)
+     * Не проверяет существующие задачи перед добавлением новых.
+     * При быстрых вызовах resetTimer() может создать несколько одинаковых задач.
      */
     private fun scheduleBackgroundCleanup(delayMs: Long) {
-        // Отменяем предыдущие задачи
+        // 🔴 cancelAllWorkByTag() асинхронный - не ждем завершения
+        // Следующий enqueue() может выполниться ДО завершения отмены
         workManager.cancelAllWorkByTag(TIMER_WORK_TAG)
         workManager.cancelAllWorkByTag(NOTIFICATION_WORK_TAG)
 
-        // Задача очистки (выполнится ровно через delayMs)
+        // 🔴 Нет проверки: может быть уже запланирована задача с тем же тегом
+        // Если cancelAllWorkByTag() еще не завершился, создастся дубликат
         val cleanupRequest = OneTimeWorkRequestBuilder<CacheCleanupWorker>()
             .setInitialDelay(delayMs, TimeUnit.MILLISECONDS)
             .addTag(TIMER_WORK_TAG)
             .build()
 
-        // Задача предупреждения (за 1 минуту до истечения)
         val warningDelayMs = (delayMs - 60_000).coerceAtLeast(0)
         if (warningDelayMs > 0) {
+            // 🔴 Та же проблема - может создать дубликат warning задачи
             val warningRequest = OneTimeWorkRequestBuilder<CacheWarningWorker>()
                 .setInitialDelay(warningDelayMs, TimeUnit.MILLISECONDS)
                 .addTag(NOTIFICATION_WORK_TAG)
@@ -508,14 +494,13 @@ class PersistentCacheManager @Inject constructor(
             workManager.enqueue(warningRequest)
         }
 
+        // 🔴 enqueue() не проверяет uniqueWork - могут быть дубликаты
+        // Правильно использовать enqueueUniqueWork() с REPLACE или UPDATE
         workManager.enqueue(cleanupRequest)
         
         android.util.Log.d("CacheManager", "📅 Scheduled background cleanup in ${delayMs}ms")
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для потокобезопасности
-     */
     fun pauseTimer() {
         if (_timerState.value == TimerState.RUNNING) {
             scope.launch {
@@ -534,9 +519,6 @@ class PersistentCacheManager @Inject constructor(
         }
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для потокобезопасности
-     */
     fun resumeTimer() {
         if (_timerState.value == TimerState.PAUSED && _remainingSeconds.value > 0) {
             scope.launch {
@@ -560,9 +542,6 @@ class PersistentCacheManager @Inject constructor(
         }
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: CRASH #3 - Добавлен Mutex для потокобезопасности
-     */
     fun stopTimer() {
         scope.launch {
             timerMutex.withLock {
@@ -604,9 +583,6 @@ class PersistentCacheManager @Inject constructor(
         }
     }
 
-    /**
-     * Вызывается когда таймер истёк.
-     */
     private suspend fun onTimerExpired() {
         _timerState.value = TimerState.EXPIRED
 
@@ -636,8 +612,6 @@ class PersistentCacheManager @Inject constructor(
 /**
  * Background worker для очистки кеша.
  * Выполняется ровно через 5 минут, даже если приложение закрыто.
- * 
- * ✅ ИСПРАВЛЕНО: Проблема №3 - Использует @HiltWorker и @AssistedInject для DI
  */
 @HiltWorker
 class CacheCleanupWorker @AssistedInject constructor(
@@ -649,15 +623,12 @@ class CacheCleanupWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         android.util.Log.d("CacheCleanupWorker", "🗑️ Executing background cache cleanup")
 
-        // Очищаем кеш через инжектированный DAO
         cacheDao.clearAll()
 
-        // Сбрасываем состояние таймера
         applicationContext.cacheTimerDataStore.edit { prefs ->
             prefs.clear()
         }
 
-        // Показываем нотификацию
         CacheNotificationHelper.showCacheExpiredNotification(applicationContext)
 
         return Result.success()
@@ -666,8 +637,6 @@ class CacheCleanupWorker @AssistedInject constructor(
 
 /**
  * Worker для предупреждения (за 1 минуту до истечения).
- * 
- * ✅ ИСПРАВЛЕНО: Проблема №3 - Использует @HiltWorker и @AssistedInject для DI
  */
 @HiltWorker
 class CacheWarningWorker @AssistedInject constructor(
@@ -681,5 +650,31 @@ class CacheWarningWorker @AssistedInject constructor(
         CacheNotificationHelper.showCacheWarningNotification(applicationContext)
 
         return Result.success()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA CLASSES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+enum class TimerState {
+    STOPPED, RUNNING, PAUSED, EXPIRED
+}
+
+data class CacheContext(
+    val files: List<CachedFileEntity>,
+    val formattedContext: String,
+    val totalTokensEstimate: Int,
+    val isActive: Boolean
+)
+
+// Placeholder для notification helper
+object CacheNotificationHelper {
+    fun showCacheExpiredNotification(context: Context) {
+        // Показывает нотификацию "Cache expired"
+    }
+    
+    fun showCacheWarningNotification(context: Context) {
+        // Показывает нотификацию "Cache expires in 1 minute"
     }
 }
