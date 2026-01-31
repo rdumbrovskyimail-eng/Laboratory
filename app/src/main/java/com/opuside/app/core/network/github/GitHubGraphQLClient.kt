@@ -21,20 +21,35 @@ import javax.inject.Singleton
  * 
  * Позволяет загружать до 20 файлов одним запросом,
  * что значительно быстрее REST API.
+ * 
+ * ✅ ИСПРАВЛЕНО:
+ * - Проблема №4: Добавлена валидация BuildConfig полей
+ * - Проблема №10: Добавлена проверка размера файлов и разбиение на batches
  */
 @Singleton
 class GitHubGraphQLClient @Inject constructor(
     @Named("github") private val httpClient: HttpClient,
-    private val json: Json
+    private val json: Json,
+    private val gitHubClient: GitHubApiClient // ✅ ДОБАВЛЕНО: Для получения размеров файлов
 ) {
     companion object {
         private const val GRAPHQL_URL = "https://api.github.com/graphql"
         private const val MAX_FILES_PER_REQUEST = 20
+        private const val MAX_BATCH_SIZE_BYTES = 500_000 // ✅ ДОБАВЛЕНО: 500KB на batch
     }
 
-    private val owner: String get() = BuildConfig.GITHUB_OWNER
-    private val repo: String get() = BuildConfig.GITHUB_REPO
-    private val token: String get() = BuildConfig.GITHUB_TOKEN
+    // ✅ ИСПРАВЛЕНО: Проблема №4 - Валидация BuildConfig полей
+    private val owner: String
+        get() = BuildConfig.GITHUB_OWNER.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("GITHUB_OWNER not configured in local.properties")
+
+    private val repo: String
+        get() = BuildConfig.GITHUB_REPO.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("GITHUB_REPO not configured in local.properties")
+
+    private val token: String
+        get() = BuildConfig.GITHUB_TOKEN.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("GITHUB_TOKEN not configured in local.properties")
 
     // ═══════════════════════════════════════════════════════════════════════════
     // BATCH FILE LOADING
@@ -43,6 +58,8 @@ class GitHubGraphQLClient @Inject constructor(
     /**
      * Загрузить несколько файлов одним запросом.
      * 
+     * ✅ ИСПРАВЛЕНО: Проблема №10 - Разбиение на batches по размеру
+     * 
      * @param paths Список путей к файлам (макс 20)
      * @param ref Ветка или коммит (опционально)
      * @return Map<путь, содержимое>
@@ -50,6 +67,63 @@ class GitHubGraphQLClient @Inject constructor(
     suspend fun getMultipleFiles(
         paths: List<String>,
         ref: String = "HEAD"
+    ): Result<Map<String, FileContent>> {
+        if (paths.isEmpty()) return Result.success(emptyMap())
+
+        // ✅ ДОБАВЛЕНО: Проблема №10 - Получаем размеры файлов через REST API
+        val filesWithSize = mutableListOf<Pair<String, Int>>()
+        for (path in paths) {
+            val result = gitHubClient.getFileContent(path, ref)
+            result.onSuccess { content ->
+                filesWithSize.add(path to (content.size ?: 0))
+            }.onFailure {
+                // Если не удалось получить размер, считаем файл небольшим
+                filesWithSize.add(path to 1000)
+            }
+        }
+
+        // ✅ ДОБАВЛЕНО: Проблема №10 - Делим на batches по размеру и количеству
+        val batches = mutableListOf<List<String>>()
+        var currentBatch = mutableListOf<String>()
+        var currentSize = 0
+
+        filesWithSize.forEach { (path, size) ->
+            if (currentSize + size > MAX_BATCH_SIZE_BYTES || currentBatch.size >= MAX_FILES_PER_REQUEST) {
+                if (currentBatch.isNotEmpty()) {
+                    batches.add(currentBatch)
+                    currentBatch = mutableListOf()
+                    currentSize = 0
+                }
+            }
+            currentBatch.add(path)
+            currentSize += size
+        }
+
+        if (currentBatch.isNotEmpty()) {
+            batches.add(currentBatch)
+        }
+
+        // ✅ ДОБАВЛЕНО: Проблема №10 - Загружаем batches последовательно
+        val allFiles = mutableMapOf<String, FileContent>()
+        for (batch in batches) {
+            val result = loadBatch(batch, ref)
+            result.onSuccess { files ->
+                allFiles.putAll(files)
+            }.onFailure { error ->
+                // Если хотя бы один batch провалился, возвращаем ошибку
+                return Result.failure(error)
+            }
+        }
+
+        return Result.success(allFiles)
+    }
+
+    /**
+     * ✅ ДОБАВЛЕНО: Проблема №10 - Загрузка одного batch
+     */
+    private suspend fun loadBatch(
+        paths: List<String>,
+        ref: String
     ): Result<Map<String, FileContent>> {
         if (paths.isEmpty()) return Result.success(emptyMap())
         if (paths.size > MAX_FILES_PER_REQUEST) {
