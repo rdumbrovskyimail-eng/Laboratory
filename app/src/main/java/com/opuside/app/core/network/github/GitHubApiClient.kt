@@ -12,6 +12,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Named
@@ -24,6 +25,10 @@ import javax.inject.Singleton
  * - Операции с файлами (CRUD)
  * - GitHub Actions (запуск, статус, логи)
  * - Артефакты
+ * 
+ * ✅ ИСПРАВЛЕНО:
+ * - Проблема №4: Добавлена валидация BuildConfig полей
+ * - Проблема №11: Добавлен retry logic с exponential backoff
  */
 @Singleton
 class GitHubApiClient @Inject constructor(
@@ -35,9 +40,18 @@ class GitHubApiClient @Inject constructor(
         private const val API_VERSION = "2022-11-28"
     }
 
-    private val owner: String get() = BuildConfig.GITHUB_OWNER
-    private val repo: String get() = BuildConfig.GITHUB_REPO
-    private val token: String get() = BuildConfig.GITHUB_TOKEN
+    // ✅ ИСПРАВЛЕНО: Проблема №4 - Валидация BuildConfig полей
+    private val owner: String
+        get() = BuildConfig.GITHUB_OWNER.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("GITHUB_OWNER not configured in local.properties")
+
+    private val repo: String
+        get() = BuildConfig.GITHUB_REPO.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("GITHUB_REPO not configured in local.properties")
+
+    private val token: String
+        get() = BuildConfig.GITHUB_TOKEN.takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("GITHUB_TOKEN not configured in local.properties")
 
     // ═══════════════════════════════════════════════════════════════════════════
     // REPOSITORY CONTENT
@@ -319,36 +333,92 @@ class GitHubApiClient @Inject constructor(
         header("X-GitHub-Api-Version", API_VERSION)
     }
 
+    /**
+     * ✅ ИСПРАВЛЕНО: Проблема №11 - Добавлен retry logic с exponential backoff
+     */
     private suspend inline fun <reified T> apiCall(
+        maxRetries: Int = 3,
+        initialDelayMs: Long = 1000,
         crossinline block: suspend () -> HttpResponse
     ): Result<T> {
-        return try {
-            val response = block()
-            
-            if (response.status.isSuccess()) {
-                Result.success(response.body<T>())
-            } else {
-                Result.failure(parseError(response))
+        var currentDelay = initialDelayMs
+
+        repeat(maxRetries) { attempt ->
+            try {
+                val response = block()
+
+                if (response.status.isSuccess()) {
+                    return Result.success(response.body<T>())
+                }
+
+                // Не retry для client errors (4xx кроме 429 Rate Limit)
+                if (response.status.value in 400..499 && response.status.value != 429) {
+                    return Result.failure(parseError(response))
+                }
+
+                // Последняя попытка - возвращаем ошибку
+                if (attempt == maxRetries - 1) {
+                    return Result.failure(parseError(response))
+                }
+
+                // Exponential backoff
+                delay(currentDelay)
+                currentDelay *= 2
+
+            } catch (e: Exception) {
+                if (attempt == maxRetries - 1) {
+                    return Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
+                }
+                delay(currentDelay)
+                currentDelay *= 2
             }
-        } catch (e: Exception) {
-            Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
         }
+
+        return Result.failure(GitHubApiException("max_retries", "Max retries exceeded"))
     }
 
+    /**
+     * ✅ ИСПРАВЛЕНО: Проблема №11 - Добавлен retry logic с exponential backoff
+     */
     private suspend fun apiCallUnit(
+        maxRetries: Int = 3,
+        initialDelayMs: Long = 1000,
         block: suspend () -> HttpResponse
     ): Result<Unit> {
-        return try {
-            val response = block()
-            
-            if (response.status.isSuccess() || response.status == HttpStatusCode.NoContent) {
-                Result.success(Unit)
-            } else {
-                Result.failure(parseError(response))
+        var currentDelay = initialDelayMs
+
+        repeat(maxRetries) { attempt ->
+            try {
+                val response = block()
+
+                if (response.status.isSuccess() || response.status == HttpStatusCode.NoContent) {
+                    return Result.success(Unit)
+                }
+
+                // Не retry для client errors (4xx кроме 429 Rate Limit)
+                if (response.status.value in 400..499 && response.status.value != 429) {
+                    return Result.failure(parseError(response))
+                }
+
+                // Последняя попытка - возвращаем ошибку
+                if (attempt == maxRetries - 1) {
+                    return Result.failure(parseError(response))
+                }
+
+                // Exponential backoff
+                delay(currentDelay)
+                currentDelay *= 2
+
+            } catch (e: Exception) {
+                if (attempt == maxRetries - 1) {
+                    return Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
+                }
+                delay(currentDelay)
+                currentDelay *= 2
             }
-        } catch (e: Exception) {
-            Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
         }
+
+        return Result.failure(GitHubApiException("max_retries", "Max retries exceeded"))
     }
 
     private suspend fun parseError(response: HttpResponse): GitHubApiException {
