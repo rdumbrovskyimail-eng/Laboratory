@@ -22,18 +22,25 @@ import javax.inject.Singleton
  * - KEEP_THEIRS: отменить локальные изменения
  * - MANUAL_MERGE: 3-way diff для ручного слияния
  * - SAVE_AS_COPY: сохранить как новый файл
+ * 
+ * ✅ ОБНОВЛЕНО: Добавлен retry loop для быстрых конфликтов (Проблема №15)
  */
 @Singleton
 class GitConflictResolver @Inject constructor(
     private val gitHubClient: GitHubApiClient
 ) {
 
+    companion object {
+        private const val MAX_RETRY_ATTEMPTS = 3
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // CONFLICT DETECTION
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Безопасное сохранение файла с автоматической обработкой конфликтов.
+     * ✅ ОБНОВЛЕНО (Проблема №15): Безопасное сохранение файла с автоматической 
+     * обработкой конфликтов и retry loop для быстрых изменений.
      * 
      * @return ConflictResult с информацией о результате
      */
@@ -45,37 +52,68 @@ class GitConflictResolver @Inject constructor(
         commitMessage: String
     ): ConflictResult = withContext(Dispatchers.IO) {
         
-        // Попытка №1: Обычное сохранение
-        val saveResult = gitHubClient.createOrUpdateFile(
-            path = path,
-            content = localContent,
-            message = commitMessage,
-            sha = currentSha,
-            branch = branch
-        )
+        var attempts = 0
+        var latestSha = currentSha
+        
+        while (attempts < MAX_RETRY_ATTEMPTS) {
+            // Попытка сохранить с текущим SHA
+            val saveResult = gitHubClient.createOrUpdateFile(
+                path = path,
+                content = localContent,
+                message = commitMessage,
+                sha = latestSha,
+                branch = branch
+            )
 
-        when {
-            saveResult.isSuccess -> {
-                ConflictResult.Success(
-                    newSha = saveResult.getOrNull()!!.content.sha
-                )
-            }
-            
-            saveResult.isFailure -> {
-                val error = saveResult.exceptionOrNull()
-                
-                // Проверяем, это конфликт или другая ошибка
-                if (error is GitHubApiException && error.statusCode == 409) {
-                    handleConflict(path, localContent, currentSha, branch)
-                } else {
-                    ConflictResult.Error(
-                        message = error?.message ?: "Unknown error"
+            when {
+                saveResult.isSuccess -> {
+                    return@withContext ConflictResult.Success(
+                        newSha = saveResult.getOrNull()!!.content.sha,
+                        message = if (attempts > 0) "Saved after $attempts retry attempts" else null
                     )
                 }
+                
+                saveResult.isFailure -> {
+                    val error = saveResult.exceptionOrNull()
+                    
+                    // Проверяем, это конфликт или другая ошибка
+                    if (error is GitHubApiException && error.statusCode == 409) {
+                        attempts++
+                        
+                        // Первый конфликт - показываем UI для разрешения
+                        if (attempts == 1) {
+                            return@withContext handleConflict(path, localContent, latestSha, branch)
+                        }
+                        
+                        // Последующие конфликты - пытаемся auto-retry с новым SHA
+                        if (attempts < MAX_RETRY_ATTEMPTS) {
+                            // Получаем актуальный SHA и retry
+                            val remoteFileResult = gitHubClient.getFileContent(path, branch)
+                            if (remoteFileResult.isSuccess) {
+                                latestSha = remoteFileResult.getOrNull()!!.sha
+                                continue // Retry с новым SHA
+                            } else {
+                                return@withContext ConflictResult.Error(
+                                    message = "Failed to fetch latest version for retry: ${remoteFileResult.exceptionOrNull()?.message}"
+                                )
+                            }
+                        }
+                    } else {
+                        // Не конфликт - возвращаем ошибку
+                        return@withContext ConflictResult.Error(
+                            message = error?.message ?: "Unknown error"
+                        )
+                    }
+                }
+                
+                else -> {
+                    return@withContext ConflictResult.Error("Unexpected state")
+                }
             }
-            
-            else -> ConflictResult.Error("Unexpected state")
         }
+        
+        // Превышено количество попыток
+        ConflictResult.Error("Too many conflicts (${MAX_RETRY_ATTEMPTS} attempts). Please try again later.")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -134,7 +172,7 @@ class GitConflictResolver @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Стратегия: Оставить мои изменения (force push).
+     * ✅ ОБНОВЛЕНО (Проблема №15): Стратегия KEEP_MINE с retry loop.
      */
     suspend fun resolveKeepMine(
         conflict: ConflictResult.Conflict,
@@ -142,23 +180,50 @@ class GitConflictResolver @Inject constructor(
         commitMessage: String = "Resolve conflict: keep local changes"
     ): ConflictResult = withContext(Dispatchers.IO) {
         
-        val result = gitHubClient.createOrUpdateFile(
-            path = conflict.path,
-            content = conflict.localContent,
-            message = commitMessage,
-            sha = conflict.remoteSha, // Используем актуальный SHA!
-            branch = branch
-        )
+        var attempts = 0
+        var latestSha = conflict.remoteSha
+        
+        while (attempts < MAX_RETRY_ATTEMPTS) {
+            val result = gitHubClient.createOrUpdateFile(
+                path = conflict.path,
+                content = conflict.localContent,
+                message = commitMessage,
+                sha = latestSha,
+                branch = branch
+            )
 
-        if (result.isSuccess) {
-            ConflictResult.Success(
-                newSha = result.getOrNull()!!.content.sha
-            )
-        } else {
-            ConflictResult.Error(
-                message = "Failed to apply local changes: ${result.exceptionOrNull()?.message}"
-            )
+            when {
+                result.isSuccess -> {
+                    return@withContext ConflictResult.Success(
+                        newSha = result.getOrNull()!!.content.sha,
+                        message = if (attempts > 0) "Resolved after $attempts retry attempts" else null
+                    )
+                }
+                
+                result.isFailure -> {
+                    val error = result.exceptionOrNull()
+                    
+                    if (error is GitHubApiException && error.statusCode == 409) {
+                        attempts++
+                        
+                        if (attempts < MAX_RETRY_ATTEMPTS) {
+                            // Получаем новый SHA и retry
+                            val remoteFileResult = gitHubClient.getFileContent(conflict.path, branch)
+                            if (remoteFileResult.isSuccess) {
+                                latestSha = remoteFileResult.getOrNull()!!.sha
+                                continue
+                            }
+                        }
+                    }
+                    
+                    return@withContext ConflictResult.Error(
+                        message = "Failed to apply local changes: ${error?.message}"
+                    )
+                }
+            }
         }
+        
+        ConflictResult.Error("Too many conflicts during resolution. Please try again.")
     }
 
     /**
@@ -175,8 +240,7 @@ class GitConflictResolver @Inject constructor(
     }
 
     /**
-     * Стратегия: Ручное слияние.
-     * Пользователь редактирует в UI, затем сохраняет результат.
+     * ✅ ОБНОВЛЕНО (Проблема №15): Стратегия MANUAL_MERGE с retry loop.
      */
     suspend fun resolveManualMerge(
         conflict: ConflictResult.Conflict,
@@ -185,23 +249,49 @@ class GitConflictResolver @Inject constructor(
         commitMessage: String = "Resolve conflict: manual merge"
     ): ConflictResult = withContext(Dispatchers.IO) {
         
-        val result = gitHubClient.createOrUpdateFile(
-            path = conflict.path,
-            content = mergedContent,
-            message = commitMessage,
-            sha = conflict.remoteSha,
-            branch = branch
-        )
+        var attempts = 0
+        var latestSha = conflict.remoteSha
+        
+        while (attempts < MAX_RETRY_ATTEMPTS) {
+            val result = gitHubClient.createOrUpdateFile(
+                path = conflict.path,
+                content = mergedContent,
+                message = commitMessage,
+                sha = latestSha,
+                branch = branch
+            )
 
-        if (result.isSuccess) {
-            ConflictResult.Success(
-                newSha = result.getOrNull()!!.content.sha
-            )
-        } else {
-            ConflictResult.Error(
-                message = "Failed to save merged version: ${result.exceptionOrNull()?.message}"
-            )
+            when {
+                result.isSuccess -> {
+                    return@withContext ConflictResult.Success(
+                        newSha = result.getOrNull()!!.content.sha,
+                        message = if (attempts > 0) "Merged after $attempts retry attempts" else null
+                    )
+                }
+                
+                result.isFailure -> {
+                    val error = result.exceptionOrNull()
+                    
+                    if (error is GitHubApiException && error.statusCode == 409) {
+                        attempts++
+                        
+                        if (attempts < MAX_RETRY_ATTEMPTS) {
+                            val remoteFileResult = gitHubClient.getFileContent(conflict.path, branch)
+                            if (remoteFileResult.isSuccess) {
+                                latestSha = remoteFileResult.getOrNull()!!.sha
+                                continue
+                            }
+                        }
+                    }
+                    
+                    return@withContext ConflictResult.Error(
+                        message = "Failed to save merged version: ${error?.message}"
+                    )
+                }
+            }
         }
+        
+        ConflictResult.Error("Too many conflicts during merge. Please try again.")
     }
 
     /**
