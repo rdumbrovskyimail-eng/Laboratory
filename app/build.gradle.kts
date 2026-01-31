@@ -11,12 +11,12 @@ plugins {
 
 android {
     namespace = "com.opuside.app"
-    compileSdk = 36
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.opuside.app"
-        minSdk = 36
-        targetSdk = 36
+        minSdk = 35
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
 
