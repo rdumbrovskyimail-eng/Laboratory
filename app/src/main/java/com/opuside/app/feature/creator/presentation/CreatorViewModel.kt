@@ -10,7 +10,7 @@ import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
 import com.opuside.app.core.network.github.model.GitHubBranch
 import com.opuside.app.core.network.github.model.GitHubContent
-import com.opuside.app.core.util.CacheManager
+import com.opuside.app.core.util.PersistentCacheManager
 import com.opuside.app.core.util.createCachedFile
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -34,7 +34,7 @@ import javax.inject.Inject
 class CreatorViewModel @Inject constructor(
     private val gitHubClient: GitHubApiClient,
     private val graphQLClient: GitHubGraphQLClient,
-    private val cacheManager: CacheManager,
+    private val cacheManager: PersistentCacheManager, // ✅ ИСПРАВЛЕНО: CacheManager → PersistentCacheManager
     private val appSettings: AppSettings,
     private val conflictResolver: GitConflictResolver
 ) : ViewModel() {
