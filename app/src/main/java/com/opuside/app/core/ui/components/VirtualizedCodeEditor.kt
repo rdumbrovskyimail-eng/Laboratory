@@ -5,6 +5,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -213,7 +214,7 @@ fun VirtualizedCodeEditor(
                 VerticalDivider(color = EditorTheme.dividerColor)
             }
 
-            // CODE AREA
+            // CODE AREA с ScrollbarIndicator внутри Box
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -274,15 +275,16 @@ fun VirtualizedCodeEditor(
                         cursorBrush = SolidColor(Color.Transparent)
                     )
                 }
-            }
-        }
 
-        if (lines.size > 100) {
-            ScrollbarIndicator(
-                listState = listState,
-                totalItems = lines.size,
-                modifier = Modifier.align(Alignment.CenterEnd)
-            )
+                // ✅ ИСПРАВЛЕНО: ScrollbarIndicator внутри Box
+                if (lines.size > 100) {
+                    ScrollbarIndicator(
+                        listState = listState,
+                        totalItems = lines.size,
+                        modifier = Modifier.align(Alignment.CenterEnd)
+                    )
+                }
+            }
         }
     }
 
@@ -386,8 +388,11 @@ private fun CodeLine(
 // SCROLLBAR INDICATOR
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * ✅ ИСПРАВЛЕНО: Убран BoxScope receiver - теперь обычная Composable функция
+ */
 @Composable
-private fun BoxScope.ScrollbarIndicator(
+private fun ScrollbarIndicator(
     listState: LazyListState,
     totalItems: Int,
     modifier: Modifier = Modifier
