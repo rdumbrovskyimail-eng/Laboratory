@@ -36,17 +36,23 @@ import javax.inject.Singleton
  * - Обработка ошибок
  * 
  * ✅ ИСПРАВЛЕНО:
+ * - Проблема #3: Channel Leak - добавлен channel.cancel() для корректного закрытия
+ * - Проблема #17: Hard-Coded Dependencies - API_URL вынесен в конфигурацию
  * - Проблема №4: Добавлена валидация API ключа
  * - Проблема №9: Добавлены timeouts для предотвращения зависания streaming
- * - Проблема №15 (BUG #15): Добавлен channel.cancel() для предотвращения утечки памяти
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
     @Named("anthropic") private val httpClient: HttpClient,
-    private val json: Json
+    private val json: Json,
+    // ✅ ИСПРАВЛЕНО (Проблема #17): API URL теперь инжектируется, а не hardcoded
+    @Named("anthropicApiUrl") private val apiUrl: String = BuildConfig.ANTHROPIC_API_URL.ifBlank { 
+        "https://api.anthropic.com/v1/messages" 
+    }
 ) {
     companion object {
-        private const val API_URL = "https://api.anthropic.com/v1/messages"
+        // ✅ ИСПРАВЛЕНО (Проблема #17): Оставлен только fallback, основное значение инжектируется
+        private const val DEFAULT_API_URL = "https://api.anthropic.com/v1/messages"
         private const val API_VERSION = "2023-06-01"
         private const val ANTHROPIC_BETA = "messages-2023-12-15"
         private const val READ_TIMEOUT_MS = 30_000L // ✅ ДОБАВЛЕНО: 30 секунд на строку
@@ -85,8 +91,12 @@ class ClaudeApiClient @Inject constructor(
             temperature = temperature
         )
 
+        // ✅ ИСПРАВЛЕНО (Проблема #3): Используем try-finally для гарантированной очистки
+        var channel: io.ktor.utils.io.ByteReadChannel? = null
+        
         try {
-            val response = httpClient.post(API_URL) {
+            // ✅ ИСПРАВЛЕНО (Проблема #17): Используем инжектированный apiUrl
+            val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
                 header("x-api-key", apiKey)
                 header("anthropic-version", API_VERSION)
@@ -100,7 +110,7 @@ class ClaudeApiClient @Inject constructor(
             }
 
             // Читаем SSE stream
-            val channel = response.bodyAsChannel()
+            channel = response.bodyAsChannel()
             var currentText = StringBuilder()
             var totalUsage: Usage? = null
             
@@ -108,27 +118,25 @@ class ClaudeApiClient @Inject constructor(
             val startTime = System.currentTimeMillis()
 
             while (!channel.isClosedForRead) {
-                // ✅ ИСПРАВЛЕНО: Проблема №15 - Проверка общего времени с закрытием channel
+                // ✅ ИСПРАВЛЕНО (Проблема #3): Проверка общего времени с корректным выходом
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
                     emit(StreamingResult.Error(
                         ClaudeApiException("timeout", "Streaming exceeded 5 minutes")
                     ))
-                    channel.cancel() // ✅ Явно закрываем channel
-                    return@flow
+                    return@flow // ✅ finally блок очистит channel
                 }
 
-                // ✅ ИСПРАВЛЕНО: Проблема №15 - Timeout на чтение строки с закрытием channel
+                // ✅ ИСПРАВЛЕНО (Проблема #3): Timeout на чтение строки с корректным выходом
                 val line = withTimeoutOrNull(READ_TIMEOUT_MS) {
                     channel.readUTF8Line()
                 }
 
                 if (line == null) {
-                    // Timeout - закрываем с ошибкой
+                    // Timeout - завершаем с ошибкой
                     emit(StreamingResult.Error(
                         ClaudeApiException("timeout", "Stream timeout after 30s")
                     ))
-                    channel.cancel() // ✅ Явно закрываем channel
-                    return@flow
+                    return@flow // ✅ finally блок очистит channel
                 }
                 
                 // SSE формат: "data: {...}"
@@ -198,6 +206,9 @@ class ClaudeApiClient @Inject constructor(
             emit(StreamingResult.Error(
                 ClaudeApiException("network_error", e.message ?: "Unknown error")
             ))
+        } finally {
+            // ✅ ИСПРАВЛЕНО (Проблема #3): Гарантированная очистка channel
+            channel?.cancel()
         }
     }
 
@@ -224,7 +235,8 @@ class ClaudeApiClient @Inject constructor(
         )
 
         return try {
-            val response = httpClient.post(API_URL) {
+            // ✅ ИСПРАВЛЕНО (Проблема #17): Используем инжектированный apiUrl
+            val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
                 header("x-api-key", apiKey)
                 header("anthropic-version", API_VERSION)
@@ -296,17 +308,4 @@ class ClaudeApiException(
     val isAuthError: Boolean get() = type == "authentication_error"
     val isInvalidRequest: Boolean get() = type == "invalid_request_error"
     val isOverloaded: Boolean get() = type == "overloaded_error"
-}
-✅ Что исправлено:
-СТРОКИ 117-120 (было break, стало channel.cancel() + return@flow):
-if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
-    emit(StreamingResult.Error(...))
-    channel.cancel() // ✅ Добавлено
-    return@flow      // ✅ Изменено с break
-}
-СТРОКИ 125-132 (было break, стало channel.cancel() + return@flow):
-if (line == null) {
-    emit(StreamingResult.Error(...))
-    channel.cancel() // ✅ Добавлено
-    return@flow      // ✅ Изменено с break
 }
