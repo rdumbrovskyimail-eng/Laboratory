@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
@@ -42,9 +43,11 @@ import javax.inject.Inject
  * 
  * ✅ ОБНОВЛЕНО: Использует PersistentCacheManager с фоновым таймером
  * ✅ ОБНОВЛЕНО: Добавлен запрос notification permission (Проблема №7)
+ * ✅ ИСПРАВЛЕНО: Проблема №11 (BUG #11) - Session persistence при повороте экрана
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
+    private val savedStateHandle: SavedStateHandle, // ✅ ДОБАВЛЕНО: Для сохранения sessionId
     private val cacheManager: PersistentCacheManager,  // ✅ Изменено с CacheManager
     private val claudeClient: ClaudeApiClient,
     private val gitHubClient: GitHubApiClient,
@@ -52,7 +55,13 @@ class AnalyzerViewModel @Inject constructor(
     private val appSettings: AppSettings
 ) : ViewModel() {
 
-    private val sessionId = UUID.randomUUID().toString()
+    // ✅ ИСПРАВЛЕНО: Проблема №11 - Session ID сохраняется при повороте экрана
+    private val sessionId: String by lazy {
+        savedStateHandle.get<String>("session_id") 
+            ?: UUID.randomUUID().toString().also { newId ->
+                savedStateHandle["session_id"] = newId
+            }
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CACHE STATE
@@ -502,6 +511,7 @@ Cache active: ${cacheContext.isActive}
 
     fun startNewSession(): String {
         val newSessionId = UUID.randomUUID().toString()
+        savedStateHandle["session_id"] = newSessionId // ✅ ДОБАВЛЕНО: Сохраняем новый session
         // В реальности нужно обновить sessionId, но это требует рефакторинга
         // Пока просто очищаем UI
         return newSessionId
