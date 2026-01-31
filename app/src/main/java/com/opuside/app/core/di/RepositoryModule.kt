@@ -2,8 +2,8 @@ package com.opuside.app.core.di
 
 import android.content.Context
 import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.util.CacheManager
 import com.opuside.app.core.database.dao.CacheDao
+import com.opuside.app.core.util.PersistentCacheManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -24,10 +24,14 @@ object RepositoryModule {
         @ApplicationContext context: Context
     ): AppSettings = AppSettings(context)
 
+    /**
+     * ✅ ОБНОВЛЕНО: Используем новый PersistentCacheManager с фоновым таймером
+     */
     @Provides
     @Singleton
     fun provideCacheManager(
+        @ApplicationContext context: Context,
         cacheDao: CacheDao,
         appSettings: AppSettings
-    ): CacheManager = CacheManager(cacheDao, appSettings)
+    ): PersistentCacheManager = PersistentCacheManager(context, cacheDao, appSettings)
 }
