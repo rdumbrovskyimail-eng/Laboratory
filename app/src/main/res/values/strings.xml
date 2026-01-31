@@ -38,6 +38,26 @@
     <string name="settings_cache_timeout">Cache Timeout (minutes)</string>
     <string name="settings_max_files">Max Cached Files</string>
     
+    <!-- Conflict Resolution -->
+    <string name="conflict_title">⚠️ Merge Conflict</string>
+    <string name="conflict_close">Close</string>
+    <string name="conflict_conflicts">Conflicts</string>
+    <string name="conflict_added">Added</string>
+    <string name="conflict_removed">Removed</string>
+    <string name="conflict_choose_strategy">Choose resolution strategy:</string>
+    <string name="conflict_keep_mine">Keep Mine</string>
+    <string name="conflict_keep_mine_desc">Overwrite remote</string>
+    <string name="conflict_keep_theirs">Keep Theirs</string>
+    <string name="conflict_keep_theirs_desc">Discard local</string>
+    <string name="conflict_manual_merge">Manual Merge</string>
+    <string name="conflict_manual_merge_desc">Edit &amp; merge</string>
+    <string name="conflict_save_copy">Save Copy</string>
+    <string name="conflict_save_copy_desc">New file</string>
+    <string name="conflict_force_push">Force Push Local Changes</string>
+    <string name="conflict_discard_local">Discard Local Changes</string>
+    <string name="conflict_save_merged">Save Merged Version</string>
+    <string name="conflict_save_as_new">Save as New File</string>
+    
     <!-- Common -->
     <string name="loading">Loading…</string>
     <string name="error">Error</string>
