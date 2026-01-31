@@ -27,8 +27,9 @@ import javax.inject.Inject
  * - Работа с ветками
  * - Добавление файлов в кеш (для Analyzer)
  * 
- * ✅ ОБНОВЛЕНО: Добавлена индикация прогресса загрузки (Проблема №14)
- * ✅ ИСПРАВЛЕНО: Проблема №13 (BUG #13) - Breadcrumbs split error
+ * 🔴 ПРОБЛЕМА #10: Unbounded Flow Collection (строки 137-144)
+ * Flow из appSettings.gitHubConfig собирается без ограничений в init блоке.
+ * При быстрых изменениях настроек может вызвать множественные вызовы loadContents().
  */
 @HiltViewModel
 class CreatorViewModel @Inject constructor(
@@ -77,7 +78,6 @@ class CreatorViewModel @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
-    // ✅ НОВОЕ (Проблема №14): Прогресс загрузки файлов в кеш
     private val _loadingProgress = MutableStateFlow<Pair<Int, Int>?>(null)
     val loadingProgress: StateFlow<Pair<Int, Int>?> = _loadingProgress.asStateFlow()
 
@@ -100,7 +100,6 @@ class CreatorViewModel @Inject constructor(
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
 
-    // ✅ НОВОЕ: State для Git конфликтов
     private val _conflictState = MutableStateFlow<ConflictResult?>(null)
     val conflictState: StateFlow<ConflictResult?> = _conflictState.asStateFlow()
 
@@ -119,14 +118,58 @@ class CreatorViewModel @Inject constructor(
     // INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * 🔴 ПРОБЛЕМА #10: Unbounded Flow Collection (строки 137-144)
+     * 
+     * appSettings.gitHubConfig - это Flow, который эмитит значения при каждом изменении настроек.
+     * 
+     * Проблемы:
+     * 1. collect {} БЕЗ ОГРАНИЧЕНИЙ - работает бесконечно пока жив viewModelScope
+     * 2. При каждом изменении config вызывается loadContents("") - сетевой запрос
+     * 3. Если пользователь быстро меняет настройки (owner/repo/branch), генерируется 
+     *    множество параллельных запросов
+     * 4. Нет debounce - каждое изменение триггерит loadContents немедленно
+     * 5. Нет distinctUntilChanged - даже если config не изменился, вызов произойдет
+     * 6. Нет проверки на равенство с текущим состоянием - может загрузить те же данные дважды
+     * 
+     * Сценарий проблемы:
+     * - Пользователь вводит owner посимвольно: "a", "ab", "abc", "abcd"
+     * - Каждый символ эмитит новый config
+     * - Каждый config триггерит loadContents() + loadBranches()
+     * - 4 символа = 8 параллельных сетевых запросов
+     * - Ответы могут прийти не по порядку
+     * - UI может показать данные от устаревшего запроса
+     * 
+     * ДОЛЖНО БЫТЬ (но НЕ реализовано):
+     * ```kotlin
+     * appSettings.gitHubConfig
+     *     .distinctUntilChanged()
+     *     .debounce(300) // Ждем пока пользователь перестанет вводить
+     *     .collectLatest { config -> // Отменяет предыдущий при новом
+     *         if (config.isConfigured) {
+     *             // проверка на изменение
+     *             if (_currentOwner.value != config.owner || ...) {
+     *                 // обновляем
+     *             }
+     *         }
+     *     }
+     * ```
+     * 
+     * Сейчас используется обычный collect без ограничений.
+     */
     init {
-        // Загружаем настройки репозитория
+        // 🔴 Unbounded collect - работает весь lifecycle ViewModel
         viewModelScope.launch {
             appSettings.gitHubConfig.collect { config ->
+                // 🔴 При КАЖДОМ изменении config (даже малейшем)
                 if (config.isConfigured) {
+                    // 🔴 Нет проверки: изменился ли config на самом деле?
                     _currentOwner.value = config.owner
                     _currentRepo.value = config.repo
                     _currentBranch.value = config.branch
+                    
+                    // 🔴 Сетевой запрос при КАЖДОМ изменении
+                    // Если пользователь быстро меняет настройки = спам запросов
                     loadContents("")
                     loadBranches()
                 }
@@ -254,9 +297,6 @@ class CreatorViewModel @Inject constructor(
         _fileContent.value = _originalContent.value
     }
 
-    /**
-     * ✅ ОБНОВЛЕНО: Сохранить файл с обработкой конфликтов через GitConflictResolver.
-     */
     fun saveFile(commitMessage: String) {
         val file = _selectedFile.value ?: return
 
@@ -278,14 +318,12 @@ class CreatorViewModel @Inject constructor(
                     _originalContent.value = _fileContent.value
                     result.message?.let { _error.value = it }
                     
-                    // Обновляем в кеше, если файл там есть
                     if (cacheManager.hasFile(file.path)) {
                         cacheManager.updateFileContent(file.path, _fileContent.value)
                     }
                 }
                 
                 is ConflictResult.Conflict -> {
-                    // Показываем UI для разрешения конфликта
                     _conflictState.value = result
                 }
                 
@@ -298,9 +336,6 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ✅ НОВОЕ: Разрешить Git конфликт.
-     */
     fun resolveConflict(strategy: ConflictStrategy, mergedContent: String?) {
         val conflict = (_conflictState.value as? ConflictResult.Conflict) ?: return
 
@@ -333,7 +368,6 @@ class CreatorViewModel @Inject constructor(
                     _conflictState.value = null
                     _error.value = result.message ?: "Conflict resolved successfully"
                     
-                    // Обновляем файл после разрешения
                     _selectedFile.value?.let { file ->
                         _selectedFile.value = file.copy(sha = result.newSha)
                     }
@@ -348,16 +382,10 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ✅ НОВОЕ: Закрыть диалог конфликтов.
-     */
     fun dismissConflict() {
         _conflictState.value = null
     }
 
-    /**
-     * Создать новый файл.
-     */
     fun createNewFile(fileName: String, initialContent: String = "") {
         val path = if (_currentPath.value.isEmpty()) fileName else "${_currentPath.value}/$fileName"
         
@@ -382,9 +410,6 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Удалить файл.
-     */
     fun deleteFile(file: GitHubContent, commitMessage: String = "Delete ${file.name}") {
         viewModelScope.launch {
             _isLoading.value = true
@@ -397,11 +422,9 @@ class CreatorViewModel @Inject constructor(
                 branch = _currentBranch.value
             )
                 .onSuccess {
-                    // Если удаляемый файл открыт — закрываем
                     if (_selectedFile.value?.path == file.path) {
                         closeFile()
                     }
-                    // Удаляем из кеша если там
                     cacheManager.removeFile(file.path)
                     refresh()
                 }
@@ -413,14 +436,10 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Переименовать файл (создать новый + удалить старый).
-     */
     fun renameFile(file: GitHubContent, newName: String) {
         viewModelScope.launch {
             _isLoading.value = true
             
-            // Получаем содержимое
             val contentResult = gitHubClient.getFileContentDecoded(file.path)
             
             contentResult.onSuccess { content ->
@@ -428,14 +447,12 @@ class CreatorViewModel @Inject constructor(
                     if (it.isEmpty()) newName else "$it/$newName"
                 }
                 
-                // Создаём новый файл
                 gitHubClient.createOrUpdateFile(
                     path = newPath,
                     content = content,
                     message = "Rename ${file.name} to $newName",
                     branch = _currentBranch.value
                 ).onSuccess {
-                    // Удаляем старый
                     gitHubClient.deleteFile(
                         path = file.path,
                         message = "Rename ${file.name} to $newName (delete old)",
@@ -471,10 +488,6 @@ class CreatorViewModel @Inject constructor(
         _selectedForCache.value = emptySet()
     }
 
-    /**
-     * ✅ ОБНОВЛЕНО (Проблема №14): Добавить выбранные файлы в кеш с индикацией прогресса.
-     * Загружаем файлы по одному для отображения прогресса вместо batch GraphQL.
-     */
     fun addSelectedToCache() {
         val paths = _selectedForCache.value.toList()
         if (paths.isEmpty()) return
@@ -487,11 +500,9 @@ class CreatorViewModel @Inject constructor(
             val cachedFiles = mutableListOf<com.opuside.app.core.database.entity.CachedFileEntity>()
             var loaded = 0
 
-            // Загружаем по одному для прогресса
             paths.forEach { path ->
                 gitHubClient.getFileContentDecoded(path, _currentBranch.value)
                     .onSuccess { content ->
-                        // Получаем SHA через getContent
                         gitHubClient.getFileContent(path, _currentBranch.value)
                             .onSuccess { fileInfo ->
                                 val cachedFile = createCachedFile(
@@ -513,7 +524,6 @@ class CreatorViewModel @Inject constructor(
                     }
             }
 
-            // Добавляем все файлы в кеш
             if (cachedFiles.isNotEmpty()) {
                 cacheManager.addFiles(cachedFiles)
             }
@@ -524,9 +534,6 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Добавить один файл в кеш.
-     */
     fun addToCache(file: GitHubContent) {
         viewModelScope.launch {
             val content = if (file.path == _selectedFile.value?.path) {
@@ -549,9 +556,6 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Добавить текущий открытый файл в кеш.
-     */
     fun addCurrentFileToCache() {
         _selectedFile.value?.let { addToCache(it) }
     }
@@ -564,10 +568,8 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             
-            // Получаем SHA текущей ветки
             gitHubClient.getBranch(fromBranch)
                 .onSuccess { branch ->
-                    // Создание ветки требует refs API — пока заглушка
                     _error.value = "Branch creation via API requires refs endpoint (TODO)"
                 }
                 .onFailure { e ->
@@ -586,7 +588,6 @@ class CreatorViewModel @Inject constructor(
         _error.value = null
     }
 
-    // ✅ ИСПРАВЛЕНО: Проблема №13 (BUG #13) - Breadcrumbs split error
     val breadcrumbs: StateFlow<List<String>> = _currentPath
         .map { path ->
             if (path.isEmpty()) {
