@@ -22,15 +22,19 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.security.SecureSettingsDataStore
 
 /**
- * ✅ ОБНОВЛЕНО (Проблема №8): Использует Event pattern для биометрии
- * вместо передачи Activity в ViewModel.
+ * ✅ ИСПРАВЛЕНО (Проблема №6): Убран параметр secureSettings, получаем локально через remember
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    viewModel: SettingsViewModel = hiltViewModel(),
-    secureSettings: SecureSettingsDataStore // ✅ НОВОЕ: Инжектим через Hilt
+    viewModel: SettingsViewModel = hiltViewModel()
 ) {
+    // ✅ ДОБАВЛЕНО: Получаем secureSettings локально
+    val context = LocalContext.current
+    val secureSettings = remember {
+        SecureSettingsDataStore(context)
+    }
+    
     // ✅ ИСПРАВЛЕНО: Добавлен параметр initial для gitHubConfig
     val gitHubConfig by viewModel.gitHubConfig.collectAsState(initial = SecureSettingsDataStore.GitHubConfig("", "", "main", ""))
     val githubStatus by viewModel.githubStatus.collectAsState()
@@ -53,7 +57,6 @@ fun SettingsScreen(
     val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
     
     var useBiometric by remember { mutableStateOf(false) }
-    val context = LocalContext.current
     val activity = context as? FragmentActivity
 
     val snackbarHostState = remember { SnackbarHostState() }
