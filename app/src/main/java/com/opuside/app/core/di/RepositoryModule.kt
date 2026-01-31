@@ -3,6 +3,7 @@ package com.opuside.app.core.di
 import android.content.Context
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.CacheDao
+import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.util.PersistentCacheManager
 import dagger.Module
 import dagger.Provides
@@ -18,11 +19,22 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object RepositoryModule {
 
+    /**
+     * ✅ ИСПРАВЛЕНО: Добавлен provider для SecureSettingsDataStore
+     * Решает проблему №1 - FATAL: MissingBinding crash at startup
+     */
+    @Provides
+    @Singleton
+    fun provideSecureSettings(
+        @ApplicationContext context: Context
+    ): SecureSettingsDataStore = SecureSettingsDataStore(context)
+
     @Provides
     @Singleton
     fun provideAppSettings(
-        @ApplicationContext context: Context
-    ): AppSettings = AppSettings(context)
+        @ApplicationContext context: Context,
+        secureSettings: SecureSettingsDataStore
+    ): AppSettings = AppSettings(context, secureSettings)
 
     /**
      * ✅ ОБНОВЛЕНО: Используем новый PersistentCacheManager с фоновым таймером
