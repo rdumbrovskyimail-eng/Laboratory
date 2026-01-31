@@ -40,6 +40,7 @@ import javax.inject.Singleton
  * - Проблема #17: Hard-Coded Dependencies - API_URL вынесен в конфигурацию
  * - Проблема №4: Добавлена валидация API ключа
  * - Проблема №9: Добавлены timeouts для предотвращения зависания streaming
+ * - Проблема компиляции: ClaudeApiException теперь принимает причину (cause)
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -121,7 +122,11 @@ class ClaudeApiClient @Inject constructor(
                 // ✅ ИСПРАВЛЕНО (Проблема #3): Проверка общего времени с корректным выходом
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
                     emit(StreamingResult.Error(
-                        ClaudeApiException("timeout", "Streaming exceeded 5 minutes")
+                        ClaudeApiException(
+                            type = "timeout",
+                            message = "Streaming exceeded 5 minutes",
+                            cause = null
+                        )
                     ))
                     return@flow // ✅ finally блок очистит channel
                 }
@@ -134,7 +139,11 @@ class ClaudeApiClient @Inject constructor(
                 if (line == null) {
                     // Timeout - завершаем с ошибкой
                     emit(StreamingResult.Error(
-                        ClaudeApiException("timeout", "Stream timeout after 30s")
+                        ClaudeApiException(
+                            type = "timeout",
+                            message = "Stream timeout after 30s",
+                            cause = null
+                        )
                     ))
                     return@flow // ✅ finally блок очистит channel
                 }
@@ -190,7 +199,11 @@ class ClaudeApiClient @Inject constructor(
                             "error" -> {
                                 event.error?.let { error ->
                                     emit(StreamingResult.Error(
-                                        ClaudeApiException(error.type, error.message)
+                                        ClaudeApiException(
+                                            type = error.type,
+                                            message = error.message,
+                                            cause = null
+                                        )
                                     ))
                                 }
                             }
@@ -204,7 +217,11 @@ class ClaudeApiClient @Inject constructor(
 
         } catch (e: Exception) {
             emit(StreamingResult.Error(
-                ClaudeApiException("network_error", e.message ?: "Unknown error")
+                ClaudeApiException(
+                    type = "network_error",
+                    message = e.message ?: "Unknown error",
+                    cause = e
+                )
             ))
         } finally {
             // ✅ ИСПРАВЛЕНО (Проблема #3): Гарантированная очистка channel
@@ -250,7 +267,13 @@ class ClaudeApiClient @Inject constructor(
             }
 
         } catch (e: Exception) {
-            Result.failure(ClaudeApiException("network_error", e.message ?: "Unknown error"))
+            Result.failure(
+                ClaudeApiException(
+                    type = "network_error",
+                    message = e.message ?: "Unknown error",
+                    cause = e
+                )
+            )
         }
     }
 
@@ -262,11 +285,16 @@ class ClaudeApiClient @Inject constructor(
         return try {
             val errorBody = response.body<String>()
             val errorResponse = json.decodeFromString<com.opuside.app.core.network.anthropic.model.ClaudeErrorResponse>(errorBody)
-            ClaudeApiException(errorResponse.error.type, errorResponse.error.message)
+            ClaudeApiException(
+                type = errorResponse.error.type,
+                message = errorResponse.error.message,
+                cause = null
+            )
         } catch (e: Exception) {
             ClaudeApiException(
                 type = "http_error",
-                message = "HTTP ${response.status.value}: ${response.status.description}"
+                message = "HTTP ${response.status.value}: ${response.status.description}",
+                cause = e
             )
         }
     }
@@ -298,11 +326,14 @@ sealed class StreamingResult {
 
 /**
  * Exception для ошибок Claude API.
+ * 
+ * ✅ ИСПРАВЛЕНО: Добавлен параметр cause для совместимости с Exception
  */
 class ClaudeApiException(
     val type: String,
-    override val message: String
-) : Exception("[$type] $message") {
+    override val message: String,
+    cause: Throwable? = null
+) : Exception(message, cause) {
     
     val isRateLimitError: Boolean get() = type == "rate_limit_error"
     val isAuthError: Boolean get() = type == "authentication_error"
