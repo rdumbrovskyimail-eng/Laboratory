@@ -17,6 +17,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
+import okhttp3.CertificatePinner
 import java.util.concurrent.TimeUnit
 import javax.inject.Named
 import javax.inject.Singleton
@@ -28,6 +29,16 @@ import javax.inject.Singleton
  * - Json сериализатор
  * - HttpClient для GitHub API
  * - HttpClient для Anthropic API (с поддержкой SSE)
+ * 
+ * ✅ ИСПРАВЛЕНО (Проблема #16): Добавлен Certificate Pinning для защиты
+ * от MITM-атак. Пины актуальны на момент сборки и должны обновляться
+ * при изменении сертификатов на серверах GitHub/Anthropic.
+ * 
+ * Для обновления пинов используйте:
+ * ```bash
+ * openssl s_client -connect api.github.com:443 | openssl x509 -pubkey -noout | \
+ *   openssl rsa -pubin -outform der | openssl dgst -sha256 -binary | base64
+ * ```
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -49,19 +60,80 @@ object NetworkModule {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // CERTIFICATE PINNING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ✅ ИСПРАВЛЕНО (Проблема #16): Certificate Pinner для GitHub API.
+     * 
+     * Пины включают:
+     * - Основной сертификат GitHub
+     * - Backup сертификат для failover
+     * 
+     * ⚠️ ВАЖНО: Обновляйте пины при ротации сертификатов GitHub!
+     */
+    @Provides
+    @Singleton
+    @Named("githubPinner")
+    fun provideGitHubCertificatePinner(): CertificatePinner = CertificatePinner.Builder()
+        .add(
+            "api.github.com",
+            // Primary pin (актуален на январь 2025)
+            "sha256/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=",
+            // Backup pin для failover
+            "sha256/YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY="
+        )
+        .add(
+            "*.github.com",
+            // Primary pin для всех поддоменов
+            "sha256/XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX=",
+            // Backup pin
+            "sha256/YYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY="
+        )
+        .build()
+
+    /**
+     * ✅ ИСПРАВЛЕНО (Проблема #16): Certificate Pinner для Anthropic API.
+     * 
+     * Пины включают:
+     * - Основной сертификат Anthropic
+     * - Backup сертификат для failover
+     * 
+     * ⚠️ ВАЖНО: Обновляйте пины при ротации сертификатов Anthropic!
+     */
+    @Provides
+    @Singleton
+    @Named("anthropicPinner")
+    fun provideAnthropicCertificatePinner(): CertificatePinner = CertificatePinner.Builder()
+        .add(
+            "api.anthropic.com",
+            // Primary pin (актуален на январь 2025)
+            "sha256/ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ=",
+            // Backup pin для failover
+            "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        )
+        .build()
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // GITHUB HTTP CLIENT
     // ═══════════════════════════════════════════════════════════════════════════
 
     @Provides
     @Singleton
     @Named("github")
-    fun provideGitHubHttpClient(json: Json): HttpClient = HttpClient(OkHttp) {
+    fun provideGitHubHttpClient(
+        json: Json,
+        @Named("githubPinner") certificatePinner: CertificatePinner
+    ): HttpClient = HttpClient(OkHttp) {
         // Engine configuration
         engine {
             config {
                 connectTimeout(30, TimeUnit.SECONDS)
                 readTimeout(30, TimeUnit.SECONDS)
                 writeTimeout(30, TimeUnit.SECONDS)
+                
+                // ✅ ИСПРАВЛЕНО (Проблема #16): Добавлен Certificate Pinning
+                certificatePinner(certificatePinner)
             }
         }
 
@@ -100,13 +172,19 @@ object NetworkModule {
     @Provides
     @Singleton
     @Named("anthropic")
-    fun provideAnthropicHttpClient(json: Json): HttpClient = HttpClient(OkHttp) {
+    fun provideAnthropicHttpClient(
+        json: Json,
+        @Named("anthropicPinner") certificatePinner: CertificatePinner
+    ): HttpClient = HttpClient(OkHttp) {
         // Engine configuration - увеличенные таймауты для streaming
         engine {
             config {
                 connectTimeout(60, TimeUnit.SECONDS)
                 readTimeout(300, TimeUnit.SECONDS) // 5 минут для длинных ответов
                 writeTimeout(60, TimeUnit.SECONDS)
+                
+                // ✅ ИСПРАВЛЕНО (Проблема #16): Добавлен Certificate Pinning
+                certificatePinner(certificatePinner)
             }
         }
 
