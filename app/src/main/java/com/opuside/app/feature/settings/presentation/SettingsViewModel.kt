@@ -16,12 +16,25 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 /**
- * ✅ ИСПРАВЛЕНО: Проблема №8 - Убран FragmentActivity из ViewModel
- * Используется Event pattern для биометрической аутентификации
+ * 🔴 ПРОБЛЕМА #12: Tight Coupling
+ * ViewModel напрямую зависит от SecureSettingsDataStore для биометрической аутентификации.
+ * Это создает сильную связанность между слоями архитектуры.
+ * 
+ * Проблемы:
+ * - ViewModel знает о деталях реализации биометрии
+ * - Нельзя легко заменить механизм аутентификации
+ * - Тестирование затруднено из-за зависимости от Android framework
+ * - Нарушение принципа единой ответственности
+ * 
+ * Упоминание биометрии в коде (строка где используется secureSettings) указывает
+ * на эту архитектурную проблему.
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val appSettings: AppSettings,
+    // 🔴 ПРОБЛЕМА #12: Tight Coupling - прямая зависимость от SecureSettingsDataStore
+    // ViewModel не должен знать о деталях реализации безопасного хранилища
+    // Должен быть абстрактный интерфейс SettingsRepository
     private val secureSettings: SecureSettingsDataStore,
     private val claudeClient: ClaudeApiClient,
     private val gitHubClient: GitHubApiClient
@@ -41,7 +54,6 @@ class SettingsViewModel @Inject constructor(
     private val _repoInfo = MutableStateFlow<GitHubRepository?>(null)
     val repoInfo: StateFlow<GitHubRepository?> = _repoInfo.asStateFlow()
 
-    // Input fields
     private val _githubOwnerInput = MutableStateFlow("")
     val githubOwnerInput: StateFlow<String> = _githubOwnerInput.asStateFlow()
 
@@ -74,7 +86,7 @@ class SettingsViewModel @Inject constructor(
     val claudeModelInput: StateFlow<String> = _claudeModelInput.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ ДОБАВЛЕНО: Проблема №8 - Event pattern для биометрии
+    // BIOMETRIC AUTH
     // ═══════════════════════════════════════════════════════════════════════════
 
     private val _biometricAuthRequest = MutableStateFlow(false)
@@ -119,7 +131,6 @@ class SettingsViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     init {
-        // Загружаем текущие настройки в input поля
         viewModelScope.launch {
             appSettings.gitHubConfig.collect { config ->
                 _githubOwnerInput.value = config.owner
@@ -149,7 +160,6 @@ class SettingsViewModel @Inject constructor(
             }
         }
 
-        // Fallback: используем BuildConfig если DataStore пуст
         viewModelScope.launch {
             val config = appSettings.gitHubConfig.first()
             if (!config.isConfigured && BuildConfig.GITHUB_TOKEN.isNotEmpty()) {
@@ -202,23 +212,54 @@ class SettingsViewModel @Inject constructor(
             _message.value = "GitHub settings saved!"
             _isSaving.value = false
             
-            // Автоматически тестируем подключение
             testGitHubConnection()
         }
     }
 
     /**
-     * ✅ ОБНОВЛЕНО: Сохранение с опциональной биометрией
+     * 🔴 ПРОБЛЕМА #12: Tight Coupling (упоминание биометрии)
+     * 
+     * ViewModel напрямую вызывает secureSettings.setAnthropicApiKey()
+     * Это создает жесткую зависимость от конкретной реализации безопасного хранилища.
+     * 
+     * Проблемы:
+     * 1. ViewModel знает ЧТО такое SecureSettingsDataStore
+     * 2. ViewModel знает КАК работает биометрическая аутентификация  
+     * 3. Нельзя заменить механизм без изменения ViewModel
+     * 4. Тестирование требует мокирования Android Keystore
+     * 5. Нарушение Dependency Inversion Principle (зависимость от конкретики, не от абстракции)
+     * 
+     * ДОЛЖНО БЫТЬ (но НЕ реализовано):
+     * ```kotlin
+     * interface SettingsRepository {
+     *     suspend fun saveApiKey(key: String, secure: Boolean)
+     *     suspend fun getApiKey(secure: Boolean): String
+     * }
+     * 
+     * class SettingsViewModel(
+     *     private val settingsRepo: SettingsRepository // ← абстракция
+     * ) {
+     *     fun saveAnthropicSettings(useBiometric: Boolean) {
+     *         settingsRepo.saveApiKey(key, secure = useBiometric)
+     *     }
+     * }
+     * ```
+     * 
+     * СЕЙЧАС: ViewModel напрямую использует secureSettings и appSettings,
+     * знает о деталях их реализации.
      */
     fun saveAnthropicSettings(useBiometric: Boolean = false) {
         viewModelScope.launch {
             _isSaving.value = true
             
             if (useBiometric) {
-                // Сохраняем в защищённое хранилище
+                // 🔴 Tight coupling - прямой вызов secureSettings
+                // ViewModel знает о существовании SecureSettingsDataStore
+                // и о том, как работает биометрическая защита
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value)
             } else {
-                // Обычное сохранение
+                // 🔴 Tight coupling - прямой вызов appSettings
+                // Два разных источника данных для одной логической сущности
                 appSettings.setAnthropicApiKey(_anthropicKeyInput.value)
             }
             
@@ -317,17 +358,10 @@ class SettingsViewModel @Inject constructor(
         testClaudeConnection()
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Проблема №8 - Убран FragmentActivity из ViewModel
-     * Теперь ViewModel только сигнализирует UI о необходимости биометрии
-     */
     fun requestBiometricAuth() {
         _biometricAuthRequest.value = true
     }
 
-    /**
-     * ✅ ДОБАВЛЕНО: Очистка биометрического запроса после обработки
-     */
     fun clearBiometricRequest() {
         _biometricAuthRequest.value = false
     }
@@ -341,7 +375,6 @@ class SettingsViewModel @Inject constructor(
             appSettings.clearAll()
             _message.value = "Settings reset to defaults"
             
-            // Reload from BuildConfig
             _githubOwnerInput.value = BuildConfig.GITHUB_OWNER
             _githubRepoInput.value = BuildConfig.GITHUB_REPO
             _githubTokenInput.value = BuildConfig.GITHUB_TOKEN
