@@ -1,8 +1,10 @@
 package com.opuside.app.core.di
 
 import android.content.Context
+import com.opuside.app.core.cache.CacheRepository
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.CacheDao
+import com.opuside.app.core.security.CacheEncryptionHelper
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.util.PersistentCacheManager
 import dagger.Module
@@ -14,6 +16,8 @@ import javax.inject.Singleton
 
 /**
  * Hilt модуль для репозиториев и менеджеров.
+ * 
+ * ✅ ИСПРАВЛЕНО: Добавлены CacheEncryptionHelper и CacheRepository
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -37,13 +41,33 @@ object RepositoryModule {
     ): AppSettings = AppSettings(context, secureSettings)
 
     /**
-     * ✅ ОБНОВЛЕНО: Используем новый PersistentCacheManager с фоновым таймером
+     * ✅ НОВОЕ: Provider для CacheEncryptionHelper
+     * Необходим для шифрования кеша в CacheRepository
+     */
+    @Provides
+    @Singleton
+    fun provideCacheEncryptionHelper(): CacheEncryptionHelper = CacheEncryptionHelper()
+
+    /**
+     * ✅ НОВОЕ: Provider для CacheRepository
+     * Обертка над CacheDao с поддержкой шифрования
+     */
+    @Provides
+    @Singleton
+    fun provideCacheRepository(
+        cacheDao: CacheDao,
+        encryptionHelper: CacheEncryptionHelper
+    ): CacheRepository = CacheRepository(cacheDao, encryptionHelper)
+
+    /**
+     * ✅ ИСПРАВЛЕНО: Используем CacheRepository вместо CacheDao
+     * Правильный порядок параметров: context, cacheRepository, appSettings
      */
     @Provides
     @Singleton
     fun provideCacheManager(
         @ApplicationContext context: Context,
-        cacheDao: CacheDao,
+        cacheRepository: CacheRepository,
         appSettings: AppSettings
-    ): PersistentCacheManager = PersistentCacheManager(context, cacheDao, appSettings)
+    ): PersistentCacheManager = PersistentCacheManager(context, cacheRepository, appSettings)
 }
