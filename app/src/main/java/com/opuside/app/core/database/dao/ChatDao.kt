@@ -19,7 +19,7 @@ import kotlinx.coroutines.flow.Flow
  * - Streaming обновления
  * - Статистика использования токенов
  * 
- * ✅ ИСПРАВЛЕНО: Удален метод withTransaction (Room 2.6+ автоматически обрабатывает транзакции)
+ * ✅ ИСПРАВЛЕНО: Удален метод withTransaction, добавлен insertUserAndAssistantMessages
  */
 @Dao
 abstract class ChatDao {
@@ -176,24 +176,21 @@ abstract class ChatDao {
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ ИСПРАВЛЕНО: Выполнить блок операций в транзакции.
+     * ✅ НОВОЕ: Атомарная вставка пары сообщений (user + assistant).
      * 
-     * Room автоматически оборачивает suspend функции в транзакции,
-     * но для явного контроля используем @Transaction.
+     * Используется в AnalyzerViewModel для гарантии целостности данных.
+     * Если crash произойдет во время вставки, обе операции откатятся.
      * 
-     * @param block Блок кода для выполнения в транзакции
-     * @return Результат блока
-     * 
-     * Пример использования:
-     * ```kotlin
-     * chatDao.withTransaction {
-     *     deleteById(oldId)
-     *     insert(newMessage)
-     * }
-     * ```
+     * @param userMessage Сообщение пользователя
+     * @param assistantMessage Placeholder для ответа ассистента
+     * @return ID вставленного сообщения ассистента
      */
     @Transaction
-    open suspend fun <R> withTransaction(block: suspend () -> R): R {
-        return block()
+    open suspend fun insertUserAndAssistantMessages(
+        userMessage: ChatMessageEntity,
+        assistantMessage: ChatMessageEntity
+    ): Long {
+        insert(userMessage)
+        return insert(assistantMessage)
     }
 }
