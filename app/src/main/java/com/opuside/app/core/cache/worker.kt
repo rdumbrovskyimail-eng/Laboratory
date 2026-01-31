@@ -4,15 +4,19 @@ import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.preferencesDataStore
 import com.opuside.app.core.database.dao.CacheDao
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 
-/**
- * ✅ ОБНОВЛЕНО: Worker для фоновой очистки кеша.
- * 
- * Теперь использует CacheNotificationManager для уведомлений.
- */
+// DataStore для состояния таймера
+private val Context.cacheTimerDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "cache_timer_state"
+)
+
 @HiltWorker
 class CacheCleanupWorker @AssistedInject constructor(
     @Assisted context: Context,
@@ -24,7 +28,7 @@ class CacheCleanupWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         android.util.Log.d("CacheCleanupWorker", "🗑️ Executing background cache cleanup")
         
-        try {
+        return try {
             // Очищаем БД
             cacheDao.clearAll()
             
@@ -36,19 +40,14 @@ class CacheCleanupWorker @AssistedInject constructor(
             // Показываем уведомление
             notificationManager.showCacheExpiredNotification()
             
-            return Result.success()
+            Result.success()
         } catch (e: Exception) {
             android.util.Log.e("CacheCleanupWorker", "❌ Cleanup failed", e)
-            return Result.failure()
+            Result.failure()
         }
     }
 }
 
-/**
- * ✅ ОБНОВЛЕНО: Worker для предупреждения (за 1 минуту до истечения).
- * 
- * Теперь использует CacheNotificationManager.
- */
 @HiltWorker
 class CacheWarningWorker @AssistedInject constructor(
     @Assisted context: Context,
@@ -59,16 +58,12 @@ class CacheWarningWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         android.util.Log.d("CacheWarningWorker", "⚠️ Cache will expire in 1 minute")
         
-        try {
+        return try {
             notificationManager.showCacheWarningNotification()
-            return Result.success()
+            Result.success()
         } catch (e: Exception) {
             android.util.Log.e("CacheWarningWorker", "❌ Warning notification failed", e)
-            return Result.failure()
+            Result.failure()
         }
     }
 }
-
-// Extension для доступа к DataStore (нужно для CacheCleanupWorker)
-private val Context.cacheTimerDataStore: androidx.datastore.core.DataStore<androidx.datastore.preferences.core.Preferences> 
-    get() = TODO("Используйте тот же DataStore что и в CacheTimerController")
