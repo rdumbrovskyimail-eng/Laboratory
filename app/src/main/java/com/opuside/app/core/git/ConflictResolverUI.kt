@@ -13,11 +13,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.opuside.app.R
 
 /**
  * Диалог разрешения Git конфликтов.
@@ -63,7 +65,7 @@ fun ConflictResolverDialog(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "⚠️ Merge Conflict",
+                                    text = stringResource(R.string.conflict_title),
                                     style = MaterialTheme.typography.titleLarge,
                                     color = MaterialTheme.colorScheme.error
                                 )
@@ -75,7 +77,7 @@ fun ConflictResolverDialog(
                             }
                             
                             IconButton(onClick = onDismiss) {
-                                Icon(Icons.Default.Close, "Close")
+                                Icon(Icons.Default.Close, stringResource(R.string.conflict_close))
                             }
                         }
 
@@ -87,19 +89,19 @@ fun ConflictResolverDialog(
                         ) {
                             ConflictStat(
                                 icon = Icons.Default.Warning,
-                                label = "Conflicts",
+                                label = stringResource(R.string.conflict_conflicts),
                                 value = conflict.conflictedLines.size.toString(),
                                 color = MaterialTheme.colorScheme.error
                             )
                             ConflictStat(
                                 icon = Icons.Default.Add,
-                                label = "Added",
+                                label = stringResource(R.string.conflict_added),
                                 value = conflict.diff.count { it is DiffLine.Added }.toString(),
                                 color = Color(0xFF22C55E)
                             )
                             ConflictStat(
                                 icon = Icons.Default.Remove,
-                                label = "Removed",
+                                label = stringResource(R.string.conflict_removed),
                                 value = conflict.diff.count { it is DiffLine.Removed }.toString(),
                                 color = Color(0xFFEF4444)
                             )
@@ -138,7 +140,7 @@ fun ConflictResolverDialog(
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            text = "Choose resolution strategy:",
+                            text = stringResource(R.string.conflict_choose_strategy),
                             style = MaterialTheme.typography.titleSmall
                         )
                         
@@ -151,8 +153,8 @@ fun ConflictResolverDialog(
                         ) {
                             StrategyButton(
                                 icon = Icons.Default.CallReceived,
-                                label = "Keep Mine",
-                                description = "Overwrite remote",
+                                label = stringResource(R.string.conflict_keep_mine),
+                                description = stringResource(R.string.conflict_keep_mine_desc),
                                 isSelected = selectedStrategy == ConflictStrategy.KEEP_MINE,
                                 onClick = { 
                                     selectedStrategy = ConflictStrategy.KEEP_MINE
@@ -163,8 +165,8 @@ fun ConflictResolverDialog(
 
                             StrategyButton(
                                 icon = Icons.Default.CallMade,
-                                label = "Keep Theirs",
-                                description = "Discard local",
+                                label = stringResource(R.string.conflict_keep_theirs),
+                                description = stringResource(R.string.conflict_keep_theirs_desc),
                                 isSelected = selectedStrategy == ConflictStrategy.KEEP_THEIRS,
                                 onClick = { 
                                     selectedStrategy = ConflictStrategy.KEEP_THEIRS
@@ -175,8 +177,8 @@ fun ConflictResolverDialog(
 
                             StrategyButton(
                                 icon = Icons.Default.Edit,
-                                label = "Manual Merge",
-                                description = "Edit & merge",
+                                label = stringResource(R.string.conflict_manual_merge),
+                                description = stringResource(R.string.conflict_manual_merge_desc),
                                 isSelected = selectedStrategy == ConflictStrategy.MANUAL_MERGE,
                                 onClick = { 
                                     selectedStrategy = ConflictStrategy.MANUAL_MERGE
@@ -187,8 +189,8 @@ fun ConflictResolverDialog(
 
                             StrategyButton(
                                 icon = Icons.Default.FileCopy,
-                                label = "Save Copy",
-                                description = "New file",
+                                label = stringResource(R.string.conflict_save_copy),
+                                description = stringResource(R.string.conflict_save_copy_desc),
                                 isSelected = selectedStrategy == ConflictStrategy.SAVE_AS_COPY,
                                 onClick = { 
                                     selectedStrategy = ConflictStrategy.SAVE_AS_COPY
@@ -216,11 +218,11 @@ fun ConflictResolverDialog(
                             Spacer(Modifier.width(8.dp))
                             Text(
                                 when (selectedStrategy) {
-                                    ConflictStrategy.KEEP_MINE -> "Force Push Local Changes"
-                                    ConflictStrategy.KEEP_THEIRS -> "Discard Local Changes"
-                                    ConflictStrategy.MANUAL_MERGE -> "Save Merged Version"
-                                    ConflictStrategy.SAVE_AS_COPY -> "Save as New File"
-                                    null -> "Choose Strategy"
+                                    ConflictStrategy.KEEP_MINE -> stringResource(R.string.conflict_force_push)
+                                    ConflictStrategy.KEEP_THEIRS -> stringResource(R.string.conflict_discard_local)
+                                    ConflictStrategy.MANUAL_MERGE -> stringResource(R.string.conflict_save_merged)
+                                    ConflictStrategy.SAVE_AS_COPY -> stringResource(R.string.conflict_save_as_new)
+                                    null -> stringResource(R.string.conflict_choose_strategy)
                                 }
                             )
                         }
