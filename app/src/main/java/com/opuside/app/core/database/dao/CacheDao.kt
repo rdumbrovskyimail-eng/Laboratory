@@ -16,6 +16,22 @@ import kotlinx.coroutines.flow.Flow
  * - CRUD операции
  * - Reactive Flow для UI
  * - Очистка по таймауту
+ * 
+ * ⚠️ ВАЖНО (Проблема №18): Метод search() не имеет встроенного debounce.
+ * При использовании в UI (например, SearchBar) необходимо добавить debounce
+ * в ViewModel, чтобы избежать избыточных запросов к БД на каждое нажатие клавиши.
+ * 
+ * Пример использования с debounce в ViewModel:
+ * ```
+ * val searchQuery = MutableStateFlow("")
+ * val searchResults = searchQuery
+ *     .debounce(300)  // Ждем 300ms после последнего символа
+ *     .flatMapLatest { query ->
+ *         if (query.isBlank()) flowOf(emptyList())
+ *         else flow { emit(cacheDao.search(query)) }
+ *     }
+ *     .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+ * ```
  */
 @Dao
 interface CacheDao {
@@ -63,6 +79,9 @@ interface CacheDao {
 
     /**
      * Найти файлы по имени (поиск).
+     * 
+     * ⚠️ ВАЖНО: Используйте с debounce в ViewModel, чтобы избежать
+     * избыточных запросов при вводе в поле поиска (см. документацию класса).
      */
     @Query("SELECT * FROM cached_files WHERE file_name LIKE '%' || :query || '%'")
     suspend fun search(query: String): List<CachedFileEntity>
