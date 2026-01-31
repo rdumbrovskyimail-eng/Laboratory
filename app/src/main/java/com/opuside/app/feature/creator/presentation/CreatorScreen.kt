@@ -401,7 +401,7 @@ private fun FileItem(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EDITOR MODE
+// EDITOR MODE - ОБНОВЛЕНО с VirtualizedCodeEditor
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -425,7 +425,7 @@ private fun EditorMode(
             onAddToCache = onAddToCache
         )
 
-        // Virtualized Code Editor (новый компонент!)
+        // ✅ НОВЫЙ VirtualizedCodeEditor вместо старого CodeEditor
         VirtualizedCodeEditor(
             content = content,
             onContentChange = onContentChange,
@@ -435,8 +435,8 @@ private fun EditorMode(
             showLineNumbers = true,
             fontSize = 14,
             onCursorPositionChanged = { line, column ->
-                // Опционально: можно показывать позицию в статус-баре
-                // Пока игнорируем
+                // Опционально: можно показывать позицию курсора в статус-баре
+                // Пока игнорируем, но можно добавить в будущем
             }
         )
     }
