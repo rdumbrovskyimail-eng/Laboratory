@@ -50,13 +50,26 @@
 -dontwarn androidx.room.paging.**
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# HILT
+# HILT GENERATED CLASSES
 # ═══════════════════════════════════════════════════════════════════════════════
 -keep class dagger.hilt.** { *; }
 -keep class javax.inject.** { *; }
 -keep class * extends dagger.hilt.android.internal.managers.ComponentSupplier { *; }
 -keep class * implements dagger.hilt.internal.GeneratedComponent { *; }
 -keepnames @dagger.hilt.android.lifecycle.HiltViewModel class * extends androidx.lifecycle.ViewModel
+-keep class **_HiltModules { *; }
+-keep class **_HiltComponents { *; }
+-keep class **_Factory { *; }
+-keep class **_MembersInjector { *; }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# WORKMANAGER
+# ═══════════════════════════════════════════════════════════════════════════════
+-keep class * extends androidx.work.Worker
+-keep class * extends androidx.work.ListenableWorker { *; }
+-keep class androidx.work.impl.WorkDatabase { *; }
+-keep class androidx.work.** { *; }
+-dontwarn androidx.work.impl.**
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # COMPOSE
