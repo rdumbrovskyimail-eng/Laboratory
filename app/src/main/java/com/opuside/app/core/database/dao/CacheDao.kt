@@ -83,10 +83,22 @@ interface CacheDao {
      * ⚠️ ВАЖНО: Используйте с debounce в ViewModel, чтобы избежать
      * избыточных запросов при вводе в поле поиска (см. документацию класса).
      * 
-     * ✅ ИСПРАВЛЕНО (Проблема #8): Используется параметризованный запрос
-     * вместо конкатенации строк для защиты от SQL injection.
+     * ✅ ИСПРАВЛЕНО (Проблема #7): 
+     * - Добавлены wildcards '%' для поиска подстроки (MainActivity найдется по "Main")
+     * - Используется ESCAPE '\' для экранирования спецсимволов %, _, \
+     * - Параметризованный запрос защищает от SQL injection
+     * 
+     * ВАЖНО: ViewModel должен экранировать пользовательский ввод ПЕРЕД вызовом:
+     * ```
+     * fun escapeSearchQuery(userInput: String): String {
+     *     return userInput
+     *         .replace("\\", "\\\\")  // Экранируем backslash
+     *         .replace("%", "\\%")    // Экранируем wildcard
+     *         .replace("_", "\\_")    // Экранируем single char wildcard
+     * }
+     * ```
      */
-    @Query("SELECT * FROM cached_files WHERE file_name LIKE :query")
+    @Query("SELECT * FROM cached_files WHERE file_name LIKE '%' || :query || '%' ESCAPE '\\'")
     suspend fun search(query: String): List<CachedFileEntity>
 
     /**
