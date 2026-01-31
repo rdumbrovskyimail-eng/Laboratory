@@ -228,35 +228,8 @@ class AnalyzerViewModel @Inject constructor(
      * ВАЖНО: Контекст берётся ТОЛЬКО из кеша!
      * Если кеш пуст или таймер истёк — предупреждаем пользователя.
      * 
-     * ✅ ИСПРАВЛЕНО (Проблема #12): Неатомарные операции с БД → CORRUPTED HISTORY
-     * 
-     * БЫЛО:
-     * ```kotlin
-     * chatDao.insert(userEntity)      // Транзакция #1
-     * chatDao.insert(assistantEntity) // Транзакция #2
-     * val messages = buildMessagesForApi() // SELECT
-     * // ... streaming
-     * chatDao.finishStreaming()       // Транзакция #3
-     * ```
-     * 
-     * ПРОБЛЕМЫ:
-     * 1. Между INSERT-ами может произойти crash → в БД только userEntity
-     * 2. observeSession() может читать промежуточное состояние
-     * 3. buildMessagesForApi() может не видеть только что добавленные сообщения
-     * 4. При System kill (Low Memory Killer) данные корруптятся
-     * 
-     * СЦЕНАРИЙ CORRUPTION:
-     * T=0: insert(userEntity) выполнено
-     * T=10: insert(assistantEntity) начато, но не committed
-     * T=15: System kill app (Low Memory)
-     * T=20: App перезапускается
-     * РЕЗУЛЬТАТ: В БД есть userEntity, НЕТ assistantEntity → "висящее" сообщение
-     * 
-     * РЕШЕНИЕ:
-     * 1. Используем chatDao.withTransaction {} для атомарности INSERT-ов
-     * 2. Читаем history из БД ВНУТРИ транзакции (guaranteed consistency)
-     * 3. Streaming и finishStreaming() идут ПОСЛЕ транзакции (не критично для consistency)
-     * 4. При crash обе вставки откатятся → БД остается consistent
+     * ✅ ИСПРАВЛЕНО (Проблема #12): Используем специальный транзакционный метод
+     * insertUserAndAssistantMessages для атомарной вставки обоих сообщений.
      */
     fun sendMessage(userMessage: String) {
         if (userMessage.isBlank() || _isStreaming.value) return
@@ -274,33 +247,23 @@ class AnalyzerViewModel @Inject constructor(
                 return@launch
             }
 
-            // ✅ ИСПРАВЛЕНИЕ: Атомарная транзакция для INSERT-ов
-            // Обе вставки произойдут в одной транзакции
-            // При crash обе откатятся → no corrupted state
-            val assistantId = chatDao.withTransaction {
-                // INSERT #1: User message
-                val userEntity = ChatMessageEntity(
+            // ✅ ИСПРАВЛЕНО: Используем специальный транзакционный метод
+            // Обе вставки гарантированно committed или обе откачены
+            val assistantId = chatDao.insertUserAndAssistantMessages(
+                userMessage = ChatMessageEntity(
                     sessionId = sessionId,
                     role = MessageRole.USER,
                     content = userMessage,
                     cachedFilesContext = cacheContext.filePaths
-                )
-                chatDao.insert(userEntity)
-
-                // INSERT #2: Assistant placeholder (в той же транзакции!)
-                val assistantEntity = ChatMessageEntity(
+                ),
+                assistantMessage = ChatMessageEntity(
                     sessionId = sessionId,
                     role = MessageRole.ASSISTANT,
                     content = "",
                     isStreaming = true,
                     cachedFilesContext = cacheContext.filePaths
                 )
-                val id = chatDao.insert(assistantEntity)
-                
-                // Возвращаем ID для использования в streaming
-                id
-            }
-            // ✅ Теперь обе вставки гарантированно committed или обе откачены
+            )
 
             // Читаем историю ПОСЛЕ транзакции (гарантированно видим новые сообщения)
             val messages = buildMessagesForApi(userMessage, cacheContext)
