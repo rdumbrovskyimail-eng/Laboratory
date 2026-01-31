@@ -55,16 +55,16 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-konan-
     
-    # Кеширование build outputs
+    # Кеширование build outputs (v3 - НОВАЯ ВЕРСИЯ КЕША)
     - name: Cache build outputs
       uses: actions/cache@v4
       with:
         path: |
           app/build
           build
-        key: ${{ runner.os }}-build-v2-${{ github.sha }}
+        key: ${{ runner.os }}-build-v3-${{ github.sha }}
         restore-keys: |
-          ${{ runner.os }}-build-v2-
+          ${{ runner.os }}-build-v3-
         
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
@@ -77,12 +77,23 @@ jobs:
         echo "GITHUB_OWNER=test-owner" >> local.properties
         echo "GITHUB_REPO=test-repo" >> local.properties
     
+    # ✅ НОВОЕ: Принудительная очистка кеша
+    - name: Clear all caches
+      run: |
+        echo "🗑️ Removing ALL cached build artifacts..."
+        rm -rf ~/.gradle/caches
+        rm -rf ~/.gradle/wrapper
+        rm -rf .gradle
+        rm -rf ~/.konan
+        rm -rf app/build
+        rm -rf build
+        echo "✅ Cache cleared successfully"
+    
     # Полная очистка для диагностики
     - name: Clean build
       run: |
         echo "🧹 Full clean..."
         ./gradlew clean
-        rm -rf .gradle app/build build
     
     # Сборка DEBUG APK с детальными логами
     - name: Build Debug APK
