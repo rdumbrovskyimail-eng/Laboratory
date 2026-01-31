@@ -4,10 +4,13 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.hilt.work.HiltWorker
 import androidx.work.*
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.CacheDao
 import com.opuside.app.core.database.entity.CachedFileEntity
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
@@ -45,6 +48,10 @@ private val Context.cacheTimerDataStore: DataStore<Preferences> by preferencesDa
  *    - StateFlow обновляются каждую секунду
  *    - UI всегда показывает актуальное время
  *    - Нет рассинхронизации между UI и реальным состоянием
+ * 
+ * ✅ ИСПРАВЛЕНО:
+ * - Проблема №5: Race condition в init - сначала загружаем config, потом восстанавливаем таймер
+ * - Проблема №13: Добавлен лимит MAX_FILE_SIZE (1MB) для защиты от переполнения БД
  */
 @Singleton
 class PersistentCacheManager @Inject constructor(
@@ -55,6 +62,7 @@ class PersistentCacheManager @Inject constructor(
     companion object {
         private const val TIMER_WORK_TAG = "cache_timer_cleanup"
         private const val NOTIFICATION_WORK_TAG = "cache_timer_warning"
+        private const val MAX_FILE_SIZE = 1 * 1024 * 1024  // ✅ ДОБАВЛЕНО: 1MB лимит
         
         // DataStore keys
         private val KEY_END_TIMESTAMP = longPreferencesKey("cache_end_timestamp")
@@ -123,16 +131,20 @@ class PersistentCacheManager @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     init {
-        // Загружаем настройки таймаута
+        // ✅ ИСПРАВЛЕНО: Проблема №5 - Race condition
+        // Сначала загружаем настройки, потом восстанавливаем таймер
         scope.launch {
-            appSettings.cacheConfig.collect { config ->
-                currentTimeoutMs = config.timeoutMs
-            }
-        }
-
-        // Восстанавливаем состояние таймера при старте приложения
-        scope.launch {
+            // Сначала загружаем настройки
+            val config = appSettings.cacheConfig.first()
+            currentTimeoutMs = config.timeoutMs
+            
+            // Потом восстанавливаем таймер
             restoreTimerState()
+            
+            // Потом подписываемся на изменения
+            appSettings.cacheConfig.collect { newConfig ->
+                currentTimeoutMs = newConfig.timeoutMs
+            }
         }
     }
 
@@ -187,6 +199,13 @@ class PersistentCacheManager @Inject constructor(
 
     suspend fun addFile(file: CachedFileEntity): Result<Unit> {
         return try {
+            // ✅ ДОБАВЛЕНО: Проблема №13 - Проверка размера файла
+            if (file.sizeBytes > MAX_FILE_SIZE) {
+                return Result.failure(IllegalArgumentException(
+                    "File too large: ${file.sizeBytes} bytes (max ${MAX_FILE_SIZE / 1024 / 1024}MB)"
+                ))
+            }
+            
             val maxFiles = appSettings.maxCacheFiles.first()
             val currentCount = cacheDao.getCount()
 
@@ -205,6 +224,14 @@ class PersistentCacheManager @Inject constructor(
 
     suspend fun addFiles(files: List<CachedFileEntity>): Result<Int> {
         return try {
+            // ✅ ДОБАВЛЕНО: Проблема №13 - Проверка размера каждого файла
+            val oversizedFiles = files.filter { it.sizeBytes > MAX_FILE_SIZE }
+            if (oversizedFiles.isNotEmpty()) {
+                return Result.failure(IllegalArgumentException(
+                    "Files too large: ${oversizedFiles.map { it.filePath }} exceed ${MAX_FILE_SIZE / 1024 / 1024}MB"
+                ))
+            }
+            
             val maxFiles = appSettings.maxCacheFiles.first()
             val currentCount = cacheDao.getCount()
             val availableSlots = maxFiles - currentCount
@@ -491,20 +518,21 @@ class PersistentCacheManager @Inject constructor(
 /**
  * Background worker для очистки кеша.
  * Выполняется ровно через 5 минут, даже если приложение закрыто.
+ * 
+ * ✅ ИСПРАВЛЕНО: Проблема №3 - Использует @HiltWorker и @AssistedInject для DI
  */
-class CacheCleanupWorker(
-    context: Context,
-    params: WorkerParameters
+@HiltWorker
+class CacheCleanupWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val cacheDao: CacheDao
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
         android.util.Log.d("CacheCleanupWorker", "🗑️ Executing background cache cleanup")
 
-        // Получаем DAO через Hilt WorkerFactory
-        // (требует настройки HiltWorker, см. ниже)
-        
-        // Очищаем кеш
-        // cacheDao.clearAll()
+        // Очищаем кеш через инжектированный DAO
+        cacheDao.clearAll()
 
         // Сбрасываем состояние таймера
         applicationContext.cacheTimerDataStore.edit { prefs ->
@@ -520,10 +548,13 @@ class CacheCleanupWorker(
 
 /**
  * Worker для предупреждения (за 1 минуту до истечения).
+ * 
+ * ✅ ИСПРАВЛЕНО: Проблема №3 - Использует @HiltWorker и @AssistedInject для DI
  */
-class CacheWarningWorker(
-    context: Context,
-    params: WorkerParameters
+@HiltWorker
+class CacheWarningWorker @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
