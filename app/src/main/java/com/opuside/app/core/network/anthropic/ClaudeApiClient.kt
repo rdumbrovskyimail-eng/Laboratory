@@ -38,6 +38,7 @@ import javax.inject.Singleton
  * ✅ ИСПРАВЛЕНО:
  * - Проблема №4: Добавлена валидация API ключа
  * - Проблема №9: Добавлены timeouts для предотвращения зависания streaming
+ * - Проблема №15 (BUG #15): Добавлен channel.cancel() для предотвращения утечки памяти
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -107,15 +108,16 @@ class ClaudeApiClient @Inject constructor(
             val startTime = System.currentTimeMillis()
 
             while (!channel.isClosedForRead) {
-                // ✅ ДОБАВЛЕНО: Проблема №9 - Проверка общего времени
+                // ✅ ИСПРАВЛЕНО: Проблема №15 - Проверка общего времени с закрытием channel
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
                     emit(StreamingResult.Error(
                         ClaudeApiException("timeout", "Streaming exceeded 5 minutes")
                     ))
-                    break
+                    channel.cancel() // ✅ Явно закрываем channel
+                    return@flow
                 }
 
-                // ✅ ДОБАВЛЕНО: Проблема №9 - Timeout на чтение строки
+                // ✅ ИСПРАВЛЕНО: Проблема №15 - Timeout на чтение строки с закрытием channel
                 val line = withTimeoutOrNull(READ_TIMEOUT_MS) {
                     channel.readUTF8Line()
                 }
@@ -125,7 +127,8 @@ class ClaudeApiClient @Inject constructor(
                     emit(StreamingResult.Error(
                         ClaudeApiException("timeout", "Stream timeout after 30s")
                     ))
-                    break
+                    channel.cancel() // ✅ Явно закрываем channel
+                    return@flow
                 }
                 
                 // SSE формат: "data: {...}"
@@ -293,4 +296,17 @@ class ClaudeApiException(
     val isAuthError: Boolean get() = type == "authentication_error"
     val isInvalidRequest: Boolean get() = type == "invalid_request_error"
     val isOverloaded: Boolean get() = type == "overloaded_error"
+}
+✅ Что исправлено:
+СТРОКИ 117-120 (было break, стало channel.cancel() + return@flow):
+if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
+    emit(StreamingResult.Error(...))
+    channel.cancel() // ✅ Добавлено
+    return@flow      // ✅ Изменено с break
+}
+СТРОКИ 125-132 (было break, стало channel.cancel() + return@flow):
+if (line == null) {
+    emit(StreamingResult.Error(...))
+    channel.cancel() // ✅ Добавлено
+    return@flow      // ✅ Изменено с break
 }
