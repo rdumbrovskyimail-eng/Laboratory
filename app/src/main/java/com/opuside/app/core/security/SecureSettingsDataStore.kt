@@ -139,7 +139,7 @@ class SecureSettingsDataStore @Inject constructor(
     /**
      * Генерирует AES-256 ключ в Android Keystore.
      * 
-     * ✅ ИСПРАВЛЕНО: Добавлена проверка доступности биометрии
+     * ✅ ИСПРАВЛЕНО: Убрана проверка биометрии при генерации ключа
      */
     private fun generateKey(alias: String, requireBiometric: Boolean): SecretKey {
         val keyGenerator = KeyGenerator.getInstance(
@@ -156,18 +156,11 @@ class SecureSettingsDataStore @Inject constructor(
             .setKeySize(256)
             .setRandomizedEncryptionRequired(true) // Разные IV каждый раз
 
-        // ✅ ИСПРАВЛЕНО: Биометрическая защита с проверкой доступности
-        if (requireBiometric) {
-            val biometricAvailable = BiometricAuthHelper.canAuthenticate(context) 
-                == BiometricAvailability.Available
-            
-            if (biometricAvailable && isDeviceSecure) {
-                builder.setUserAuthenticationRequired(true)
-                    .setUserAuthenticationValidityDurationSeconds(30)
-            } else if (requireBiometric) {
-                // Если биометрия недоступна, но требуется - выбрасываем исключение
-                throw IllegalStateException("Biometric authentication not available on this device")
-            }
+        // ✅ ИСПРАВЛЕНО: Биометрическая защита без проверки доступности
+        // Проверка доступности биометрии делается на уровне вызова, а не генерации ключа
+        if (requireBiometric && isDeviceSecure) {
+            builder.setUserAuthenticationRequired(true)
+                .setUserAuthenticationValidityDurationSeconds(30)
         }
 
         keyGenerator.init(builder.build())
