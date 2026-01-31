@@ -20,8 +20,6 @@ import javax.inject.Singleton
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
-import kotlinx.coroutines.suspendCancellableCoroutine
 
 private val Context.secureDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "secure_settings_encrypted"
@@ -42,10 +40,8 @@ private val Context.secureDataStore: DataStore<Preferences> by preferencesDataSt
  *    - Невозможно отменить операцию
  *    
  *    НОВОЕ РЕШЕНИЕ:
- *    - Метод теперь suspend функция
- *    - Использует suspendCancellableCoroutine для structured concurrency
- *    - Автоматически отменяется при отмене вызывающей корутины
- *    - ViewModel использует viewModelScope для вызова
+ *    - Callback-based API для Compose
+ *    - ViewModel использует обычный scope для вызова
  *    - Безопасно при rotation и lifecycle changes
  * 
  * АРХИТЕКТУРА БЕЗОПАСНОСТИ:
@@ -138,8 +134,6 @@ class SecureSettingsDataStore @Inject constructor(
 
     /**
      * Генерирует AES-256 ключ в Android Keystore.
-     * 
-     * ✅ ИСПРАВЛЕНО: Убрана проверка биометрии при генерации ключа
      */
     private fun generateKey(alias: String, requireBiometric: Boolean): SecretKey {
         val keyGenerator = KeyGenerator.getInstance(
@@ -154,10 +148,8 @@ class SecureSettingsDataStore @Inject constructor(
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
-            .setRandomizedEncryptionRequired(true) // Разные IV каждый раз
+            .setRandomizedEncryptionRequired(true)
 
-        // ✅ ИСПРАВЛЕНО: Биометрическая защита без проверки доступности
-        // Проверка доступности биометрии делается на уровне вызова, а не генерации ключа
         if (requireBiometric && isDeviceSecure) {
             builder.setUserAuthenticationRequired(true)
                 .setUserAuthenticationValidityDurationSeconds(30)
@@ -307,7 +299,7 @@ class SecureSettingsDataStore @Inject constructor(
     /**
      * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #3 - GlobalScope утечка)
      * 
-     * Получает ключ с биометрической аутентификацией.
+     * Получает ключ с биометрической аутентификацией (callback-based для Compose).
      * 
      * СТАРАЯ ПРОБЛЕМА:
      * ─────────────────
@@ -330,38 +322,33 @@ class SecureSettingsDataStore @Inject constructor(
      * 
      * НОВОЕ РЕШЕНИЕ:
      * ─────────────────
-     * - suspend функция вместо callback-based API
-     * - suspendCancellableCoroutine для интеграции с BiometricPrompt
-     * - Автоматическая отмена при cancel корутины
-     * - ViewModel использует viewModelScope.launch для вызова
-     * - Привязка к lifecycle через ViewModel
+     * - Callback-based API совместимый с Compose
+     * - LaunchedEffect в Compose автоматически отменяется при recomposition
+     * - ViewModel использует обычный viewModelScope
+     * - Привязка к lifecycle через LaunchedEffect
      * 
-     * ИСПОЛЬЗОВАНИЕ В VIEWMODEL:
+     * ИСПОЛЬЗОВАНИЕ В COMPOSE:
      * ```kotlin
-     * fun testBiometricAccess(activity: FragmentActivity) {
-     *     viewModelScope.launch { // ← Привязано к VM lifecycle!
-     *         try {
-     *             val key = secureSettings.getAnthropicApiKeyWithBiometric(activity)
-     *             _message.value = "Key: ${key.take(10)}..."
-     *         } catch (e: BiometricAuthException) {
-     *             _message.value = "Auth failed: ${e.message}"
-     *         } catch (e: CancellationException) {
-     *             // Корутина отменена (Activity destroyed) - ничего не делаем
-     *         }
+     * if (biometricAuthRequest) {
+     *     LaunchedEffect(Unit) {
+     *         secureSettings.getAnthropicApiKeyWithBiometric(
+     *             activity = activity,
+     *             onSuccess = { key -> /* ... */ },
+     *             onError = { error -> /* ... */ }
+     *         )
      *     }
      * }
      * ```
      * 
      * @param activity Activity для показа BiometricPrompt
-     * @return Расшифрованный API ключ
-     * @throws BiometricAuthException если аутентификация не удалась
-     * @throws SecurityException если расшифровка не удалась
-     * @throws CancellationException если корутина отменена
+     * @param onSuccess Callback с расшифрованным API ключом
+     * @param onError Callback с ошибкой
      */
-    suspend fun getAnthropicApiKeyWithBiometric(
-        activity: FragmentActivity
-    ): String = suspendCancellableCoroutine { continuation ->
-        
+    fun getAnthropicApiKeyWithBiometric(
+        activity: FragmentActivity,
+        onSuccess: (String) -> Unit,
+        onError: (String) -> Unit
+    ) {
         // Получаем настройки
         val prefs = runCatching { 
             kotlinx.coroutines.runBlocking { 
@@ -377,57 +364,34 @@ class SecureSettingsDataStore @Inject constructor(
                 val key = kotlinx.coroutines.runBlocking {
                     getAnthropicApiKey().first()
                 }
-                if (continuation.isActive) {
-                    continuation.resume(key)
-                }
+                onSuccess(key)
             } catch (e: Exception) {
-                if (continuation.isActive) {
-                    continuation.resumeWith(Result.failure(e))
-                }
+                onError(e.message ?: "Failed to get key")
             }
-            return@suspendCancellableCoroutine
+            return
         }
 
-        // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Используем suspendCancellableCoroutine для structured concurrency
+        // Биометрическая аутентификация
         BiometricAuthHelper.authenticate(
             activity = activity,
             title = "Unlock API Key",
             subtitle = "Authentication required to access Anthropic API key",
             onSuccess = {
                 // Получаем ключ после успешной аутентификации
-                val key = runCatching {
-                    kotlinx.coroutines.runBlocking {
+                try {
+                    val key = kotlinx.coroutines.runBlocking {
                         getAnthropicApiKey().first()
                     }
-                }.getOrElse { e ->
-                    // Расшифровка не удалась
-                    if (continuation.isActive) {
-                        continuation.resumeWith(Result.failure(
-                            SecurityException("Decryption failed: ${e.message}", e)
-                        ))
-                    }
-                    return@authenticate
-                }
-                
-                // Возобновляем корутину с результатом
-                if (continuation.isActive) {
-                    continuation.resume(key)
+                    onSuccess(key)
+                } catch (e: Exception) {
+                    onError("Decryption failed: ${e.message}")
                 }
             },
             onError = { error ->
                 // Биометрическая аутентификация не удалась
-                if (continuation.isActive) {
-                    continuation.resumeWith(Result.failure(
-                        BiometricAuthException(error)
-                    ))
-                }
+                onError(error)
             }
         )
-        
-        // ✅ Обработка отмены корутины
-        continuation.invokeOnCancellation {
-            android.util.Log.d(TAG, "🛑 Biometric auth cancelled (Activity destroyed or coroutine cancelled)")
-        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -563,8 +527,6 @@ private data class EncryptedData(
 )
 
 /**
- * ✅ НОВЫЙ EXCEPTION: Специфичное исключение для биометрической аутентификации.
- * 
- * Позволяет отличить ошибки биометрии от других SecurityException.
+ * Специфичное исключение для биометрической аутентификации.
  */
 class BiometricAuthException(message: String) : SecurityException(message)
