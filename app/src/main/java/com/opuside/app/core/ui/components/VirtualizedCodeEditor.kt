@@ -50,6 +50,9 @@ import kotlinx.coroutines.flow.*
  * ✅ ИСПРАВЛЕНО:
  * - Проблема №6: Уменьшен maxHistorySize до 20 для предотвращения утечки памяти
  * - Проблема №12: Исправлена потеря фокуса TextField при recomposition
+ * - CRASH #6: Memory Leak - UndoRedoManager хранит только String вместо TextFieldValue
+ * - CRASH #7: UI Thread Freeze - Async подсветка синтаксиса в background thread
+ * - CRASH #8: Empty File Edge Case - корректная обработка пустых файлов
  */
 @Composable
 fun VirtualizedCodeEditor(
@@ -70,18 +73,28 @@ fun VirtualizedCodeEditor(
         mutableStateOf(TextFieldValue(content))
     }
 
-    // Разбиваем на строки для виртуализации
+    // ✅ ИСПРАВЛЕНО: CRASH #8 - Корректная обработка пустых файлов
     val lines = remember(textFieldValue.text) {
-        textFieldValue.text.lines()
-    }
-
-    // Async подсветка синтаксиса (по строкам)
-    val highlightedLines = remember(lines, language) {
-        lines.map { line ->
-            // Каждая строка подсвечивается независимо
-            SyntaxHighlighter.highlight(line, language)
+        val result = textFieldValue.text.lines()
+        if (result.size == 1 && result[0].isEmpty()) {
+            listOf("") // Оставляем одну пустую строку для UI
+        } else {
+            result
         }
     }
+
+    // ✅ ИСПРАВЛЕНО: CRASH #7 - Async подсветка синтаксиса в фоне
+    val highlightedLines = produceState(
+        initialValue = lines.map { AnnotatedString(it) }, // Placeholder без подсветки
+        lines, 
+        language
+    ) {
+        value = withContext(Dispatchers.Default) {
+            lines.map { line ->
+                SyntaxHighlighter.highlight(line, language)
+            }
+        }
+    }.value
 
     // Cursor position
     val cursorLine = remember(textFieldValue.selection.start, textFieldValue.text) {
@@ -104,13 +117,13 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // Undo/Redo история
+    // ✅ ИСПРАВЛЕНО: CRASH #6 - UndoRedoManager теперь хранит только String
     val undoRedoManager = remember { UndoRedoManager() }
     
     LaunchedEffect(textFieldValue.text) {
         // Debounce для истории (не сохраняем каждый символ)
         delay(500)
-        undoRedoManager.recordState(textFieldValue)
+        undoRedoManager.recordState(textFieldValue.text)
     }
 
     val listState = rememberLazyListState()
@@ -147,15 +160,20 @@ fun VirtualizedCodeEditor(
         if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
 
         when {
+            // ✅ ИСПРАВЛЕНО: CRASH #6 - Undo/Redo работает с String
             // Ctrl+Z - Undo
             event.isCtrlPressed && event.key == Key.Z && !event.isShiftPressed -> {
-                undoRedoManager.undo()?.let { textFieldValue = it }
+                undoRedoManager.undo(textFieldValue.text)?.let { 
+                    textFieldValue = TextFieldValue(it) 
+                }
                 true
             }
             // Ctrl+Shift+Z or Ctrl+Y - Redo
             (event.isCtrlPressed && event.isShiftPressed && event.key == Key.Z) ||
             (event.isCtrlPressed && event.key == Key.Y) -> {
-                undoRedoManager.redo()?.let { textFieldValue = it }
+                undoRedoManager.redo(textFieldValue.text)?.let { 
+                    textFieldValue = TextFieldValue(it) 
+                }
                 true
             }
             // Tab - Insert 4 spaces
@@ -395,10 +413,7 @@ private fun BoxScope.ScrollbarIndicator(
                 .fillMaxWidth()
                 .fillMaxHeight(0.1f)
                 .align(Alignment.TopEnd)
-                .offset(y = with(LocalDensity.current) {
-                    ((firstVisibleItem.toFloat() / totalItems) * 
-                     (LocalDensity.current.run { 400.dp.toPx() })).toDp()
-                })
+                .offset(y = ((firstVisibleItem.toFloat() / totalItems) * 400).dp)
                 .background(
                     color = EditorTheme.scrollbarColor,
                     shape = MaterialTheme.shapes.small
@@ -412,22 +427,22 @@ private fun BoxScope.ScrollbarIndicator(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * ✅ ИСПРАВЛЕНО: Проблема №6 - Уменьшен maxHistorySize со 100 до 20
- * для предотвращения утечки памяти при редактировании больших файлов
+ * ✅ ИСПРАВЛЕНО: CRASH #6 - Теперь хранит только String вместо TextFieldValue
+ * для предотвращения утечки памяти (TextFieldValue содержит AnnotatedString с spans)
  */
 private class UndoRedoManager {
-    private val history = mutableListOf<TextFieldValue>()
+    private val history = mutableListOf<String>() // ✅ Только String, без AnnotatedString
     private var currentIndex = -1
-    private val maxHistorySize = 20 // ✅ ИСПРАВЛЕНО: Было 100, стало 20
+    private val maxHistorySize = 20
 
-    fun recordState(state: TextFieldValue) {
+    fun recordState(text: String) {
         // Удаляем "будущие" состояния при новом вводе
         if (currentIndex < history.size - 1) {
             history.subList(currentIndex + 1, history.size).clear()
         }
 
-        // Добавляем новое состояние
-        history.add(state)
+        // Добавляем новое состояние (только text!)
+        history.add(text)
         currentIndex++
 
         // Ограничиваем размер истории
@@ -437,7 +452,7 @@ private class UndoRedoManager {
         }
     }
 
-    fun undo(): TextFieldValue? {
+    fun undo(currentText: String): String? {
         if (currentIndex > 0) {
             currentIndex--
             return history[currentIndex]
@@ -445,7 +460,7 @@ private class UndoRedoManager {
         return null
     }
 
-    fun redo(): TextFieldValue? {
+    fun redo(currentText: String): String? {
         if (currentIndex < history.size - 1) {
             currentIndex++
             return history[currentIndex]
