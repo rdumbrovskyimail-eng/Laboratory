@@ -6,10 +6,13 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.collection.LruCache
 
 /**
  * Подсветка синтаксиса для кода.
  * Поддерживает Kotlin, Java, XML, JSON.
+ * 
+ * ✅ ИСПРАВЛЕНО: Проблема №17 - Добавлено LRU кеширование для производительности
  */
 object SyntaxHighlighter {
 
@@ -35,14 +38,25 @@ object SyntaxHighlighter {
         "suspend", "inline", "reified", "typealias", "constructor", "init"
     )
 
+    // ✅ ДОБАВЛЕНО: Проблема №17 - LRU кеш для подсвеченных строк
+    private val cache = LruCache<Pair<String, String>, AnnotatedString>(100)
+
     fun highlight(code: String, language: String): AnnotatedString {
-        return when (language.lowercase()) {
+        // ✅ ДОБАВЛЕНО: Проверяем кеш перед подсветкой
+        val key = code to language
+        cache.get(key)?.let { return it }
+
+        // Подсвечиваем и кешируем результат
+        val result = when (language.lowercase()) {
             "kotlin", "kt", "kts", "gradle" -> highlightKotlin(code)
             "java" -> highlightKotlin(code) // Similar syntax
             "xml" -> highlightXml(code)
             "json" -> highlightJson(code)
             else -> buildAnnotatedString { append(code) }
         }
+
+        cache.put(key, result)
+        return result
     }
 
     private fun highlightKotlin(code: String): AnnotatedString = buildAnnotatedString {
