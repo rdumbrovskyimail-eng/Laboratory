@@ -1,5 +1,6 @@
 package com.opuside.app.feature.settings.presentation
 
+import android.widget.Toast
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -12,9 +13,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -36,6 +39,10 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
     val autoClearCacheInput by viewModel.autoClearCacheInput.collectAsState()
     val isSaving by viewModel.isSaving.collectAsState()
     val message by viewModel.message.collectAsState()
+    
+    // ✅ НОВОЕ: State для биометрии
+    var useBiometric by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -165,11 +172,69 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                 }
                 Spacer(Modifier.height(12.dp))
                 
+                // ✅ НОВОЕ: Биометрическая защита
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Biometric Protection")
+                        Text(
+                            "Require fingerprint/face to access API key",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = useBiometric,
+                        onCheckedChange = { useBiometric = it }
+                    )
+                }
+                
+                Spacer(Modifier.height(12.dp))
+                
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
                     Row {
                         TextButton(onClick = viewModel::testClaudeConnection) { Text("Test") }
-                        Button(onClick = viewModel::saveAnthropicSettings, enabled = !isSaving) { Text("Save") }
+                        Button(
+                            onClick = { viewModel.saveAnthropicSettings(useBiometric) }, 
+                            enabled = !isSaving
+                        ) { 
+                            Text("Save") 
+                        }
+                    }
+                }
+                
+                // ✅ НОВОЕ: Кнопка тестирования биометрии
+                if (useBiometric) {
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            viewModel.testBiometricAccess(
+                                activity = context as FragmentActivity,
+                                onSuccess = { key ->
+                                    Toast.makeText(
+                                        context, 
+                                        "Key: ${key.take(10)}...", 
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                },
+                                onError = { error ->
+                                    Toast.makeText(
+                                        context, 
+                                        "Auth failed: $error", 
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.Fingerprint, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Test Biometric Access")
                     }
                 }
             }
@@ -239,7 +304,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = hiltViewModel()) {
                         Text("How it works", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again",
+                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again\n7. Enable biometric protection for extra security",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                 }
             }
