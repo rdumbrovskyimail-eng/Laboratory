@@ -5,7 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.BuildConfig
 import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.data.SecureSettings
+import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.network.anthropic.model.ClaudeMessage
 import com.opuside.app.core.network.github.GitHubApiClient
@@ -15,10 +15,14 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * ✅ ИСПРАВЛЕНО: Проблема №8 - Убран FragmentActivity из ViewModel
+ * Используется Event pattern для биометрической аутентификации
+ */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val appSettings: AppSettings,
-    private val secureSettings: SecureSettings,  // ✅ НОВОЕ
+    private val secureSettings: SecureSettingsDataStore,
     private val claudeClient: ClaudeApiClient,
     private val gitHubClient: GitHubApiClient
 ) : ViewModel() {
@@ -68,6 +72,13 @@ class SettingsViewModel @Inject constructor(
 
     private val _claudeModelInput = MutableStateFlow("claude-opus-4-5-20251101")
     val claudeModelInput: StateFlow<String> = _claudeModelInput.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ ДОБАВЛЕНО: Проблема №8 - Event pattern для биометрии
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val _biometricAuthRequest = MutableStateFlow(false)
+    val biometricAuthRequest: StateFlow<Boolean> = _biometricAuthRequest.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CACHE SETTINGS
@@ -307,18 +318,18 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * ✅ НОВОЕ: Тестирование биометрического доступа
+     * ✅ ИСПРАВЛЕНО: Проблема №8 - Убран FragmentActivity из ViewModel
+     * Теперь ViewModel только сигнализирует UI о необходимости биометрии
      */
-    fun testBiometricAccess(
-        activity: FragmentActivity,
-        onSuccess: (String) -> Unit,
-        onError: (String) -> Unit
-    ) {
-        secureSettings.getAnthropicApiKeyWithBiometric(
-            activity = activity,
-            onSuccess = onSuccess,
-            onError = onError
-        )
+    fun requestBiometricAuth() {
+        _biometricAuthRequest.value = true
+    }
+
+    /**
+     * ✅ ДОБАВЛЕНО: Очистка биометрического запроса после обработки
+     */
+    fun clearBiometricRequest() {
+        _biometricAuthRequest.value = false
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -357,4 +368,4 @@ sealed class ConnectionStatus {
     data object Testing : ConnectionStatus()
     data object Connected : ConnectionStatus()
     data class Error(val message: String) : ConnectionStatus()
-} 
+}
