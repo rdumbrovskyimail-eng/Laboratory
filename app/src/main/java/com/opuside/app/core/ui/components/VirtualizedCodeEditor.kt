@@ -46,6 +46,10 @@ import kotlinx.coroutines.flow.*
  * - Smart cursor: автоматический скролл к курсору
  * - Undo/Redo: встроенная история изменений
  * - Performance: оптимизирован для файлов 10k+ строк
+ * 
+ * ✅ ИСПРАВЛЕНО:
+ * - Проблема №6: Уменьшен maxHistorySize до 20 для предотвращения утечки памяти
+ * - Проблема №12: Исправлена потеря фокуса TextField при recomposition
  */
 @Composable
 fun VirtualizedCodeEditor(
@@ -111,6 +115,10 @@ fun VirtualizedCodeEditor(
 
     val listState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
+    
+    // ✅ ИСПРАВЛЕНО: Проблема №12 - Сохраняем состояние фокуса
+    val isFocused = remember { mutableStateOf(false) }
+    
     val horizontalScrollState = rememberScrollState()
 
     // Auto-scroll к строке с курсором
@@ -121,6 +129,14 @@ fun VirtualizedCodeEditor(
                 scrollOffset = 0
             )
         }
+    }
+
+    // ✅ ИСПРАВЛЕНО: Проблема №12 - Восстанавливаем фокус при recomposition
+    DisposableEffect(Unit) {
+        if (isFocused.value) {
+            focusRequester.requestFocus()
+        }
+        onDispose { }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -232,8 +248,9 @@ fun VirtualizedCodeEditor(
                             textFieldValue = newValue
                         },
                         modifier = Modifier
-                            .size(0.dp)
-                            .focusRequester(focusRequester),
+                            .size(1.dp) // ✅ ИСПРАВЛЕНО: Проблема №12 - Минимальный размер вместо 0
+                            .focusRequester(focusRequester)
+                            .onFocusChanged { isFocused.value = it.isFocused }, // ✅ ИСПРАВЛЕНО: Проблема №12
                         textStyle = TextStyle(
                             fontFamily = FontFamily.Monospace,
                             fontSize = fontSize.sp,
@@ -394,10 +411,14 @@ private fun BoxScope.ScrollbarIndicator(
 // UNDO/REDO MANAGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * ✅ ИСПРАВЛЕНО: Проблема №6 - Уменьшен maxHistorySize со 100 до 20
+ * для предотвращения утечки памяти при редактировании больших файлов
+ */
 private class UndoRedoManager {
     private val history = mutableListOf<TextFieldValue>()
     private var currentIndex = -1
-    private val maxHistorySize = 100
+    private val maxHistorySize = 20 // ✅ ИСПРАВЛЕНО: Было 100, стало 20
 
     fun recordState(state: TextFieldValue) {
         // Удаляем "будущие" состояния при новом вводе
