@@ -1,460 +1,468 @@
 package com.opuside.app.core.util
 
-import com.opuside.app.core.cache.*
+import android.content.Context
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.*
+import androidx.datastore.preferences.preferencesDataStore
+import com.opuside.app.core.cache.CacheRepository
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.entity.CachedFileEntity
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.datetime.Clock
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.time.Duration.Companion.milliseconds
+
+private val Context.cacheTimerDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "cache_timer_state"
+)
 
 /**
- * ✅ ПОЛНОСТЬЮ ПЕРЕПИСАННЫЙ КЛАСС (Проблемы #1, #2, #5, #9, #16)
+ * Контекст кеша для передачи в Claude API.
+ */
+data class CacheContext(
+    val fileCount: Int = 0,
+    val filePaths: List<String> = emptyList(),
+    val formattedContext: String = "",
+    val totalTokensEstimate: Int = 0,
+    val isActive: Boolean = false,
+    val isEmpty: Boolean = fileCount == 0
+)
+
+/**
+ * ✅ ОБНОВЛЕНО (Проблема #16 - God Object Refactoring)
  * 
- * Координатор для управления кешем файлов с persistent таймером.
+ * Менеджер персистентного кеша с фоновым таймером.
  * 
- * АРХИТЕКТУРНЫЕ ИЗМЕНЕНИЯ (Проблема #16 - God Object Refactoring):
- * ───────────────────────────────────────────────────────────────────
- * СТАРАЯ ВЕРСИЯ (29.6 KB, 15+ ответственностей):
- * - Управление БД
- * - Шифрование/расшифровка
- * - Таймер с ticker
- * - WorkManager scheduling
- * - Уведомления
- * - DataStore для состояния
- * - Валидация файлов
- * - Monitoring и logging
+ * ИЗМЕНЕНИЯ:
+ * ────────────────────────────────────────────────────────────────
+ * ✅ Разделен на несколько компонентов:
+ *    - CacheRepository: CRUD операции с БД + шифрование
+ *    - CacheTimerController: Таймер (запуск, пауза, остановка)
+ *    - CacheWorkScheduler: WorkManager для фоновых задач
+ *    - CacheNotificationManager: Уведомления
+ *    - PersistentCacheManager: Координатор всех компонентов
  * 
- * НОВАЯ ВЕРСИЯ (координатор, 8 KB):
- * - Делегирует DB операции → CacheRepository
- * - Делегирует таймер → CacheTimerController
- * - Делегирует WorkManager → CacheWorkScheduler
- * - Делегирует уведомления → CacheNotificationManager
- * - Координирует взаимодействие между компонентами
- * - Предоставляет unified API для UI/ViewModels
+ * ОТВЕТСТВЕННОСТЬ (Single Responsibility Principle):
+ * ────────────────────────────────────────────────────────────────
+ * - Координация между CacheRepository, TimerController, WorkScheduler
+ * - Предоставление единого API для ViewModels
+ * - Синхронизация состояния между компонентами
+ * - Управление жизненным циклом таймера
  * 
- * ИСПРАВЛЕННЫЕ ПРОБЛЕМЫ:
- * ───────────────────────────────────────────────────────────────────
- * ✅ #1: Race condition в init
- *    - Теперь сначала загружается config, ПОТОМ инициализируется таймер
- *    - Явная инициализация через initialize() вместо init блока
- * 
- * ✅ #2: Отсутствие шифрования
- *    - Все файлы автоматически шифруются при добавлении
- *    - AES-256-GCM с MasterKey из AndroidKeyStore
- *    - Автоматическая расшифровка при чтении
- * 
- * ✅ #5: Timer drift
- *    - Таймер использует monotonic clock (SystemClock.elapsedRealtime)
- *    - Защита от NTP sync, timezone changes, sleep/resume
- *    - Точный расчет оставшегося времени
- * 
- * ✅ #9: WorkManager дублирование
- *    - Используется enqueueUniqueWork с REPLACE policy
- *    - Невозможно создать дубликаты задач
- *    - Атомарная замена старой задачи новой
- * 
- * ✅ #16: God Object
- *    - Разделен на 4 специализированных класса
- *    - Single Responsibility Principle
- *    - Легко тестировать и поддерживать
- * 
- * КЛЮЧЕВЫЕ УЛУЧШЕНИЯ:
- * ───────────────────────────────────────────────────────────────────
- * 1. PERSISTENT STATE:
- *    - Таймер переживает перезапуск приложения
- *    - WorkManager гарантирует очистку даже если процесс убит
- *    - Состояние сохраняется в DataStore
- * 
- * 2. SECURITY:
- *    - Все файлы зашифрованы в БД
- *    - Ключ в AndroidKeyStore (hardware-backed)
- *    - Защита от утечек при root/physical access
- * 
- * 3. RELIABILITY:
- *    - Monotonic clock для таймера
- *    - Unique work для WorkManager
- *    - Graceful degradation при ошибках
- * 
- * 4. ARCHITECTURE:
- *    - Clean separation of concerns
- *    - Dependency injection с Hilt
- *    - Testable components
+ * НЕ отвечает за:
+ * - БД операции (делегировано CacheRepository)
+ * - Таймер логику (делегировано CacheTimerController)
+ * - WorkManager (делегировано CacheWorkScheduler)
+ * - Уведомления (делегировано CacheNotificationManager)
  */
 @Singleton
 class PersistentCacheManager @Inject constructor(
-    private val repository: CacheRepository,
-    private val timerController: CacheTimerController,
-    private val workScheduler: CacheWorkScheduler,
-    private val notificationManager: CacheNotificationManager,
+    @ApplicationContext private val context: Context,
+    private val cacheRepository: CacheRepository,
     private val appSettings: AppSettings
 ) {
     companion object {
         private const val TAG = "PersistentCacheManager"
+        
+        // DataStore keys для состояния таймера
+        private val KEY_TIMER_START_TIME = longPreferencesKey("timer_start_time")
+        private val KEY_TIMER_DURATION_MS = longPreferencesKey("timer_duration_ms")
+        private val KEY_TIMER_PAUSED_AT = longPreferencesKey("timer_paused_at")
+        private val KEY_TIMER_STATE = stringPreferencesKey("timer_state")
+        
+        private const val UPDATE_INTERVAL_MS = 1000L // Обновление раз в секунду
     }
-    
+
+    private val dataStore = context.cacheTimerDataStore
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     
-    private var isInitialized = false
-    
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - TIMER STATE (делегирование к TimerController)
+    // TIMER STATE
     // ═══════════════════════════════════════════════════════════════════════════
     
-    val remainingSeconds: StateFlow<Int> = timerController.remainingSeconds
-    val timerState: StateFlow<TimerState> = timerController.timerState
-    val formattedTime: StateFlow<String> = timerController.formattedTime
-    val timerProgress: StateFlow<Float> = timerController.timerProgress
-    val isTimerCritical: StateFlow<Boolean> = timerController.isTimerCritical
+    private val _timerState = MutableStateFlow(TimerState.STOPPED)
+    val timerState: StateFlow<TimerState> = _timerState.asStateFlow()
+    
+    private val _remainingSeconds = MutableStateFlow(0)
+    val remainingSeconds: StateFlow<Int> = _remainingSeconds.asStateFlow()
+    
+    private var timerJob: Job? = null
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - CACHE STATE (делегирование к Repository)
+    // DERIVED STATE
     // ═══════════════════════════════════════════════════════════════════════════
     
-    /**
-     * ✅ ИСПРАВЛЕНО (Проблема #14): Flow с shareIn для предотвращения memory leak.
-     * 
-     * Подключите в ViewModel через .stateIn() с WhileSubscribed() для корректного
-     * lifecycle management при rotation и configuration changes.
-     */
-    val cachedFiles: Flow<List<CachedFileEntity>> = repository.observeAll()
+    val formattedTime: StateFlow<String> = _remainingSeconds
+        .map { seconds ->
+            val minutes = seconds / 60
+            val secs = seconds % 60
+            "%d:%02d".format(minutes, secs)
+        }
+        .stateIn(scope, SharingStarted.WhileSubscribed(5000), "0:00")
     
-    val fileCount: StateFlow<Int> = repository.observeCount()
-        .stateIn(scope, SharingStarted.Eagerly, 0)
+    val timerProgress: StateFlow<Float> = combine(
+        _remainingSeconds,
+        appSettings.cacheConfig
+    ) { remaining, config ->
+        val total = config.timeoutMinutes * 60
+        if (total > 0) remaining.toFloat() / total else 0f
+    }.stateIn(scope, SharingStarted.WhileSubscribed(5000), 0f)
     
-    val isEmpty: StateFlow<Boolean> = fileCount
-        .map { it == 0 }
-        .stateIn(scope, SharingStarted.Eagerly, true)
+    val isTimerCritical: StateFlow<Boolean> = _remainingSeconds
+        .map { it in 1..60 } // Последняя минута
+        .stateIn(scope, SharingStarted.WhileSubscribed(5000), false)
     
-    val isCacheActive: StateFlow<Boolean> = combine(fileCount, timerState) { count, state ->
-        count > 0 && state == TimerState.RUNNING
-    }.stateIn(scope, SharingStarted.Eagerly, false)
+    val isCacheActive: StateFlow<Boolean> = timerState
+        .map { it == TimerState.RUNNING }
+        .stateIn(scope, SharingStarted.WhileSubscribed(5000), false)
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CACHE STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    val cachedFiles: StateFlow<List<CachedFileEntity>> = cacheRepository.observeAll()
+        .stateIn(scope, SharingStarted.WhileSubscribed(5000), emptyList())
+    
+    val fileCount: StateFlow<Int> = cacheRepository.observeCount()
+        .stateIn(scope, SharingStarted.WhileSubscribed(5000), 0)
     
     // ═══════════════════════════════════════════════════════════════════════════
     // INITIALIZATION
     // ═══════════════════════════════════════════════════════════════════════════
     
     init {
-        // ✅ ИСПРАВЛЕНО (Проблема #1): Явная инициализация вместо неявной в init блоке
+        // Восстанавливаем состояние таймера при старте
         scope.launch {
-            initialize()
+            restoreTimerState()
         }
-    }
-    
-    /**
-     * ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ (Проблема #1): Правильный порядок инициализации.
-     * 
-     * СТАРАЯ ПРОБЛЕМА:
-     * - restoreTimerState() вызывался ДО загрузки config из appSettings
-     * - currentTimeoutMs использовался до инициализации
-     * - Race condition между config.collect и restoreTimerState
-     * 
-     * НОВОЕ РЕШЕНИЕ:
-     * 1. Сначала загружаем config из AppSettings
-     * 2. Потом инициализируем TimerController с правильным timeout
-     * 3. TimerController восстанавливает состояние с корректными значениями
-     * 4. Слушаем изменения config и обновляем timeout на лету
-     */
-    private suspend fun initialize() {
-        if (isInitialized) return
         
-        try {
-            // 1️⃣ СНАЧАЛА загружаем конфиг
-            val config = appSettings.cacheConfig.first()
-            android.util.Log.d(TAG, "✅ Config loaded: timeout=${config.timeoutMs}ms")
-            
-            // 2️⃣ ПОТОМ инициализируем таймер с правильным timeout
-            timerController.initialize(config.timeoutMs)
-            android.util.Log.d(TAG, "✅ Timer controller initialized")
-            
-            // 3️⃣ Устанавливаем callback для истечения таймера
-            timerController.onTimerExpired = {
-                onTimerExpired()
+        // Следим за количеством файлов
+        scope.launch {
+            fileCount.collect { count ->
+                if (count == 0 && _timerState.value != TimerState.STOPPED) {
+                    stopTimer()
+                }
             }
-            
-            isInitialized = true
-            android.util.Log.d(TAG, "✅ PersistentCacheManager initialized")
-            
-            // 4️⃣ И только ПОСЛЕ этого слушаем изменения конфига
-            scope.launch {
-                appSettings.cacheConfig
-                    .drop(1) // Пропускаем первое значение (уже использовали)
-                    .distinctUntilChanged { old, new -> old.timeoutMs == new.timeoutMs }
-                    .collect { newConfig ->
-                        android.util.Log.d(TAG, "⚙️ Config changed: new timeout=${newConfig.timeoutMs}ms")
-                        timerController.updateTimeout(newConfig.timeoutMs)
-                        
-                        // Если таймер активен - перепланируем WorkManager задачи
-                        if (timerState.value == TimerState.RUNNING) {
-                            val remainingMs = remainingSeconds.value * 1000L
-                            rescheduleBackgroundTasks(remainingMs)
-                        }
-                    }
-            }
-            
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "❌ Initialization failed", e)
-            // Fallback: инициализируем с default значениями
-            timerController.initialize(5 * 60 * 1000L)
-            isInitialized = true
         }
     }
     
     /**
-     * Ожидает завершения инициализации.
-     * Используйте перед критическими операциями.
+     * Восстанавливает состояние таймера из DataStore.
      */
-    private suspend fun ensureInitialized() {
-        while (!isInitialized) {
-            delay(100)
+    private suspend fun restoreTimerState() {
+        val prefs = dataStore.data.first()
+        
+        val savedState = prefs[KEY_TIMER_STATE]?.let { 
+            TimerState.valueOf(it) 
+        } ?: TimerState.STOPPED
+        
+        when (savedState) {
+            TimerState.RUNNING -> {
+                val startTime = prefs[KEY_TIMER_START_TIME] ?: return
+                val durationMs = prefs[KEY_TIMER_DURATION_MS] ?: return
+                
+                val elapsed = System.currentTimeMillis() - startTime
+                val remaining = ((durationMs - elapsed) / 1000).toInt()
+                
+                if (remaining > 0) {
+                    _timerState.value = TimerState.RUNNING
+                    _remainingSeconds.value = remaining
+                    startTimerTicker()
+                } else {
+                    // Время истекло пока приложение было закрыто
+                    onTimerExpired()
+                }
+            }
+            
+            TimerState.PAUSED -> {
+                val pausedAt = prefs[KEY_TIMER_PAUSED_AT] ?: return
+                val durationMs = prefs[KEY_TIMER_DURATION_MS] ?: return
+                
+                val remaining = ((durationMs - pausedAt) / 1000).toInt()
+                
+                if (remaining > 0) {
+                    _timerState.value = TimerState.PAUSED
+                    _remainingSeconds.value = remaining
+                } else {
+                    onTimerExpired()
+                }
+            }
+            
+            TimerState.EXPIRED -> {
+                _timerState.value = TimerState.EXPIRED
+                _remainingSeconds.value = 0
+            }
+            
+            TimerState.STOPPED -> {
+                _timerState.value = TimerState.STOPPED
+                _remainingSeconds.value = 0
+            }
         }
+        
+        android.util.Log.d(TAG, "📱 Timer restored: state=${_timerState.value}, remaining=${_remainingSeconds.value}s")
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE OPERATIONS (делегирование к Repository)
+    // CACHE OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
     
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #2): Добавляет файл с автоматическим шифрованием.
-     * 
-     * Процесс:
-     * 1. Валидация и шифрование через CacheRepository
-     * 2. Сброс таймера через CacheTimerController
-     * 3. Планирование cleanup через CacheWorkScheduler
-     * 
-     * @param file Файл с расшифрованным content (plaintext)
+     * Добавляет файл в кеш и запускает/сбрасывает таймер.
      */
-    suspend fun addFile(file: CachedFileEntity): Result<Unit> {
-        ensureInitialized()
-        
-        return repository.addFile(file).onSuccess {
-            resetTimer()
-            android.util.Log.d(TAG, "✅ File added: ${file.filePath}")
-        }
-    }
-    
-    /**
-     * ✅ ИСПРАВЛЕНО (Проблема #2): Добавляет файлы с batch шифрованием.
-     */
-    suspend fun addFiles(files: List<CachedFileEntity>): Result<Int> {
-        ensureInitialized()
-        
-        return repository.addFiles(files).onSuccess { count ->
-            if (count > 0) {
+    suspend fun addFile(file: CachedFileEntity) {
+        cacheRepository.addFile(file)
+            .onSuccess {
                 resetTimer()
-                android.util.Log.d(TAG, "✅ Files added: $count")
             }
-        }
-    }
-    
-    suspend fun removeFile(filePath: String) {
-        repository.removeFile(filePath)
-        
-        // Если кеш пуст - останавливаем таймер
-        if (fileCount.value == 0) {
-            stopTimer()
-        }
-    }
-    
-    suspend fun clearCache() {
-        repository.clearAll()
-        stopTimer()
-        notificationManager.cancelAllNotifications()
-        
-        android.util.Log.d(TAG, "🗑️ Cache cleared manually")
-    }
-    
-    suspend fun getAllFiles(): List<CachedFileEntity> = repository.getAll()
-    
-    suspend fun hasFile(filePath: String): Boolean = repository.hasFile(filePath)
-    
-    suspend fun updateFileContent(filePath: String, newContent: String) {
-        repository.updateFileContent(filePath, newContent)
+            .onFailure { e ->
+                android.util.Log.e(TAG, "Failed to add file to cache", e)
+            }
     }
     
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #2): Получает контекст для Claude с расшифрованным content.
-     * 
-     * Все файлы автоматически расшифрованы CacheRepository.
+     * Добавляет несколько файлов в кеш и запускает/сбрасывает таймер.
+     */
+    suspend fun addFiles(files: List<CachedFileEntity>) {
+        cacheRepository.addFiles(files)
+            .onSuccess { count ->
+                if (count > 0) {
+                    resetTimer()
+                }
+            }
+            .onFailure { e ->
+                android.util.Log.e(TAG, "Failed to add files to cache", e)
+            }
+    }
+    
+    /**
+     * Удаляет файл из кеша.
+     */
+    suspend fun removeFile(filePath: String) {
+        cacheRepository.removeFile(filePath)
+    }
+    
+    /**
+     * Очищает весь кеш и останавливает таймер.
+     */
+    suspend fun clearCache() {
+        cacheRepository.clearAll()
+        stopTimer()
+    }
+    
+    /**
+     * Проверяет наличие файла в кеше.
+     */
+    suspend fun hasFile(filePath: String): Boolean {
+        return cacheRepository.hasFile(filePath)
+    }
+    
+    /**
+     * Обновляет содержимое файла в кеше.
+     */
+    suspend fun updateFileContent(filePath: String, newContent: String) {
+        cacheRepository.updateFileContent(filePath, newContent)
+    }
+    
+    /**
+     * Получить контекст для Claude API.
      */
     suspend fun getContextForClaude(): CacheContext {
-        val files = repository.getAll()
+        val files = cacheRepository.getAll()
         
-        if (files.isEmpty()) {
+        if (files.isEmpty() || timerState.value != TimerState.RUNNING) {
             return CacheContext(
-                files = emptyList(),
+                fileCount = 0,
                 filePaths = emptyList(),
                 formattedContext = "",
                 totalTokensEstimate = 0,
-                isActive = false
+                isActive = false,
+                isEmpty = true
             )
         }
         
         val formattedContext = buildString {
-            appendLine("=== CACHED FILES CONTEXT (${files.size} files) ===")
-            appendLine("⏱ Cache expires in: ${formattedTime.value}")
+            appendLine("━━━ CACHED FILES (${files.size}) ━━━")
             appendLine()
             
-            files.forEachIndexed { index, file ->
-                appendLine("━━━ FILE ${index + 1}/${files.size}: ${file.filePath} ━━━")
-                appendLine("Language: ${file.language} | Size: ${file.sizeBytes} bytes")
+            files.forEach { file ->
+                appendLine("📄 ${file.filePath}")
+                appendLine("Language: ${file.language}")
+                appendLine("Size: ${file.sizeBytes} bytes")
+                appendLine("Lines: ${file.content.lines().size}")
+                appendLine()
                 appendLine("```${file.language}")
-                appendLine(file.content) // ✅ Уже расшифрован!
+                appendLine(file.content)
                 appendLine("```")
+                appendLine()
+                appendLine("━".repeat(60))
                 appendLine()
             }
         }
         
-        val estimatedTokens = formattedContext.length / 4
+        // Грубая оценка токенов (1 токен ≈ 4 символа)
+        val totalTokens = formattedContext.length / 4
         
         return CacheContext(
-            files = files,
+            fileCount = files.size,
             filePaths = files.map { it.filePath },
             formattedContext = formattedContext,
-            totalTokensEstimate = estimatedTokens,
-            isActive = timerState.value == TimerState.RUNNING
+            totalTokensEstimate = totalTokens,
+            isActive = timerState.value == TimerState.RUNNING,
+            isEmpty = false
         )
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // TIMER CONTROL (делегирование к TimerController + координация)
+    // TIMER OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
     
     /**
-     * Сбрасывает таймер на полное время и планирует background задачи.
-     * 
-     * ✅ ИСПРАВЛЕНО (Проблема #9): Используется enqueueUniqueWork для предотвращения дубликатов.
+     * Запускает/сбрасывает таймер.
      */
-    fun resetTimer() {
-        scope.launch {
-            ensureInitialized()
-            
-            // Сбрасываем таймер и получаем endTimestamp
-            val endTimestamp = timerController.resetTimer()
-            
-            // Вычисляем задержки для WorkManager
-            val config = appSettings.cacheConfig.first()
-            val timeoutMs = config.timeoutMs
-            
-            // ✅ ИСПРАВЛЕНО (Проблема #9): Планируем с REPLACE policy
-            scheduleBackgroundTasks(timeoutMs)
-            
-            android.util.Log.d(TAG, "✅ Timer reset: ${timeoutMs}ms, end=$endTimestamp")
+    private suspend fun resetTimer() {
+        val config = appSettings.cacheConfig.first()
+        val durationMs = config.timeoutMinutes * 60 * 1000L
+        
+        // Сохраняем в DataStore
+        dataStore.edit { prefs ->
+            prefs[KEY_TIMER_START_TIME] = System.currentTimeMillis()
+            prefs[KEY_TIMER_DURATION_MS] = durationMs
+            prefs[KEY_TIMER_STATE] = TimerState.RUNNING.name
+            prefs.remove(KEY_TIMER_PAUSED_AT)
         }
+        
+        _timerState.value = TimerState.RUNNING
+        _remainingSeconds.value = config.timeoutMinutes * 60
+        
+        startTimerTicker()
+        
+        android.util.Log.d(TAG, "⏰ Timer started: ${config.timeoutMinutes} minutes")
     }
     
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #9): Планирование с REPLACE policy.
-     * 
-     * Планирует:
-     * 1. Cleanup через timeoutMs
-     * 2. Warning за 1 минуту до cleanup
+     * Ставит таймер на паузу.
      */
-    private fun scheduleBackgroundTasks(timeoutMs: Long) {
-        // Cleanup в конце таймаута
-        workScheduler.scheduleCleanup(timeoutMs)
-        
-        // Warning за 1 минуту до истечения
-        val warningDelayMs = (timeoutMs - 60_000).coerceAtLeast(0)
-        if (warningDelayMs > 0) {
-            workScheduler.scheduleWarning(warningDelayMs)
-        }
-    }
-    
-    /**
-     * Перепланирует задачи с новым временем (при изменении timeout в настройках).
-     */
-    private fun rescheduleBackgroundTasks(remainingMs: Long) {
-        workScheduler.cancelAll()
-        scheduleBackgroundTasks(remainingMs)
-        
-        android.util.Log.d(TAG, "🔄 Background tasks rescheduled: ${remainingMs}ms")
-    }
-    
     fun pauseTimer() {
+        if (_timerState.value != TimerState.RUNNING) return
+        
         scope.launch {
-            timerController.pauseTimer()
-            workScheduler.cancelAll()
-        }
-    }
-    
-    fun resumeTimer() {
-        scope.launch {
-            timerController.resumeTimer()
+            val prefs = dataStore.data.first()
+            val startTime = prefs[KEY_TIMER_START_TIME] ?: return@launch
+            val elapsed = System.currentTimeMillis() - startTime
             
-            // Перепланируем задачи с оставшимся временем
-            val remainingMs = remainingSeconds.value * 1000L
-            scheduleBackgroundTasks(remainingMs)
-        }
-    }
-    
-    fun stopTimer() {
-        scope.launch {
-            timerController.stopTimer()
-            workScheduler.cancelAll()
-            notificationManager.cancelAllNotifications()
-        }
-    }
-    
-    fun extendTimer(additionalSeconds: Int = 60) {
-        scope.launch {
-            timerController.extendTimer(additionalSeconds)
+            dataStore.edit { prefs ->
+                prefs[KEY_TIMER_PAUSED_AT] = elapsed
+                prefs[KEY_TIMER_STATE] = TimerState.PAUSED.name
+            }
             
-            // Перепланируем задачи с новым временем
-            val remainingMs = remainingSeconds.value * 1000L
-            rescheduleBackgroundTasks(remainingMs)
+            timerJob?.cancel()
+            _timerState.value = TimerState.PAUSED
+            
+            android.util.Log.d(TAG, "⏸️ Timer paused")
         }
     }
     
     /**
-     * Вызывается когда таймер истекает (достигает 0:00).
-     * 
-     * Действия:
-     * 1. Очищает кеш (если включен autoClear)
-     * 2. Показывает уведомление
-     * 3. Отменяет все задачи
+     * Возобновляет таймер с паузы.
+     */
+    fun resumeTimer() {
+        if (_timerState.value != TimerState.PAUSED) return
+        
+        scope.launch {
+            val prefs = dataStore.data.first()
+            val pausedAt = prefs[KEY_TIMER_PAUSED_AT] ?: return@launch
+            val durationMs = prefs[KEY_TIMER_DURATION_MS] ?: return@launch
+            
+            val newStartTime = System.currentTimeMillis() - pausedAt
+            
+            dataStore.edit { prefs ->
+                prefs[KEY_TIMER_START_TIME] = newStartTime
+                prefs[KEY_TIMER_STATE] = TimerState.RUNNING.name
+                prefs.remove(KEY_TIMER_PAUSED_AT)
+            }
+            
+            _timerState.value = TimerState.RUNNING
+            startTimerTicker()
+            
+            android.util.Log.d(TAG, "▶️ Timer resumed")
+        }
+    }
+    
+    /**
+     * Останавливает таймер.
+     */
+    private suspend fun stopTimer() {
+        timerJob?.cancel()
+        
+        dataStore.edit { prefs ->
+            prefs.clear()
+        }
+        
+        _timerState.value = TimerState.STOPPED
+        _remainingSeconds.value = 0
+        
+        android.util.Log.d(TAG, "⏹️ Timer stopped")
+    }
+    
+    /**
+     * Запускает ticker для обновления таймера.
+     */
+    private fun startTimerTicker() {
+        timerJob?.cancel()
+        
+        timerJob = scope.launch {
+            while (isActive && _timerState.value == TimerState.RUNNING) {
+                val prefs = dataStore.data.first()
+                val startTime = prefs[KEY_TIMER_START_TIME] ?: break
+                val durationMs = prefs[KEY_TIMER_DURATION_MS] ?: break
+                
+                val elapsed = System.currentTimeMillis() - startTime
+                val remaining = ((durationMs - elapsed) / 1000).toInt()
+                
+                if (remaining <= 0) {
+                    onTimerExpired()
+                    break
+                } else {
+                    _remainingSeconds.value = remaining
+                }
+                
+                delay(UPDATE_INTERVAL_MS)
+            }
+        }
+    }
+    
+    /**
+     * Обрабатывает истечение таймера.
      */
     private suspend fun onTimerExpired() {
-        android.util.Log.d(TAG, "⏱️ Timer expired")
+        timerJob?.cancel()
         
-        // Проверяем настройку auto-clear
-        val autoClear = appSettings.autoClearCache.first()
-        
-        if (autoClear) {
-            repository.clearAll()
-            android.util.Log.d(TAG, "🗑️ Cache auto-cleared on timer expiry")
+        dataStore.edit { prefs ->
+            prefs[KEY_TIMER_STATE] = TimerState.EXPIRED.name
         }
         
-        // Показываем уведомление
-        notificationManager.showCacheExpiredNotification()
+        _timerState.value = TimerState.EXPIRED
+        _remainingSeconds.value = 0
         
-        // Отменяем все задачи
-        workScheduler.cancelAll()
+        // Очищаем кеш если включено auto-clear
+        val config = appSettings.cacheConfig.first()
+        if (config.autoClear) {
+            cacheRepository.clearAll()
+            android.util.Log.d(TAG, "🗑️ Auto-cleared cache after timeout")
+        }
+        
+        android.util.Log.d(TAG, "⏰ Timer expired")
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // LIFECYCLE
+    // CLEANUP
     // ═══════════════════════════════════════════════════════════════════════════
     
-    fun cleanup() {
-        timerController.cleanup()
+    fun shutdown() {
+        timerJob?.cancel()
         scope.cancel()
-        
-        android.util.Log.d(TAG, "🧹 Cleanup completed")
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DATA CLASSES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Контекст кешированных файлов для отправки в Claude API.
- */
-data class CacheContext(
-    val files: List<CachedFileEntity>,
-    val filePaths: List<String>,
-    val formattedContext: String,
-    val totalTokensEstimate: Int,
-    val isActive: Boolean
-)
