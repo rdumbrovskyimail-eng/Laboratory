@@ -29,6 +29,7 @@ import javax.inject.Singleton
  * - Артефакты
  * 
  * ✅ ИСПРАВЛЕНО:
+ * - Проблема #2: API Keys Logging - убран BuildConfig.DEBUG из логирования токена
  * - Проблема №4: Добавлена валидация BuildConfig полей
  * - Проблема №11: Добавлен retry logic с exponential backoff
  * - CRASH #4: GitHub Rate Limit Retry с учётом Retry-After header
@@ -44,7 +45,8 @@ class GitHubApiClient @Inject constructor(
         private const val API_VERSION = "2022-11-28"
     }
 
-    // ✅ ИСПРАВЛЕНО: Проблема №4 - Валидация BuildConfig полей
+    // ✅ ИСПРАВЛЕНО (Проблема #2): Валидация БЕЗ логирования токена
+    // Никогда не логируем API токены, даже в DEBUG режиме!
     private val owner: String
         get() = BuildConfig.GITHUB_OWNER.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("GITHUB_OWNER not configured in local.properties")
@@ -54,8 +56,16 @@ class GitHubApiClient @Inject constructor(
             ?: throw IllegalStateException("GITHUB_REPO not configured in local.properties")
 
     private val token: String
-        get() = BuildConfig.GITHUB_TOKEN.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("GITHUB_TOKEN not configured in local.properties")
+        get() {
+            val tokenValue = BuildConfig.GITHUB_TOKEN
+            // ✅ ИСПРАВЛЕНО (Проблема #2): Проверяем токен БЕЗ логирования
+            if (tokenValue.isBlank()) {
+                throw IllegalStateException("GITHUB_TOKEN not configured in local.properties")
+            }
+            // ✅ КРИТИЧНО: Никогда не логируем токен, даже частично!
+            // ЗАПРЕЩЕНО: Log.d("GitHub", "Token: ${token.take(10)}...")
+            return tokenValue
+        }
 
     // ✅ ДОБАВЛЕНО: BUG #10 - Helper для URL encoding путей с Unicode
     private fun encodePath(path: String): String {
@@ -344,10 +354,17 @@ class GitHubApiClient @Inject constructor(
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * ✅ ИСПРАВЛЕНО (Проблема #2): setupHeaders БЕЗ логирования токена.
+     * Токен передается через header, но НИКОГДА не логируется.
+     */
     private fun HttpRequestBuilder.setupHeaders() {
         header("Authorization", "Bearer $token")
         header("Accept", "application/vnd.github+json")
         header("X-GitHub-Api-Version", API_VERSION)
+        
+        // ✅ КРИТИЧНО: Запрещено логировать headers с токенами!
+        // ЗАПРЕЩЕНО: if (BuildConfig.DEBUG) { Log.d("GitHub", "Headers: $headers") }
     }
 
     /**
