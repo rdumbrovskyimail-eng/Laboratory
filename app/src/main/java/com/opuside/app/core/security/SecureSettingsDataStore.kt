@@ -383,8 +383,11 @@ class SecureSettingsDataStore @Inject constructor(
                 kotlinx.coroutines.runBlocking {
                     getAnthropicApiKey().first()
                 }
-            }.getOrElse { 
-                continuation.resume(Result.failure<String>(it).getOrThrow())
+            }.getOrElse { e ->
+                // ✅ ИСПРАВЛЕНО (строка 162): Правильное завершение с ошибкой
+                if (continuation.isActive) {
+                    continuation.resumeWith(Result.failure(e))
+                }
                 return@suspendCancellableCoroutine
             }
             continuation.resume(key)
