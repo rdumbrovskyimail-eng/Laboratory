@@ -26,9 +26,7 @@ android {
             useSupportLibrary = true
         }
 
-        // ═══════════════════════════════════════════════════════════════════
-        // API KEYS (из local.properties - НЕ коммитить!)
-        // ═══════════════════════════════════════════════════════════════════
+        // API KEYS
         buildConfigField(
             "String",
             "ANTHROPIC_API_KEY",
@@ -50,9 +48,7 @@ android {
             "\"${project.findProperty("GITHUB_REPO") ?: ""}\""
         )
 
-        // ═══════════════════════════════════════════════════════════════════
         // API ENDPOINTS
-        // ═══════════════════════════════════════════════════════════════════
         buildConfigField(
             "String",
             "ANTHROPIC_API_URL",
@@ -69,14 +65,11 @@ android {
             "\"https://api.github.com/graphql\""
         )
 
-        // ═══════════════════════════════════════════════════════════════════
         // APP CONSTANTS
-        // ═══════════════════════════════════════════════════════════════════
-        buildConfigField("Long", "CACHE_TIMEOUT_MS", "300000L") // 5 минут
+        buildConfigField("Long", "CACHE_TIMEOUT_MS", "300000L")
         buildConfigField("Int", "MAX_CACHE_FILES", "20")
     }
 
-    // ✅ ИСПРАВЛЕНО: CRITICAL #3 - CLAUDE_MODEL доступен во всех buildTypes
     buildTypes.configureEach {
         buildConfigField("String", "CLAUDE_MODEL", "\"claude-opus-4-5-20251101\"")
     }
@@ -89,7 +82,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug") // TODO: Настроить release signing
+            signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false
@@ -128,6 +121,11 @@ android {
         }
     }
 
+    // Ускорение компиляции
+    composeOptions {
+        kotlinCompilerExtensionVersion = libs.versions.compose.compiler.get()
+    }
+
     // KSP для Room
     ksp {
         arg("room.schemaLocation", "$projectDir/schemas")
@@ -137,18 +135,14 @@ android {
 }
 
 dependencies {
-    // ═══════════════════════════════════════════════════════════════════════════
     // CORE ANDROID
-    // ═══════════════════════════════════════════════════════════════════════════
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.activity.compose)
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // JETPACK COMPOSE
-    // ═══════════════════════════════════════════════════════════════════════════
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.ui.graphics)
@@ -159,14 +153,10 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // NAVIGATION
-    // ═══════════════════════════════════════════════════════════════════════════
     implementation(libs.androidx.navigation.compose)
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // KTOR 3.x (SSE Streaming для Claude API)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // KTOR 3.x
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.okhttp)
     implementation(libs.ktor.client.content.negotiation)
@@ -174,57 +164,39 @@ dependencies {
     implementation(libs.ktor.client.auth)
     implementation(libs.ktor.serialization.kotlinx.json)
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // KOTLINX
-    // ═══════════════════════════════════════════════════════════════════════════
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.datetime)
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // HILT (Dependency Injection)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // HILT
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // HILT WORK (✅ ДОБАВЛЕНО: Проблема №2 - Поддержка Workers в Hilt)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // HILT WORK
     implementation("androidx.hilt:hilt-work:1.2.0")
     ksp("androidx.hilt:hilt-compiler:1.2.0")
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // WORKMANAGER (✅ ДОБАВЛЕНО: Требуется для фонового таймера)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // WORKMANAGER
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ENCRYPTION (✅ НОВОЕ: Шифрование кеша)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ENCRYPTION
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // ROOM (Database для кеша и истории чата)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ROOM
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // DATASTORE (Preferences)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // DATASTORE
     implementation(libs.androidx.datastore.preferences)
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // BIOMETRIC (Опциональная защита)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // BIOMETRIC
     implementation(libs.androidx.biometric)
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // TESTING
-    // ═══════════════════════════════════════════════════════════════════════════
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.junit)
