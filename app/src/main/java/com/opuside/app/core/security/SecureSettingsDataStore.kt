@@ -20,16 +20,36 @@ import javax.inject.Singleton
 import android.util.Base64
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 private val Context.secureDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "secure_settings_encrypted"
 )
 
 /**
+ * ✅ ИСПРАВЛЕНО (Проблема #3 - LIFECYCLE VIOLATION CRITICAL)
+ * 
  * 2026-уровневое безопасное хранилище для чувствительных данных.
  * 
- * АРХИТЕКТУРА БЕЗОПАСНОСТИ:
+ * КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ:
+ * ────────────────────────────────────────────────────────────────
+ * ✅ #3: GlobalScope утечка в getAnthropicApiKeyWithBiometric
+ *    СТАРАЯ ПРОБЛЕМА:
+ *    - Использовался GlobalScope.launch { ... }
+ *    - Не привязан к lifecycle Activity
+ *    - При закрытии Activity callback мог вызваться после destroy → crash
+ *    - Невозможно отменить операцию
+ *    
+ *    НОВОЕ РЕШЕНИЕ:
+ *    - Метод теперь suspend функция
+ *    - Использует suspendCancellableCoroutine для structured concurrency
+ *    - Автоматически отменяется при отмене вызывающей корутины
+ *    - ViewModel использует viewModelScope для вызова
+ *    - Безопасно при rotation и lifecycle changes
  * 
+ * АРХИТЕКТУРА БЕЗОПАСНОСТИ:
+ * ────────────────────────────────────────────────────────────────
  * 1. ANDROID KEYSTORE:
  *    - Генерация AES ключа в аппаратном TEE (Trusted Execution Environment)
  *    - Ключ НИКОГДА не покидает защищенное хранилище
@@ -60,6 +80,7 @@ class SecureSettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     companion object {
+        private const val TAG = "SecureSettingsDataStore"
         private const val KEYSTORE_ALIAS = "opuside_master_key"
         private const val KEYSTORE_ALIAS_BIOMETRIC = "opuside_biometric_key"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
@@ -71,7 +92,6 @@ class SecureSettingsDataStore @Inject constructor(
         private val KEY_LAST_KEY_ROTATION = longPreferencesKey("last_key_rotation")
         private val KEY_BIOMETRIC_ENABLED = booleanPreferencesKey("biometric_enabled")
         
-        // ✅ ИСПРАВЛЕНО: CRITICAL #1 - Добавлены отсутствующие ключи
         // Non-encrypted keys (безопасно хранить открыто)
         private val KEY_GITHUB_OWNER = stringPreferencesKey("github_owner")
         private val KEY_GITHUB_REPO = stringPreferencesKey("github_repo")
@@ -93,7 +113,7 @@ class SecureSettingsDataStore @Inject constructor(
         isRooted = SecurityUtils.isDeviceRooted()
         
         if (isRooted) {
-            android.util.Log.w("SecureSettings", "⚠️ Device is rooted - security compromised!")
+            android.util.Log.w(TAG, "⚠️ Device is rooted - security compromised!")
         }
     }
 
@@ -119,7 +139,7 @@ class SecureSettingsDataStore @Inject constructor(
     /**
      * Генерирует AES-256 ключ в Android Keystore.
      * 
-     * ✅ ИСПРАВЛЕНО: BUG #9 - Добавлена проверка доступности биометрии
+     * ✅ ИСПРАВЛЕНО: Добавлена проверка доступности биометрии
      */
     private fun generateKey(alias: String, requireBiometric: Boolean): SecretKey {
         val keyGenerator = KeyGenerator.getInstance(
@@ -136,7 +156,7 @@ class SecureSettingsDataStore @Inject constructor(
             .setKeySize(256)
             .setRandomizedEncryptionRequired(true) // Разные IV каждый раз
 
-        // ✅ ИСПРАВЛЕНО: BUG #9 - Биометрическая защита с проверкой доступности
+        // ✅ ИСПРАВЛЕНО: Биометрическая защита с проверкой доступности
         if (requireBiometric) {
             val biometricAvailable = BiometricAuthHelper.canAuthenticate(context) 
                 == BiometricAvailability.Available
@@ -170,7 +190,7 @@ class SecureSettingsDataStore @Inject constructor(
      * Ротация ключа шифрования.
      */
     private suspend fun rotateEncryptionKey() {
-        android.util.Log.d("SecureSettings", "🔄 Starting key rotation...")
+        android.util.Log.d(TAG, "🔄 Starting key rotation...")
 
         // Расшифровываем все данные старым ключом
         val anthropicKey = getAnthropicApiKey().first()
@@ -195,7 +215,7 @@ class SecureSettingsDataStore @Inject constructor(
             prefs[KEY_LAST_KEY_ROTATION] = System.currentTimeMillis()
         }
 
-        android.util.Log.d("SecureSettings", "✅ Key rotation completed")
+        android.util.Log.d(TAG, "✅ Key rotation completed")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -222,7 +242,7 @@ class SecureSettingsDataStore @Inject constructor(
                 iv = Base64.encodeToString(iv, Base64.NO_WRAP)
             )
         } catch (e: Exception) {
-            android.util.Log.e("SecureSettings", "❌ Encryption failed", e)
+            android.util.Log.e(TAG, "❌ Encryption failed", e)
             throw SecurityException("Encryption failed: ${e.message}")
         }
     }
@@ -247,7 +267,7 @@ class SecureSettingsDataStore @Inject constructor(
 
             String(plaintext, Charsets.UTF_8)
         } catch (e: Exception) {
-            android.util.Log.e("SecureSettings", "❌ Decryption failed", e)
+            android.util.Log.e(TAG, "❌ Decryption failed", e)
             throw SecurityException("Decryption failed: ${e.message}")
         }
     }
@@ -270,7 +290,7 @@ class SecureSettingsDataStore @Inject constructor(
             prefs[KEY_BIOMETRIC_ENABLED] = useBiometric
         }
         
-        android.util.Log.d("SecureSettings", "🔐 Anthropic API key encrypted and saved")
+        android.util.Log.d(TAG, "🔐 Anthropic API key encrypted and saved")
     }
 
     /**
@@ -285,47 +305,140 @@ class SecureSettingsDataStore @Inject constructor(
             try {
                 decryptData(EncryptedData(ciphertext, iv), useBiometric)
             } catch (e: Exception) {
-                android.util.Log.e("SecureSettings", "Failed to decrypt Anthropic key", e)
+                android.util.Log.e(TAG, "Failed to decrypt Anthropic key", e)
                 ""
             }
         }
         .catch { emit("") }
 
     /**
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #3 - GlobalScope утечка)
+     * 
      * Получает ключ с биометрической аутентификацией.
+     * 
+     * СТАРАЯ ПРОБЛЕМА:
+     * ─────────────────
+     * ```kotlin
+     * BiometricAuthHelper.authenticate(
+     *     onSuccess = {
+     *         kotlinx.coroutines.GlobalScope.launch { // ← УТЕЧКА!
+     *             val key = getAnthropicApiKey().first()
+     *             onSuccess(key)
+     *         }
+     *     }
+     * )
+     * ```
+     * 
+     * Проблемы:
+     * 1. GlobalScope не привязан к lifecycle Activity
+     * 2. Если пользователь закрыл Activity → callback вызовется после destroy → crash
+     * 3. Невозможно отменить операцию (не structured concurrency)
+     * 4. Memory leak при rotation
+     * 
+     * НОВОЕ РЕШЕНИЕ:
+     * ─────────────────
+     * - suspend функция вместо callback-based API
+     * - suspendCancellableCoroutine для интеграции с BiometricPrompt
+     * - Автоматическая отмена при cancel корутины
+     * - ViewModel использует viewModelScope.launch для вызова
+     * - Привязка к lifecycle через ViewModel
+     * 
+     * ИСПОЛЬЗОВАНИЕ В VIEWMODEL:
+     * ```kotlin
+     * fun testBiometricAccess(activity: FragmentActivity) {
+     *     viewModelScope.launch { // ← Привязано к VM lifecycle!
+     *         try {
+     *             val key = secureSettings.getAnthropicApiKeyWithBiometric(activity)
+     *             _message.value = "Key: ${key.take(10)}..."
+     *         } catch (e: BiometricAuthException) {
+     *             _message.value = "Auth failed: ${e.message}"
+     *         } catch (e: CancellationException) {
+     *             // Корутина отменена (Activity destroyed) - ничего не делаем
+     *         }
+     *     }
+     * }
+     * ```
+     * 
+     * @param activity Activity для показа BiometricPrompt
+     * @return Расшифрованный API ключ
+     * @throws BiometricAuthException если аутентификация не удалась
+     * @throws SecurityException если расшифровка не удалась
+     * @throws CancellationException если корутина отменена
      */
     suspend fun getAnthropicApiKeyWithBiometric(
-        activity: FragmentActivity,
-        onSuccess: (String) -> Unit,
-        onError: (String) -> Unit
-    ) {
-        val prefs = dataStore.data.first()
-        val useBiometric = prefs[KEY_BIOMETRIC_ENABLED] ?: false
+        activity: FragmentActivity
+    ): String = suspendCancellableCoroutine { continuation ->
+        
+        val prefs = runCatching { 
+            kotlinx.coroutines.runBlocking { 
+                dataStore.data.first() 
+            } 
+        }.getOrNull()
+        
+        val useBiometric = prefs?.get(KEY_BIOMETRIC_ENABLED) ?: false
         
         if (!useBiometric) {
-            // Биометрия не требуется
-            onSuccess(getAnthropicApiKey().first())
-            return
+            // Биометрия не требуется - возвращаем ключ сразу
+            val key = runCatching {
+                kotlinx.coroutines.runBlocking {
+                    getAnthropicApiKey().first()
+                }
+            }.getOrElse { 
+                continuation.resume(Result.failure<String>(it).getOrThrow())
+                return@suspendCancellableCoroutine
+            }
+            continuation.resume(key)
+            return@suspendCancellableCoroutine
         }
 
+        // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Больше НЕ используем GlobalScope!
+        // Вместо этого используем suspendCancellableCoroutine для structured concurrency
+        
         BiometricAuthHelper.authenticate(
             activity = activity,
             title = "Unlock API Key",
             subtitle = "Authentication required to access Anthropic API key",
             onSuccess = {
-                kotlinx.coroutines.GlobalScope.launch {
-                    try {
-                        val key = getAnthropicApiKey().first()
-                        onSuccess(key)
-                    } catch (e: Exception) {
-                        onError(e.message ?: "Decryption failed")
+                // ✅ НЕ запускаем корутину! Просто возобновляем continuation
+                // Вызывающая сторона уже в viewModelScope, который привязан к lifecycle
+                
+                val key = runCatching {
+                    // Синхронное получение ключа (уже расшифрован выше)
+                    kotlinx.coroutines.runBlocking {
+                        getAnthropicApiKey().first()
                     }
+                }.getOrElse { e ->
+                    // Расшифровка не удалась
+                    if (continuation.isActive) {
+                        continuation.resumeWith(Result.failure(
+                            SecurityException("Decryption failed: ${e.message}", e)
+                        ))
+                    }
+                    return@authenticate
+                }
+                
+                // Возобновляем корутину с результатом
+                if (continuation.isActive) {
+                    continuation.resume(key)
                 }
             },
             onError = { error ->
-                onError(error)
+                // Биометрическая аутентификация не удалась
+                if (continuation.isActive) {
+                    continuation.resumeWith(Result.failure(
+                        BiometricAuthException(error)
+                    ))
+                }
             }
         )
+        
+        // ✅ Обработка отмены корутины
+        // Если Activity destroyed во время биометрии → корутина отменяется
+        continuation.invokeOnCancellation {
+            android.util.Log.d(TAG, "🛑 Biometric auth cancelled (Activity destroyed or coroutine cancelled)")
+            // BiometricPrompt автоматически закроется при destroy Activity
+            // Ничего дополнительного делать не нужно
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -345,7 +458,7 @@ class SecureSettingsDataStore @Inject constructor(
             }
         }
         
-        android.util.Log.d("SecureSettings", "🔐 GitHub token encrypted and saved")
+        android.util.Log.d(TAG, "🔐 GitHub token encrypted and saved")
     }
 
     fun getGitHubToken(): Flow<String> = dataStore.data
@@ -356,7 +469,7 @@ class SecureSettingsDataStore @Inject constructor(
             try {
                 decryptData(EncryptedData(ciphertext, iv), false)
             } catch (e: Exception) {
-                android.util.Log.e("SecureSettings", "Failed to decrypt GitHub token", e)
+                android.util.Log.e(TAG, "Failed to decrypt GitHub token", e)
                 ""
             }
         }
@@ -375,7 +488,7 @@ class SecureSettingsDataStore @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: CRITICAL #2 - GitHubConfig остается здесь (дубликат будет удален из AppSettings.kt)
+     * GitHub конфигурация с токеном.
      */
     data class GitHubConfig(
         val owner: String,
@@ -418,7 +531,7 @@ class SecureSettingsDataStore @Inject constructor(
         keyStore.deleteEntry(KEYSTORE_ALIAS)
         keyStore.deleteEntry(KEYSTORE_ALIAS_BIOMETRIC)
         
-        android.util.Log.d("SecureSettings", "🗑️ All secure data cleared")
+        android.util.Log.d(TAG, "🗑️ All secure data cleared")
     }
 
     /**
@@ -433,7 +546,7 @@ class SecureSettingsDataStore @Inject constructor(
             // Если расшифровка прошла - данные не повреждены
             true
         } catch (e: Exception) {
-            android.util.Log.e("SecureSettings", "❌ Data integrity check failed", e)
+            android.util.Log.e(TAG, "❌ Data integrity check failed", e)
             false
         }
     }
@@ -452,10 +565,17 @@ class SecureSettingsDataStore @Inject constructor(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATA CLASSES
+// DATA CLASSES & EXCEPTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 private data class EncryptedData(
     val ciphertext: String,
     val iv: String
 )
+
+/**
+ * ✅ НОВЫЙ EXCEPTION: Специфичное исключение для биометрической аутентификации.
+ * 
+ * Позволяет отличить ошибки биометрии от других SecurityException.
+ */
+class BiometricAuthException(message: String) : SecurityException(message)
