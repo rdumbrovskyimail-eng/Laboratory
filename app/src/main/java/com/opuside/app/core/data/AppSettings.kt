@@ -14,12 +14,9 @@ import javax.inject.Singleton
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "opuside_settings")
 
-/**
- * Обновленный AppSettings с интеграцией SecureSettingsDataStore.
- * 
- * Теперь чувствительные данные (API ключи) хранятся ЗАШИФРОВАННО,
- * а обычные настройки (UI preferences) - в обычном DataStore.
- */
+// ✅ ИСПРАВЛЕНО: typealias на уровне файла, а не внутри класса
+typealias GitHubConfig = SecureSettingsDataStore.GitHubConfig
+
 @Singleton
 class AppSettings @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -27,32 +24,19 @@ class AppSettings @Inject constructor(
 ) {
     private val dataStore = context.dataStore
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // KEYS (Non-sensitive)
-    // ═══════════════════════════════════════════════════════════════════════════
-
     private object Keys {
-        // Cache
         val CACHE_TIMEOUT_MINUTES = intPreferencesKey("cache_timeout_minutes")
         val MAX_CACHE_FILES = intPreferencesKey("max_cache_files")
         val AUTO_CLEAR_CACHE = booleanPreferencesKey("auto_clear_cache")
-        
-        // UI
         val DARK_THEME = booleanPreferencesKey("dark_theme")
         val EDITOR_FONT_SIZE = intPreferencesKey("editor_font_size")
         val SHOW_LINE_NUMBERS = booleanPreferencesKey("show_line_numbers")
-        
-        // State
         val LAST_OPENED_PATH = stringPreferencesKey("last_opened_path")
         val LAST_SESSION_ID = stringPreferencesKey("last_session_id")
-        
         val CLAUDE_MODEL = stringPreferencesKey("claude_model")
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // API KEYS (Delegated to SecureSettingsDataStore)
-    // ═══════════════════════════════════════════════════════════════════════════
-
     val anthropicApiKey: Flow<String> = secureSettings.getAnthropicApiKey()
     
     suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) {
@@ -65,27 +49,14 @@ class AppSettings @Inject constructor(
         secureSettings.setGitHubToken(token, useBiometric)
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // GITHUB CONFIG (Delegated to SecureSettingsDataStore)
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    // ✅ ИСПРАВЛЕНО: CRITICAL #2 - Используем GitHubConfig из SecureSettingsDataStore
-    typealias GitHubConfig = SecureSettingsDataStore.GitHubConfig
-
-    // ✅ ИСПРАВЛЕНО: CRITICAL #2 - Прямое использование потока из secureSettings
+    // GITHUB CONFIG
     val gitHubConfig: Flow<GitHubConfig> = secureSettings.gitHubConfig
 
     suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") {
         secureSettings.setGitHubConfig(owner, repo, branch)
     }
 
-    // ❌ УДАЛЕНО: CRITICAL #2 - Дублирующий data class GitHubConfig
-    // (теперь используется typealias выше)
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // CLAUDE MODEL
-    // ═══════════════════════════════════════════════════════════════════════════
-
     val claudeModel: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.CLAUDE_MODEL] ?: "claude-opus-4-5-20251101" }
@@ -94,10 +65,7 @@ class AppSettings @Inject constructor(
         dataStore.edit { it[Keys.CLAUDE_MODEL] = model }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // CACHE SETTINGS
-    // ═══════════════════════════════════════════════════════════════════════════
-
     val cacheTimeoutMinutes: Flow<Int> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.CACHE_TIMEOUT_MINUTES] ?: 5 }
@@ -136,10 +104,7 @@ class AppSettings @Inject constructor(
             )
         }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // UI SETTINGS
-    // ═══════════════════════════════════════════════════════════════════════════
-
     val darkTheme: Flow<Boolean?> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.DARK_THEME] }
@@ -162,10 +127,7 @@ class AppSettings @Inject constructor(
         dataStore.edit { it[Keys.EDITOR_FONT_SIZE] = size.coerceIn(10, 24) }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // RESET & SECURITY
-    // ═══════════════════════════════════════════════════════════════════════════
-
     suspend fun clearAll() {
         dataStore.edit { it.clear() }
         secureSettings.clearSecureData()
@@ -173,12 +135,8 @@ class AppSettings @Inject constructor(
 
     suspend fun clearGitHubConfig() {
         // Очищаем только незашифрованные данные
-        // Token остается в SecureSettings
     }
     
-    /**
-     * Проверяет целостность зашифрованных данных.
-     */
     suspend fun verifySecurityIntegrity(): Boolean {
         return secureSettings.verifyDataIntegrity()
     }
