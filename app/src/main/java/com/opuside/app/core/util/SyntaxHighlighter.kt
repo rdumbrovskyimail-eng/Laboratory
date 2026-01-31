@@ -13,6 +13,7 @@ import androidx.collection.LruCache
  * Поддерживает Kotlin, Java, XML, JSON.
  * 
  * ✅ ИСПРАВЛЕНО: Проблема №17 - Добавлено LRU кеширование для производительности
+ * ✅ ИСПРАВЛЕНО: CRASH #2 - Исправлены выходы за границы массива
  */
 object SyntaxHighlighter {
 
@@ -70,19 +71,19 @@ object SyntaxHighlighter {
                 code.startsWith("/*", i) -> {
                     val end = (code.indexOf("*/", i + 2).takeIf { it != -1 } ?: code.length) + 2
                     addStyle(SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), i, minOf(end, code.length))
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 // Comments //
                 code.startsWith("//", i) -> {
                     val end = code.indexOf('\n', i).takeIf { it != -1 } ?: code.length
                     addStyle(SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), i, end)
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 // Triple-quoted strings
                 code.startsWith("\"\"\"", i) -> {
                     val end = (code.indexOf("\"\"\"", i + 3).takeIf { it != -1 } ?: code.length) + 3
                     addStyle(SpanStyle(color = colorString), i, minOf(end, code.length))
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 // Strings
                 code[i] == '"' -> {
@@ -93,7 +94,7 @@ object SyntaxHighlighter {
                     }
                     if (end < code.length) end++
                     addStyle(SpanStyle(color = colorString), i, end)
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 // Chars
                 code[i] == '\'' -> {
@@ -104,19 +105,19 @@ object SyntaxHighlighter {
                     }
                     if (end < code.length) end++
                     addStyle(SpanStyle(color = colorString), i, end)
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 // Annotations
                 code[i] == '@' -> {
                     val end = findWordEnd(code, i + 1)
                     addStyle(SpanStyle(color = colorAnnotation), i, end)
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 // Numbers
                 code[i].isDigit() -> {
                     val end = findNumberEnd(code, i)
                     addStyle(SpanStyle(color = colorNumber), i, end)
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 // Words
                 code[i].isLetter() || code[i] == '_' -> {
@@ -130,7 +131,7 @@ object SyntaxHighlighter {
                         end < code.length && code[end] == '(' -> 
                             addStyle(SpanStyle(color = colorFunction), i, end)
                     }
-                    i = end
+                    i = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
                 }
                 else -> i++
             }
@@ -148,7 +149,7 @@ object SyntaxHighlighter {
             if (start == -1) break
             val end = (code.indexOf("-->", start + 4).takeIf { it != -1 } ?: code.length) + 3
             addStyle(SpanStyle(color = colorComment), start, minOf(end, code.length))
-            idx = end
+            idx = minOf(end, code.length) // ✅ ИСПРАВЛЕНО: CRASH #2
         }
         
         // Tags and attributes
