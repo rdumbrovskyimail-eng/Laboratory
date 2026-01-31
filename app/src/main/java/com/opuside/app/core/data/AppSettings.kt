@@ -69,29 +69,18 @@ class AppSettings @Inject constructor(
     // GITHUB CONFIG (Delegated to SecureSettingsDataStore)
     // ═══════════════════════════════════════════════════════════════════════════
 
+    // ✅ ИСПРАВЛЕНО: CRITICAL #2 - Используем GitHubConfig из SecureSettingsDataStore
+    typealias GitHubConfig = SecureSettingsDataStore.GitHubConfig
+
+    // ✅ ИСПРАВЛЕНО: CRITICAL #2 - Прямое использование потока из secureSettings
     val gitHubConfig: Flow<GitHubConfig> = secureSettings.gitHubConfig
-        .map { secure ->
-            GitHubConfig(
-                owner = secure.owner,
-                repo = secure.repo,
-                branch = secure.branch,
-                token = secure.token
-            )
-        }
 
     suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") {
         secureSettings.setGitHubConfig(owner, repo, branch)
     }
 
-    data class GitHubConfig(
-        val owner: String,
-        val repo: String,
-        val branch: String,
-        val token: String
-    ) {
-        val isConfigured: Boolean get() = owner.isNotBlank() && repo.isNotBlank() && token.isNotBlank()
-        val fullName: String get() = "$owner/$repo"
-    }
+    // ❌ УДАЛЕНО: CRITICAL #2 - Дублирующий data class GitHubConfig
+    // (теперь используется typealias выше)
 
     // ═══════════════════════════════════════════════════════════════════════════
     // CLAUDE MODEL
