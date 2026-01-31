@@ -357,4 +357,4 @@ sealed class ConnectionStatus {
     data object Testing : ConnectionStatus()
     data object Connected : ConnectionStatus()
     data class Error(val message: String) : ConnectionStatus()
-}
+} 
