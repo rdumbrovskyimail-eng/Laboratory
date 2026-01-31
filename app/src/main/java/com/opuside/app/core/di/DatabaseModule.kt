@@ -24,31 +24,29 @@ import javax.inject.Singleton
  * 
  * ✅ ИСПРАВЛЕНО (Проблема #19): Добавлены миграции вместо fallbackToDestructiveMigration
  * для предотвращения потери данных пользователя при обновлении приложения.
+ * 
+ * ✅ ОБНОВЛЕНО (Проблема #2 - DATA LEAK): Добавлены колонки для шифрования кеша
  */
 @Module
 @InstallIn(SingletonComponent::class)
 object DatabaseModule {
 
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #19): Migration от версии 1 к версии 2
+     * ✅ ОБНОВЛЕНО (Проблема #2): Migration от версии 1 к версии 2
      * 
      * ИЗМЕНЕНИЯ В V2:
      * - Добавлены индексы для оптимизации производительности queries
      * - index_cached_files_added_at: ускоряет сортировку и поиск по времени добавления
      * - index_chat_messages_session_created: ускоряет фильтрацию по сессии и времени
-     * 
-     * ПРИМЕЧАНИЕ:
-     * Если в будущем нужно добавить колонку is_encrypted в cached_files
-     * (из Проблемы #2), раскомментируйте соответствующий SQL:
-     * 
-     * database.execSQL(
-     *     "ALTER TABLE cached_files ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0"
-     * )
+     * - ✅ НОВОЕ: Добавлены колонки для шифрования в cached_files
+     *   - is_encrypted: флаг шифрования (default = 1)
+     *   - encryption_iv: Initialization Vector для AES-GCM (nullable для legacy данных)
      */
     private val MIGRATION_1_2 = object : Migration(1, 2) {
         override fun migrate(database: SupportSQLiteDatabase) {
-            // ✅ Добавление индексов для производительности
-            // Эти индексы улучшают скорость queries в CacheDao и ChatDao
+            // ═══════════════════════════════════════════════════════════════
+            // ЧАСТЬ 1: Индексы для производительности
+            // ═══════════════════════════════════════════════════════════════
             
             // Индекс для быстрой сортировки кешированных файлов по времени
             database.execSQL(
@@ -61,74 +59,43 @@ object DatabaseModule {
                 "CREATE INDEX IF NOT EXISTS index_chat_messages_session_created ON chat_messages(session_id, created_at)"
             )
             
-            // ✅ ОПЦИОНАЛЬНО: Добавление колонки is_encrypted (если нужно)
-            // Раскомментируйте, если реализовали шифрование из Проблемы #2:
-            /*
-            database.execSQL(
-                "ALTER TABLE cached_files ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 0"
-            )
-            */
-        }
-    }
-
-    /**
-     * ✅ ПРИМЕР: Migration от версии 2 к версии 3 (для будущих изменений)
-     * 
-     * Раскомментируйте и адаптируйте когда потребуется изменить схему БД.
-     * 
-     * ПРИМЕРЫ ИЗМЕНЕНИЙ:
-     * - Добавление новых таблиц
-     * - Добавление колонок
-     * - Изменение типов данных (требует пересоздания таблицы)
-     * - Добавление/удаление индексов
-     */
-    /*
-    private val MIGRATION_2_3 = object : Migration(2, 3) {
-        override fun migrate(database: SupportSQLiteDatabase) {
-            // Пример 1: Добавление новой таблицы для пользовательских настроек
-            database.execSQL("""
-                CREATE TABLE IF NOT EXISTS user_preferences (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    UNIQUE(key)
-                )
-            """)
+            // ═══════════════════════════════════════════════════════════════
+            // ЧАСТЬ 2: ✅ Шифрование кеша (Проблема #2 - DATA LEAK CRITICAL)
+            // ═══════════════════════════════════════════════════════════════
             
-            // Пример 2: Добавление колонки в существующую таблицу
+            // Добавляем колонку is_encrypted (по умолчанию = 1 / TRUE)
+            // Все НОВЫЕ записи будут автоматически помечены как зашифрованные
             database.execSQL(
-                "ALTER TABLE chat_messages ADD COLUMN model_name TEXT DEFAULT 'claude-sonnet-4-20250514'"
+                "ALTER TABLE cached_files ADD COLUMN is_encrypted INTEGER NOT NULL DEFAULT 1"
             )
             
-            // Пример 3: Изменение типа колонки (требует пересоздания)
-            // Шаги:
-            // 1. Создать новую таблицу с правильной схемой
-            // 2. Скопировать данные из старой таблицы
-            // 3. Удалить старую таблицу
-            // 4. Переименовать новую таблицу
-            /*
-            database.execSQL("ALTER TABLE cached_files RENAME TO cached_files_old")
-            database.execSQL("""
-                CREATE TABLE cached_files (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                    file_path TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    size_bytes INTEGER NOT NULL,  // Изменили тип
-                    added_at INTEGER NOT NULL,
-                    UNIQUE(file_path)
-                )
-            """)
-            database.execSQL("""
-                INSERT INTO cached_files (id, file_path, content, size_bytes, added_at)
-                SELECT id, file_path, content, CAST(size_bytes AS INTEGER), added_at
-                FROM cached_files_old
-            """)
-            database.execSQL("DROP TABLE cached_files_old")
-            */
+            // Добавляем колонку encryption_iv (nullable для legacy данных)
+            // Legacy данные (до миграции) будут иметь NULL в этом поле
+            // Новые записи ОБЯЗАТЕЛЬНО будут содержать IV
+            database.execSQL(
+                "ALTER TABLE cached_files ADD COLUMN encryption_iv TEXT DEFAULT NULL"
+            )
+            
+            // ✅ ВАЖНО: Существующие данные в БД остаются НЕЗАШИФРОВАННЫМИ
+            // Они будут помечены is_encrypted=1, но content - в plaintext
+            // 
+            // ВАРИАНТЫ ОБРАБОТКИ LEGACY ДАННЫХ:
+            // 
+            // ВАРИАНТ A (Безопасный): Удалить все старые данные при миграции
+            // database.execSQL("DELETE FROM cached_files")
+            // ↑ Это безопасно, т.к. кеш - временные данные (таймер 5 мин)
+            // 
+            // ВАРИАНТ B (Сложный): Зашифровать legacy данные на лету
+            // Требует вызова CacheEncryptionHelper из миграции
+            // НЕ РЕКОМЕНДУЕТСЯ: миграции должны быть чисто SQL
+            //
+            // МЫ ВЫБРАЛИ: ВАРИАНТ A - удаляем старый кеш
+            database.execSQL("DELETE FROM cached_files")
+            
+            // После удаления, все новые записи будут создаваться
+            // через PersistentCacheManager с автоматическим шифрованием
         }
     }
-    */
 
     @Provides
     @Singleton
@@ -140,33 +107,16 @@ object DatabaseModule {
         "opuside_database"
     )
         // ✅ ИСПРАВЛЕНО: Добавлены миграции вместо fallbackToDestructiveMigration
-        // Теперь данные пользователя сохраняются при обновлении приложения
         .addMigrations(
             MIGRATION_1_2
             // MIGRATION_2_3,  // ← Добавить когда нужно будет мигрировать на V3
-            // MIGRATION_3_4,
-            // ...
         )
         
         // ✅ ВАЖНО: fallbackToDestructiveMigration() УДАЛЕНО!
-        // 
-        // БЫЛО (Проблема #19):
-        // .fallbackToDestructiveMigration() 
-        // ↑ Это удаляло ВСЮ БД при любом изменении схемы → DATA LOSS
-        //
-        // СТАЛО:
-        // - Только явные миграции через addMigrations()
-        // - Данные пользователя сохраняются
-        // - При отсутствии нужной миграции → crash с понятной ошибкой
-        //   (лучше crash чем silent data loss!)
+        // Данные пользователя сохраняются при обновлении
         
-        // ✅ ОПЦИОНАЛЬНО: Разрешить destructive migration только при downgrade
-        // Это безопасно, т.к. downgrade редко происходит в production
+        // ✅ Разрешить destructive migration только при downgrade
         .fallbackToDestructiveMigrationOnDowngrade()
-        
-        // ✅ РЕКОМЕНДАЦИЯ: Включить автоматическую миграцию (Android Room 2.4+)
-        // Работает только для простых изменений (добавление колонок с DEFAULT)
-        // .setAutoMigrationSpecs(...) // Требует Room 2.4+ и KSP
         
         .build()
 
@@ -187,7 +137,7 @@ object DatabaseModule {
  * 1. ИЗМЕНИТЬ СХЕМУ ENTITY:
  *    - Добавьте/измените колонки в @Entity классе
  *    - Обновите version в @Database аннотации
- *    Например: version = 1 → version = 2
+ *    Например: version = 2 → version = 3
  * 
  * 2. СОЗДАТЬ MIGRATION:
  *    ```kotlin
@@ -210,18 +160,6 @@ object DatabaseModule {
  * 4. ТЕСТИРОВАНИЕ:
  *    - Создать тест с MigrationTestHelper
  *    - Проверить, что данные сохраняются
- *    
- *    ```kotlin
- *    @Test
- *    fun migrate1To2() {
- *        val db = helper.createDatabase(TEST_DB, 1)
- *        // Вставить данные в V1
- *        db.close()
- *        
- *        val dbV2 = helper.runMigrationsAndValidate(TEST_DB, 2, true, MIGRATION_1_2)
- *        // Проверить, что данные остались
- *    }
- *    ```
  * 
  * 5. ТИПИЧНЫЕ ОПЕРАЦИИ:
  * 
