@@ -14,6 +14,8 @@ import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -29,6 +31,8 @@ import javax.inject.Singleton
  * ✅ ИСПРАВЛЕНО:
  * - Проблема №4: Добавлена валидация BuildConfig полей
  * - Проблема №11: Добавлен retry logic с exponential backoff
+ * - CRASH #4: GitHub Rate Limit Retry с учётом Retry-After header
+ * - BUG #10: Unicode Paths - добавлено URL encoding для кириллицы и эмодзи
  */
 @Singleton
 class GitHubApiClient @Inject constructor(
@@ -53,18 +57,28 @@ class GitHubApiClient @Inject constructor(
         get() = BuildConfig.GITHUB_TOKEN.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("GITHUB_TOKEN not configured in local.properties")
 
+    // ✅ ДОБАВЛЕНО: BUG #10 - Helper для URL encoding путей с Unicode
+    private fun encodePath(path: String): String {
+        return path.split("/")
+            .joinToString("/") { segment ->
+                URLEncoder.encode(segment, StandardCharsets.UTF_8.toString())
+                    .replace("+", "%20") // Пробел должен быть %20, не +
+            }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // REPOSITORY CONTENT
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Получить содержимое директории или файла.
+     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun getContent(
         path: String = "",
         ref: String? = null
     ): Result<List<GitHubContent>> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/contents/$path") {
+        httpClient.get("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
             setupHeaders()
             ref?.let { parameter("ref", it) }
         }
@@ -72,12 +86,13 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * Получить содержимое одного файла.
+     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun getFileContent(
         path: String,
         ref: String? = null
     ): Result<GitHubContent> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/contents/$path") {
+        httpClient.get("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
             setupHeaders()
             ref?.let { parameter("ref", it) }
         }
@@ -99,6 +114,7 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * Создать или обновить файл.
+     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun createOrUpdateFile(
         path: String,
@@ -116,7 +132,7 @@ class GitHubApiClient @Inject constructor(
         )
         
         return apiCall {
-            httpClient.put("$BASE_URL/repos/$owner/$repo/contents/$path") {
+            httpClient.put("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
                 setupHeaders()
                 contentType(ContentType.Application.Json)
                 setBody(request)
@@ -126,6 +142,7 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * Удалить файл.
+     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun deleteFile(
         path: String,
@@ -133,7 +150,7 @@ class GitHubApiClient @Inject constructor(
         sha: String,
         branch: String? = null
     ): Result<Unit> = apiCall {
-        httpClient.delete("$BASE_URL/repos/$owner/$repo/contents/$path") {
+        httpClient.delete("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
             setupHeaders()
             contentType(ContentType.Application.Json)
             setBody(mapOf(
@@ -335,6 +352,7 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * ✅ ИСПРАВЛЕНО: Проблема №11 - Добавлен retry logic с exponential backoff
+     * ✅ ИСПРАВЛЕНО: CRASH #4 - Учёт Retry-After header для rate limiting
      */
     private suspend inline fun <reified T> apiCall(
         maxRetries: Int = 3,
@@ -361,9 +379,20 @@ class GitHubApiClient @Inject constructor(
                     return Result.failure(parseError(response))
                 }
 
-                // Exponential backoff
-                delay(currentDelay)
-                currentDelay *= 2
+                // ✅ ИСПРАВЛЕНО: CRASH #4 - Exponential backoff с учётом Retry-After header
+                if (response.status.value == 429) {
+                    val retryAfter = response.headers["Retry-After"]?.toLongOrNull()
+                    val delayMs = if (retryAfter != null) {
+                        retryAfter * 1000 // GitHub возвращает секунды
+                    } else {
+                        currentDelay
+                    }
+                    delay(delayMs)
+                    currentDelay = (delayMs * 2).coerceAtMost(60_000) // Макс 60 сек
+                } else {
+                    delay(currentDelay)
+                    currentDelay *= 2
+                }
 
             } catch (e: Exception) {
                 if (attempt == maxRetries - 1) {
@@ -379,6 +408,7 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * ✅ ИСПРАВЛЕНО: Проблема №11 - Добавлен retry logic с exponential backoff
+     * ✅ ИСПРАВЛЕНО: CRASH #4 - Учёт Retry-After header для rate limiting
      */
     private suspend fun apiCallUnit(
         maxRetries: Int = 3,
@@ -405,9 +435,20 @@ class GitHubApiClient @Inject constructor(
                     return Result.failure(parseError(response))
                 }
 
-                // Exponential backoff
-                delay(currentDelay)
-                currentDelay *= 2
+                // ✅ ИСПРАВЛЕНО: CRASH #4 - Exponential backoff с учётом Retry-After header
+                if (response.status.value == 429) {
+                    val retryAfter = response.headers["Retry-After"]?.toLongOrNull()
+                    val delayMs = if (retryAfter != null) {
+                        retryAfter * 1000
+                    } else {
+                        currentDelay
+                    }
+                    delay(delayMs)
+                    currentDelay = (delayMs * 2).coerceAtMost(60_000)
+                } else {
+                    delay(currentDelay)
+                    currentDelay *= 2
+                }
 
             } catch (e: Exception) {
                 if (attempt == maxRetries - 1) {
