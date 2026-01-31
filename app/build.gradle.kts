@@ -74,6 +74,13 @@ android {
         // ═══════════════════════════════════════════════════════════════════
         buildConfigField("Long", "CACHE_TIMEOUT_MS", "300000L") // 5 минут
         buildConfigField("Int", "MAX_CACHE_FILES", "20")
+        
+        // ❌ УДАЛЕНО: CRITICAL #3 - CLAUDE_MODEL перенесён в buildTypes.configureEach
+        // buildConfigField("String", "CLAUDE_MODEL", "\"claude-opus-4-5-20251101\"")
+    }
+
+    // ✅ ИСПРАВЛЕНО: CRITICAL #3 - CLAUDE_MODEL доступен во всех buildTypes
+    buildTypes.configureEach {
         buildConfigField("String", "CLAUDE_MODEL", "\"claude-opus-4-5-20251101\"")
     }
 
