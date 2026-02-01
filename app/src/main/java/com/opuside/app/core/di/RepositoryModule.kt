@@ -43,12 +43,13 @@ object RepositoryModule {
     ): CacheRepository = CacheRepository(cacheDao, encryptionHelper)
 
     /**
-     * ✅ ИСПРАВЛЕНО: Убран context - PersistentCacheManager не требует его
+     * ✅ ИСПРАВЛЕНО: Добавлен context как первый параметр
      */
     @Provides
     @Singleton
     fun provideCacheManager(
+        @ApplicationContext context: Context,
         cacheRepository: CacheRepository,
         appSettings: AppSettings
-    ): PersistentCacheManager = PersistentCacheManager(cacheRepository, appSettings)
+    ): PersistentCacheManager = PersistentCacheManager(context, cacheRepository, appSettings)
 }
