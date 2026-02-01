@@ -229,13 +229,16 @@ sealed class StreamingResult {
     data class Error(val exception: ClaudeApiException) : StreamingResult()
 }
 
+/**
+ * ✅ ИСПРАВЛЕНО: Параметр cause теперь имеет значение по умолчанию null
+ */
 class ClaudeApiException(
     val type: String,
     override val message: String,
-    cause: Throwable? = null
+    override val cause: Throwable? = null
 ) : Exception(message, cause) {
     val isRateLimitError: Boolean get() = type == "rate_limit_error"
     val isAuthError: Boolean get() = type == "authentication_error"
     val isInvalidRequest: Boolean get() = type == "invalid_request_error"
     val isOverloaded: Boolean get() = type == "overloaded_error"
-} 
+}
