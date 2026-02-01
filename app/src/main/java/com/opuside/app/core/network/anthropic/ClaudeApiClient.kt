@@ -86,7 +86,8 @@ class ClaudeApiClient @Inject constructor(
                     emit(StreamingResult.Error(
                         ClaudeApiException(
                             type = "timeout",
-                            message = "Streaming exceeded 5 minutes"
+                            message = "Streaming exceeded 5 minutes",
+                            cause = null
                         )
                     ))
                     return@flow
@@ -100,7 +101,8 @@ class ClaudeApiClient @Inject constructor(
                     emit(StreamingResult.Error(
                         ClaudeApiException(
                             type = "timeout",
-                            message = "Stream timeout after 30s"
+                            message = "Stream timeout after 30s",
+                            cause = null
                         )
                     ))
                     return@flow
@@ -134,7 +136,8 @@ class ClaudeApiClient @Inject constructor(
                                     emit(StreamingResult.Error(
                                         ClaudeApiException(
                                             type = error.type,
-                                            message = error.message
+                                            message = error.message,
+                                            cause = null
                                         )
                                     ))
                                 }
@@ -205,7 +208,8 @@ class ClaudeApiClient @Inject constructor(
             val errorResponse = json.decodeFromString<ClaudeErrorResponse>(errorBody)
             ClaudeApiException(
                 type = errorResponse.error.type,
-                message = errorResponse.error.message
+                message = errorResponse.error.message,
+                cause = null
             )
         } catch (e: Exception) {
             ClaudeApiException(
