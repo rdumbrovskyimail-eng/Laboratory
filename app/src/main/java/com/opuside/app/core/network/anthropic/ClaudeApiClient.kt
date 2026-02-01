@@ -238,4 +238,4 @@ class ClaudeApiException(
     val isAuthError: Boolean get() = type == "authentication_error"
     val isInvalidRequest: Boolean get() = type == "invalid_request_error"
     val isOverloaded: Boolean get() = type == "overloaded_error"
-}
+} 
