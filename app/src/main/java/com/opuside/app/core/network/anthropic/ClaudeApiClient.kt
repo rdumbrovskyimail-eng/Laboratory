@@ -233,7 +233,7 @@ class ClaudeApiException(
     val type: String,
     message: String,
     cause: Throwable? = null
-) : Exception(message, cause) {
+) : Exception(message = message, cause = cause) {
     val isRateLimitError: Boolean get() = type == "rate_limit_error"
     val isAuthError: Boolean get() = type == "authentication_error"
     val isInvalidRequest: Boolean get() = type == "invalid_request_error"
