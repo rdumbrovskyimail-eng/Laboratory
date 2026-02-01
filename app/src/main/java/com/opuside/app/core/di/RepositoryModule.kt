@@ -33,7 +33,9 @@ object RepositoryModule {
 
     @Provides
     @Singleton
-    fun provideCacheEncryptionHelper(): CacheEncryptionHelper = CacheEncryptionHelper()
+    fun provideCacheEncryptionHelper(
+        @ApplicationContext context: Context
+    ): CacheEncryptionHelper = CacheEncryptionHelper(context)
 
     @Provides
     @Singleton
@@ -42,9 +44,6 @@ object RepositoryModule {
         encryptionHelper: CacheEncryptionHelper
     ): CacheRepository = CacheRepository(cacheDao, encryptionHelper)
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Добавлен context как первый параметр
-     */
     @Provides
     @Singleton
     fun provideCacheManager(
