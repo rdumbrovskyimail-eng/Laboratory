@@ -303,7 +303,7 @@ class AnalyzerViewModel @Inject constructor(
                             _chatError.value = result.exception.message
                             
                             // UPDATE при ошибке
-                            chatDao.markAsError(assistantId, result.exception.message)
+                            chatDao.markAsError(assistantId, result.exception.message ?: "Unknown error")
                         }
                     }
                 }
@@ -456,8 +456,8 @@ Cache active: ${cacheContext.isActive}
         viewModelScope.launch {
             _actionsLoading.value = true
             
-            // ✅ ИСПРАВЛЕНО: Используем gitHubConfig вместо несуществующего githubBranch
-            val branch = appSettings.gitHubConfig.first().branch.ifEmpty { "main" }
+            val config = appSettings.gitHubConfig.firstOrNull()
+            val branch = config?.branch?.ifEmpty { "main" } ?: "main"
             
             gitHubClient.triggerWorkflow(workflowId, branch)
                 .onSuccess {
