@@ -43,19 +43,12 @@ object RepositoryModule {
     ): CacheRepository = CacheRepository(cacheDao, encryptionHelper)
 
     /**
-     * ✅ ИСПРАВЛЕНО: Добавлены именованные аргументы.
-     * Это предотвращает ошибку "No value passed for parameter", если порядок аргументов
-     * в конструкторе PersistentCacheManager отличается от порядка здесь.
+     * ✅ ИСПРАВЛЕНО: Убран context - PersistentCacheManager не требует его
      */
     @Provides
     @Singleton
     fun provideCacheManager(
-        @ApplicationContext context: Context,
         cacheRepository: CacheRepository,
         appSettings: AppSettings
-    ): PersistentCacheManager = PersistentCacheManager(
-        context = context,
-        cacheRepository = cacheRepository,
-        appSettings = appSettings
-    )
+    ): PersistentCacheManager = PersistentCacheManager(cacheRepository, appSettings)
 }
