@@ -225,6 +225,9 @@ sealed class StreamingResult {
     data class Error(val exception: ClaudeApiException) : StreamingResult()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CORRECTED EXCEPTION CLASS (User's Option 1 - Most Reliable)
+// ═══════════════════════════════════════════════════════════════════════════════
 class ClaudeApiException : Exception {
     val type: String
     
