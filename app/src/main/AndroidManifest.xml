@@ -15,6 +15,14 @@
     
     <!-- ✅ ДОБАВЛЕНО: Нотификации для Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    
+    <!-- 🔥 ДОБАВЛЕНО: Разрешения для CrashLogger -->
+    <uses-permission android:name="android.permission.READ_LOGS"
+        tools:ignore="ProtectedPermissions" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <!-- APPLICATION -->
@@ -30,6 +38,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.OpusIDE"
         android:enableOnBackInvokedCallback="true"
+        android:requestLegacyExternalStorage="true"
         tools:targetApi="36">
 
         <!-- ═══════════════════════════════════════════════════════════════════ -->
@@ -59,6 +68,17 @@
             </intent-filter>
             
         </activity>
+
+        <!-- 🔥 ДОБАВЛЕНО: FileProvider для шаринга crash логов -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
     </application>
 
