@@ -20,9 +20,12 @@ import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.security.SecureSettingsDataStore
+import com.opuside.app.core.util.CrashLogger
+import com.opuside.app.core.util.CrashTestUtil
 
 /**
  * ✅ ИСПРАВЛЕНО (Проблема №6): Убран параметр secureSettings, получаем локально через remember
+ * 🔥 ДОБАВЛЕНО: Секция Developer Tools с CrashLogger
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -293,6 +296,160 @@ fun SettingsScreen(
                 }
             }
 
+            // 🔥 НОВАЯ СЕКЦИЯ: DEVELOPER TOOLS
+            SettingsSection(title = "Developer Tools", icon = Icons.Default.BugReport) {
+                Text(
+                    "Debug and testing tools for development",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                
+                Spacer(Modifier.height(12.dp))
+                
+                // Crash Logger Info
+                val crashLogger = remember { CrashLogger.getInstance() }
+                val crashStats = remember { 
+                    crashLogger?.let {
+                        val logs = it.getCrashLogs()
+                        "Total crashes: ${logs.size}\nLocation: ${it.getCrashLogDirectory()}"
+                    } ?: "CrashLogger not initialized"
+                }
+                
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Description, 
+                                null, 
+                                Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Crash Logger Statistics",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            crashStats,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                
+                Spacer(Modifier.height(12.dp))
+                
+                // Crash Test Buttons
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { CrashTestUtil.triggerTestCrash() },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color(0xFFEF4444)
+                        )
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            null,
+                            Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Test Crash")
+                    }
+                    
+                    Button(
+                        onClick = { CrashTestUtil.printLatestCrashLog() },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            Icons.Default.Print,
+                            null,
+                            Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Print Log")
+                    }
+                }
+                
+                Spacer(Modifier.height(8.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { CrashTestUtil.openLatestCrashLog(context) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            Icons.Default.FolderOpen,
+                            null,
+                            Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Open File")
+                    }
+                    
+                    OutlinedButton(
+                        onClick = { CrashTestUtil.shareLatestCrashLog(context) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(
+                            Icons.Default.Share,
+                            null,
+                            Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Share Log")
+                    }
+                }
+                
+                Spacer(Modifier.height(12.dp))
+                
+                // Warning Card
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFFFEF3C7)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            null,
+                            Modifier.size(20.dp),
+                            tint = Color(0xFFD97706)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                "Warning",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Color(0xFFD97706)
+                            )
+                            Text(
+                                "\"Test Crash\" will immediately crash the app to test crash logger. All logs will be saved to:\n/storage/emulated/0/OpusIDE_CrashLogs/",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF92400E)
+                            )
+                        }
+                    }
+                }
+            }
+
             // APP INFO
             SettingsSection(title = "About", icon = Icons.Default.Info) {
                 SettingsRow("Version", viewModel.appVersion)
@@ -327,7 +484,7 @@ fun SettingsScreen(
                         Text("How it works", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again\n7. Enable biometric protection for extra security",
+                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again\n7. Enable biometric protection for extra security\n8. Use Developer Tools to test crash logger",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                 }
             }
