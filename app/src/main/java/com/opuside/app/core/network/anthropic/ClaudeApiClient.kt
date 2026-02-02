@@ -7,6 +7,7 @@ import com.opuside.app.core.network.anthropic.model.ClaudeResponse
 import com.opuside.app.core.network.anthropic.model.StreamEvent
 import com.opuside.app.core.network.anthropic.model.Usage
 import com.opuside.app.core.network.anthropic.model.ClaudeErrorResponse
+import com.opuside.app.core.security.SecureSettingsDataStore
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.header
@@ -18,10 +19,11 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.utils.io.readUTF8Line
-import io.ktor.utils.io.cancel  // ✅ FIX: Add this import for the extension function ByteReadChannel.cancel()
+import io.ktor.utils.io.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -29,6 +31,8 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
+ * ✅ ИСПРАВЛЕНО: Теперь читает API ключ из SecureSettingsDataStore
+ * 
  * Claude API Client for streaming and non-streaming completions.
  * 
  * Features:
@@ -37,10 +41,12 @@ import javax.inject.Singleton
  * - Cancellation-aware flows
  * - Comprehensive error handling
  * - Resource cleanup guarantees
+ * - ✅ NEW: Reads API key from encrypted storage (SecureSettingsDataStore)
  * 
  * @property httpClient Ktor HTTP client configured for Anthropic API
  * @property json Kotlinx.serialization JSON instance
  * @property apiUrl Anthropic API endpoint URL
+ * @property secureSettings Secure storage for API keys
  * 
  * @since 1.0.0
  */
@@ -50,7 +56,8 @@ class ClaudeApiClient @Inject constructor(
     private val json: Json,
     @Named("anthropicApiUrl") private val apiUrl: String = BuildConfig.ANTHROPIC_API_URL.ifBlank { 
         "https://api.anthropic.com/v1/messages" 
-    }
+    },
+    private val secureSettings: SecureSettingsDataStore // ✅ NEW: Inject secure storage
 ) {
     companion object {
         private const val API_VERSION = "2023-06-01"
@@ -59,9 +66,47 @@ class ClaudeApiClient @Inject constructor(
         private const val MAX_STREAMING_TIME_MS = 5 * 60 * 1000L
     }
 
-    private val apiKey: String
-        get() = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("ANTHROPIC_API_KEY not configured in local.properties")
+    /**
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Читает ключ из SecureSettingsDataStore
+     * 
+     * СТАРАЯ ПРОБЛЕМА:
+     * ─────────────────
+     * ```kotlin
+     * private val apiKey: String
+     *     get() = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
+     *         ?: throw IllegalStateException("ANTHROPIC_API_KEY not configured")
+     * ```
+     * 
+     * Проблемы:
+     * 1. Игнорировал ключ из UI настроек
+     * 2. Всегда требовал BuildConfig (local.properties)
+     * 3. Не работал с зашифрованным хранилищем
+     * 
+     * НОВОЕ РЕШЕНИЕ:
+     * ─────────────────
+     * - Сначала пытается взять ключ из SecureSettingsDataStore
+     * - Если пусто → fallback на BuildConfig (для backward compatibility)
+     * - Если оба пусты → выбрасывает ошибку
+     */
+    private suspend fun getApiKey(): String {
+        // 1. Пытаемся взять из SecureSettingsDataStore (приоритет)
+        val keyFromStorage = secureSettings.getAnthropicApiKey().first()
+        if (keyFromStorage.isNotBlank()) {
+            return keyFromStorage
+        }
+
+        // 2. Fallback на BuildConfig (для совместимости)
+        val keyFromBuildConfig = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
+        if (keyFromBuildConfig != null) {
+            return keyFromBuildConfig
+        }
+
+        // 3. Оба пусты → ошибка
+        throw IllegalStateException(
+            "ANTHROPIC_API_KEY not configured. " +
+            "Please set it in Settings or local.properties file."
+        )
+    }
 
     /**
      * Stream messages from Claude API using Server-Sent Events.
@@ -109,6 +154,8 @@ class ClaudeApiClient @Inject constructor(
         var channel: io.ktor.utils.io.ByteReadChannel? = null
         
         try {
+            val apiKey = getApiKey() // ✅ Получаем ключ динамически
+            
             val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
                 header("x-api-key", apiKey)
@@ -213,7 +260,7 @@ class ClaudeApiClient @Inject constructor(
             // Ensure channel is always closed
             channel?.cancel()
         }
-    }.cancellable() // ✅ FIX #1: Cancellation support
+    }.cancellable()
 
     /**
      * Send a non-streaming message to Claude API.
@@ -240,6 +287,8 @@ class ClaudeApiClient @Inject constructor(
         )
 
         return try {
+            val apiKey = getApiKey() // ✅ Получаем ключ динамически
+            
             val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
                 header("x-api-key", apiKey)
@@ -280,20 +329,19 @@ class ClaudeApiClient @Inject constructor(
             val errorBody = response.body<String>()
             val errorResponse = json.decodeFromString<ClaudeErrorResponse>(errorBody)
             
-            // ✅ FIX #2: Extract Retry-After header for rate limits
             val retryAfter = response.headers["Retry-After"]?.toIntOrNull()
             
             ClaudeApiException(
                 type = errorResponse.error.type,
                 message = errorResponse.error.message,
-                cause = null,  // ✅ КРИТИЧНО: Явно указываем cause = null перед retryAfterSeconds
+                cause = null,
                 retryAfterSeconds = retryAfter
             )
         } catch (e: Exception) {
             ClaudeApiException(
                 type = "http_error",
                 message = "HTTP ${response.status.value}: ${response.status.description}",
-                cause = e  // ✅ Здесь передаем exception как cause
+                cause = e
             )
         }
     }
@@ -370,7 +418,6 @@ class ClaudeApiException(
     
     /**
      * Convenience constructor without retry-after.
-     * ✅ FIX #3: This ensures backward compatibility
      */
     constructor(
         type: String,
