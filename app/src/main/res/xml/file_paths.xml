@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 🔥 Crash логи в корне телефона -->
+    <external-path
+        name="crash_logs"
+        path="OpusIDE_CrashLogs/" />
+    
+    <!-- Внешние файлы приложения -->
+    <external-files-path
+        name="app_files"
+        path="." />
+    
+    <!-- Кэш приложения -->
+    <cache-path
+        name="cache"
+        path="." />
+</paths>
