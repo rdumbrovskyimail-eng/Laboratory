@@ -86,7 +86,8 @@ class ClaudeApiClient @Inject constructor(
                     emit(StreamingResult.Error(
                         ClaudeApiException(
                             type = "timeout",
-                            message = "Streaming exceeded 5 minutes"
+                            message = "Streaming exceeded 5 minutes",
+                            cause = null
                         )
                     ))
                     return@flow
@@ -100,7 +101,8 @@ class ClaudeApiClient @Inject constructor(
                     emit(StreamingResult.Error(
                         ClaudeApiException(
                             type = "timeout",
-                            message = "Stream timeout after 30s"
+                            message = "Stream timeout after 30s",
+                            cause = null
                         )
                     ))
                     return@flow
@@ -131,10 +133,12 @@ class ClaudeApiClient @Inject constructor(
                             }
                             "error" -> {
                                 event.error?.let { error ->
+                                    // FIX: Explicitly pass cause = null to satisfy strict compiler checks
                                     emit(StreamingResult.Error(
                                         ClaudeApiException(
                                             type = error.type,
-                                            message = error.message
+                                            message = error.message,
+                                            cause = null
                                         )
                                     ))
                                 }
@@ -203,9 +207,11 @@ class ClaudeApiClient @Inject constructor(
         return try {
             val errorBody = response.body<String>()
             val errorResponse = json.decodeFromString<ClaudeErrorResponse>(errorBody)
+            // FIX: Explicitly pass cause = null
             ClaudeApiException(
                 type = errorResponse.error.type,
-                message = errorResponse.error.message
+                message = errorResponse.error.message,
+                cause = null
             )
         } catch (e: Exception) {
             ClaudeApiException(
@@ -226,7 +232,7 @@ sealed class StreamingResult {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CORRECTED EXCEPTION CLASS (User's Option 1 - Most Reliable)
+// EXCEPTION CLASS (Using Secondary Constructor for Stability)
 // ═══════════════════════════════════════════════════════════════════════════════
 class ClaudeApiException : Exception {
     val type: String
