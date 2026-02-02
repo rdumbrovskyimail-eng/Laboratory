@@ -5,6 +5,7 @@ import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
 import androidx.work.WorkManager
 import com.opuside.app.core.util.CacheNotificationHelper
+import com.opuside.app.core.util.CrashLogger
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
@@ -17,6 +18,7 @@ import javax.inject.Inject
  * ✅ ИСПРАВЛЕНО: Добавлена поддержка Hilt Workers
  * Решает проблему №2 - FATAL: WorkerModule неполный
  * ✅ ИСПРАВЛЕНО: Проблема №14 (BUG #14) - Явная инициализация WorkManager
+ * ✅ ДОБАВЛЕНО: CrashLogger - автоматический перехват крашей
  */
 @HiltAndroidApp
 class OpusIDEApplication : Application(), Configuration.Provider {
@@ -25,6 +27,10 @@ class OpusIDEApplication : Application(), Configuration.Provider {
     lateinit var workerFactory: HiltWorkerFactory
 
     override fun onCreate() {
+        // 🔥 КРИТИЧЕСКИ ВАЖНО: Инициализируем CrashLogger ПЕРВЫМ делом
+        // ДО вызова super.onCreate() и любой другой инициализации
+        initCrashLogger()
+        
         super.onCreate()
         
         // ✅ ДОБАВЛЕНО: Проблема №14 - Инициализируем WorkManager явно
@@ -43,6 +49,26 @@ class OpusIDEApplication : Application(), Configuration.Provider {
         // - Timber для логирования
         // - Coil для изображений (если понадобится)
         // - Strict Mode для debug
+    }
+
+    /**
+     * 🔥 Инициализация системы перехвата крашей
+     * Вызывается ДО всего остального
+     */
+    private fun initCrashLogger() {
+        try {
+            CrashLogger.init(this).apply {
+                startLogging()
+                // Очищаем старые логи, оставляем последние 20
+                cleanOldLogs(keepCount = 20)
+            }
+            
+            android.util.Log.d("OpusIDEApplication", "✅ CrashLogger initialized successfully")
+            android.util.Log.d("OpusIDEApplication", "📁 Crash logs location: ${CrashLogger.getInstance()?.getCrashLogDirectory()}")
+        } catch (e: Exception) {
+            // Даже если инициализация крашлоггера упала, не даем упасть приложению
+            android.util.Log.e("OpusIDEApplication", "❌ Failed to init CrashLogger", e)
+        }
     }
 
     /**
