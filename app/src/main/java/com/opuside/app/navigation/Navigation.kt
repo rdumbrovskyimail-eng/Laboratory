@@ -72,8 +72,22 @@ val bottomNavItems = listOf(
 // MAIN NAVIGATION COMPOSABLE
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/**
+ * ✅ ОБНОВЛЕНО: Добавлен параметр sensitiveFeatureDisabled для Root Detection
+ * 
+ * Когда sensitiveFeatureDisabled = true, следующие функции должны быть отключены:
+ * - Сохранение Anthropic API ключа (Settings)
+ * - Сохранение GitHub токена (Settings)
+ * - Биометрическая аутентификация (Settings)
+ * - Кеширование файлов с шифрованием (Analyzer)
+ * - Чат с Claude (Analyzer) - т.к. требует API ключ
+ * 
+ * @param sensitiveFeatureDisabled флаг отключения чувствительных функций при root-доступе
+ */
 @Composable
-fun OpusIDENavigation() {
+fun OpusIDENavigation(
+    sensitiveFeatureDisabled: Boolean = false
+) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
@@ -119,15 +133,25 @@ fun OpusIDENavigation() {
             modifier = Modifier.padding(innerPadding)
         ) {
             composable(Screen.Creator.route) {
+                // ✅ Creator работает нормально даже при root
+                // (GitHub API не требует локального хранения чувствительных данных)
                 CreatorScreen()
             }
+            
             composable(Screen.Analyzer.route) {
-                AnalyzerScreen()
+                // ✅ ОБНОВЛЕНО: Передаём флаг в Analyzer
+                // Analyzer должен показать warning если sensitiveFeatureDisabled = true
+                AnalyzerScreen(
+                    sensitiveFeatureDisabled = sensitiveFeatureDisabled
+                )
             }
+            
             composable(Screen.Settings.route) {
-                // ✅ ИСПРАВЛЕНО: secureSettings инжектируется через hiltViewModel
-                // Параметр не нужен - Hilt автоматически предоставит его в SettingsScreen
-                SettingsScreen()
+                // ✅ ОБНОВЛЕНО: Передаём флаг в Settings
+                // Settings должны заблокировать поля API ключей если sensitiveFeatureDisabled = true
+                SettingsScreen(
+                    sensitiveFeatureDisabled = sensitiveFeatureDisabled
+                )
             }
         }
     }
