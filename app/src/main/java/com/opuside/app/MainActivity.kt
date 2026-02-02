@@ -4,15 +4,12 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.ui.theme.OpusIDETheme
 import com.opuside.app.core.util.CrashLogger
@@ -28,20 +25,41 @@ class MainActivity : ComponentActivity() {
         // 🔥 Проверяем, есть ли свежие краш-логи
         checkForRecentCrashes()
         
-        if (SecurityUtils.isDeviceRooted()) {
-            showRootEnforcementDialog()
-            return
-        }
-        
+        // ✅ ИСПРАВЛЕНО: Убрали return, теперь диалог показывается корректно
         enableEdgeToEdge()
 
         setContent {
             OpusIDETheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    OpusIDENavigation()
+                // ✅ ИСПРАВЛЕНО: Проверяем root прямо в Compose
+                val isRooted = remember { SecurityUtils.isDeviceRooted() }
+                var rootDialogDismissed by remember { mutableStateOf(false) }
+                var sensitiveFeatureDisabled by remember { mutableStateOf(false) }
+                
+                if (isRooted && !rootDialogDismissed) {
+                    // Показываем Root Warning Dialog
+                    RootWarningDialog(
+                        onExitApp = {
+                            finish() // Закрываем приложение
+                        },
+                        onDisableSensitiveFeatures = {
+                            sensitiveFeatureDisabled = true
+                            rootDialogDismissed = true
+                        },
+                        onProceedAnyway = {
+                            sensitiveFeatureDisabled = false
+                            rootDialogDismissed = true
+                        }
+                    )
+                } else {
+                    // Основной UI приложения
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = MaterialTheme.colorScheme.background
+                    ) {
+                        OpusIDENavigation(
+                            sensitiveFeatureDisabled = sensitiveFeatureDisabled
+                        )
+                    }
                 }
             }
         }
@@ -76,71 +94,96 @@ class MainActivity : ComponentActivity() {
             android.util.Log.e("MainActivity", "Error checking for crashes", e)
         }
     }
+}
 
-    private fun showRootEnforcementDialog() {
-        setContent {
-            OpusIDETheme {
-                val showDialog = remember { mutableStateOf(true) }
+/**
+ * ✅ НОВЫЙ КОМПОНЕНТ: Root Warning Dialog с 3 кнопками
+ * Соответствует спецификации из документа "Все микрофункции"
+ */
+@Composable
+fun RootWarningDialog(
+    onExitApp: () -> Unit,
+    onDisableSensitiveFeatures: () -> Unit,
+    onProceedAnyway: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { /* Non-cancelable - пользователь ДОЛЖЕН выбрать действие */ },
+        icon = {
+            Text("⚠️", style = MaterialTheme.typography.displayMedium)
+        },
+        title = {
+            Text(
+                text = "Rooted Device Detected",
+                style = MaterialTheme.typography.titleLarge,
+                textAlign = TextAlign.Center
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "Your device has root access enabled. This significantly increases security risks:",
+                    style = MaterialTheme.typography.bodyMedium
+                )
                 
-                if (showDialog.value) {
-                    AlertDialog(
-                        onDismissRequest = { /* Non-cancelable */ },
-                        title = { Text("🔓 Rooted Device Detected") },
-                        text = {
-                            Text(
-                                "Your device has root access enabled. This significantly increases security risks:\n\n" +
-                                "• API keys can be extracted from memory\n" +
-                                "• Database files are readable\n" +
-                                "• Encryption keys can be compromised\n\n" +
-                                "How would you like to proceed?"
-                            )
-                        },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                showDialog.value = false
-                                proceedWithLimitedMode()
-                            }) {
-                                Text("Disable Sensitive Features")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = {
-                                finish()
-                            }) {
-                                Text("Exit App")
-                            }
-                        }
+                // Список рисков
+                Column(
+                    modifier = Modifier.padding(start = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text("• API keys can be extracted from memory", style = MaterialTheme.typography.bodySmall)
+                    Text("• Database files are readable by root apps", style = MaterialTheme.typography.bodySmall)
+                    Text("• Encryption keys can be compromised", style = MaterialTheme.typography.bodySmall)
+                    Text("• Cache content is vulnerable", style = MaterialTheme.typography.bodySmall)
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Text(
+                    text = "How would you like to proceed?",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        },
+        confirmButton = {
+            // ✅ КНОПКА 3: "Proceed Anyway" (рискованный вариант)
+            TextButton(
+                onClick = onProceedAnyway,
+                colors = ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text("Proceed Anyway")
+            }
+        },
+        dismissButton = {
+            // Группируем 2 кнопки слева
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // ✅ КНОПКА 1: "Exit App" (безопасный вариант)
+                TextButton(
+                    onClick = onExitApp,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurface
                     )
-                }
-            }
-        }
-    }
-
-    private fun proceedWithLimitedMode() {
-        enableEdgeToEdge()
-        setContent {
-            OpusIDETheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
                 ) {
-                    OpusIDENavigation()
+                    Text("Exit App")
                 }
-            }
-        }
-    }
-
-    private fun proceedWithFullMode() {
-        enableEdgeToEdge()
-        setContent {
-            OpusIDETheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                
+                // ✅ КНОПКА 2: "Disable Sensitive Features" (компромисс)
+                TextButton(
+                    onClick = onDisableSensitiveFeatures,
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.primary
+                    )
                 ) {
-                    OpusIDENavigation()
+                    Text("Disable Sensitive Features")
                 }
             }
         }
-    }
+    )
 }
