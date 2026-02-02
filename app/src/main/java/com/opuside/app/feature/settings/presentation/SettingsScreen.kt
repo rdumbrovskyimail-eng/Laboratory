@@ -16,21 +16,31 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import com.opuside.app.core.security.SecureSettingsDataStore
+import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.util.CrashLogger
 import com.opuside.app.core.util.CrashTestUtil
+import com.opuside.app.dataStore
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
-    sensitiveFeatureDisabled: Boolean = false  // ← НОВЫЙ ПАРАМЕТР
+    sensitiveFeatureDisabled: Boolean = false
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val secureSettings = remember { SecureSettingsDataStore(context) }
     
     val gitHubConfig by viewModel.gitHubConfig.collectAsState(initial = SecureSettingsDataStore.GitHubConfig("", "", "main", ""))
@@ -91,7 +101,6 @@ fun SettingsScreen(
         ) {
             Text("Settings", style = MaterialTheme.typography.headlineMedium)
 
-            // ✅ ДОБАВЛЕНО: Root Warning Banner
             if (sensitiveFeatureDisabled) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -138,7 +147,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.Person, null) },
-                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
+                    enabled = !sensitiveFeatureDisabled
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -149,7 +158,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.Folder, null) },
-                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
+                    enabled = !sensitiveFeatureDisabled
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -185,7 +194,7 @@ fun SettingsScreen(
                             Icon(if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
                     },
-                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
+                    enabled = !sensitiveFeatureDisabled
                 )
                 Spacer(Modifier.height(12.dp))
                 
@@ -242,7 +251,7 @@ fun SettingsScreen(
                             Icon(if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
                     },
-                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
+                    enabled = !sensitiveFeatureDisabled
                 )
                 Spacer(Modifier.height(8.dp))
                 
@@ -289,7 +298,7 @@ fun SettingsScreen(
                     Switch(
                         checked = useBiometric,
                         onCheckedChange = { useBiometric = it },
-                        enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
+                        enabled = !sensitiveFeatureDisabled
                     )
                 }
                 
@@ -327,7 +336,7 @@ fun SettingsScreen(
                 }
             }
 
-            // CACHE SETTINGS (не блокируем - безопасно)
+            // CACHE SETTINGS
             SettingsSection(title = "Cache & Timer", icon = Icons.Default.Timer) {
                 Text("Cache keeps files for Claude analysis. Timer resets when adding files.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -367,6 +376,112 @@ fun SettingsScreen(
                 )
                 
                 Spacer(Modifier.height(12.dp))
+                
+                // ✅ НОВОЕ: Root Dialog Setting
+                var showRootDialogOnStartup by remember { 
+                    mutableStateOf(
+                        runBlocking {
+                            context.dataStore.data.map { prefs ->
+                                prefs[booleanPreferencesKey("show_root_dialog_on_startup")] ?: true
+                            }.first()
+                        }
+                    )
+                }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "Show Root Dialog on Startup",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Text(
+                                "Display security check dialog when app starts",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = showRootDialogOnStartup,
+                            onCheckedChange = { enabled ->
+                                showRootDialogOnStartup = enabled
+                                lifecycleOwner.lifecycleScope.launch {
+                                    context.dataStore.edit { prefs ->
+                                        prefs[booleanPreferencesKey("show_root_dialog_on_startup")] = enabled
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        if (enabled) "Root dialog will show on next startup" else "Root dialog disabled",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // ✅ НОВОЕ: Current Root Status
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (SecurityUtils.isDeviceRooted())
+                            MaterialTheme.colorScheme.errorContainer
+                        else
+                            MaterialTheme.colorScheme.primaryContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            if (SecurityUtils.isDeviceRooted()) Icons.Default.Warning else Icons.Default.CheckCircle,
+                            null,
+                            Modifier.size(32.dp),
+                            tint = if (SecurityUtils.isDeviceRooted())
+                                MaterialTheme.colorScheme.error
+                            else
+                                MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                if (SecurityUtils.isDeviceRooted()) "Root Detected" else "No Root Detected",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = if (SecurityUtils.isDeviceRooted())
+                                    MaterialTheme.colorScheme.error
+                                else
+                                    MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                if (SecurityUtils.isDeviceRooted())
+                                    "Sensitive features may be compromised"
+                                else
+                                    "Device is secure",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (SecurityUtils.isDeviceRooted())
+                                    MaterialTheme.colorScheme.onErrorContainer
+                                else
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+                
+                Spacer(Modifier.height(16.dp))
                 
                 val crashLogger = remember { CrashLogger.getInstance() }
                 val crashStats = remember { 
@@ -531,7 +646,7 @@ fun SettingsScreen(
                         Text("How it works", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again\n7. Enable biometric protection for extra security\n8. Use Developer Tools to test crash logger",
+                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again\n7. Enable biometric protection for extra security\n8. Use Developer Tools to test crash logger\n9. Toggle Root Dialog in Developer Tools to control startup behavior",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                 }
             }
