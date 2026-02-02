@@ -377,7 +377,7 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
                 
-                // ✅ НОВОЕ: Root Dialog Setting
+                // Root Dialog Setting
                 var showRootDialogOnStartup by remember { 
                     mutableStateOf(
                         runBlocking {
@@ -433,7 +433,7 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // ✅ НОВОЕ: Current Root Status
+                // Current Root Status
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -521,6 +521,72 @@ fun SettingsScreen(
                 }
                 
                 Spacer(Modifier.height(12.dp))
+
+                // ═══════════════════════════════════════════════════════════
+                // ТЕСТ УВЕДОМЛЕНИЙ
+                // ═══════════════════════════════════════════════════════════
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    )
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Notifications, 
+                                null, 
+                                Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Notification Channel Test",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "On Android 14+, notification channels only appear in settings after sending at least one notification through that channel.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = { 
+                            com.opuside.app.core.util.CacheNotificationHelper.showCacheWarningNotification(context)
+                            Toast.makeText(context, "Warning notification sent! Check notification shade.", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.NotificationsActive, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Test Warning")
+                    }
+                    
+                    OutlinedButton(
+                        onClick = { 
+                            com.opuside.app.core.util.CacheNotificationHelper.showCacheExpiredNotification(context)
+                            Toast.makeText(context, "Expired notification sent! Check notification shade.", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.NotificationsOff, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Test Expired")
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
