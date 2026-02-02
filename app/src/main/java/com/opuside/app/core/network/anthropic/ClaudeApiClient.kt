@@ -6,7 +6,7 @@ import com.opuside.app.core.network.anthropic.model.ClaudeRequest
 import com.opuside.app.core.network.anthropic.model.ClaudeResponse
 import com.opuside.app.core.network.anthropic.model.StreamEvent
 import com.opuside.app.core.network.anthropic.model.Usage
-import com.opuside.app.core.network.anthropic.model.ClaudeErrorResponse 
+import com.opuside.app.core.network.anthropic.model.ClaudeErrorResponse
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.header
@@ -19,6 +19,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -26,6 +27,22 @@ import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 
+/**
+ * Claude API Client for streaming and non-streaming completions.
+ * 
+ * Features:
+ * - SSE (Server-Sent Events) streaming support
+ * - Automatic retry-after handling for rate limits
+ * - Cancellation-aware flows
+ * - Comprehensive error handling
+ * - Resource cleanup guarantees
+ * 
+ * @property httpClient Ktor HTTP client configured for Anthropic API
+ * @property json Kotlinx.serialization JSON instance
+ * @property apiUrl Anthropic API endpoint URL
+ * 
+ * @since 1.0.0
+ */
 @Singleton
 class ClaudeApiClient @Inject constructor(
     @Named("anthropic") private val httpClient: HttpClient,
@@ -45,6 +62,34 @@ class ClaudeApiClient @Inject constructor(
         get() = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("ANTHROPIC_API_KEY not configured in local.properties")
 
+    /**
+     * Stream messages from Claude API using Server-Sent Events.
+     * 
+     * This method is cancellation-aware - when the collector cancels the flow,
+     * the underlying HTTP connection is properly closed.
+     * 
+     * @param messages Conversation history (user/assistant messages)
+     * @param systemPrompt Optional system prompt for context
+     * @param maxTokens Maximum tokens to generate (default: 4096)
+     * @param temperature Sampling temperature (0.0-1.0, optional)
+     * @return Flow of [StreamingResult] events
+     * 
+     * @throws ClaudeApiException on API errors
+     * 
+     * Example:
+     * ```kotlin
+     * claudeClient.streamMessage(
+     *     messages = listOf(ClaudeMessage("user", "Hello!")),
+     *     systemPrompt = "You are a helpful assistant"
+     * ).collect { result ->
+     *     when (result) {
+     *         is StreamingResult.Delta -> println(result.text)
+     *         is StreamingResult.Completed -> println("Done!")
+     *         is StreamingResult.Error -> handleError(result.exception)
+     *     }
+     * }
+     * ```
+     */
     fun streamMessage(
         messages: List<ClaudeMessage>,
         systemPrompt: String? = null,
@@ -82,17 +127,18 @@ class ClaudeApiClient @Inject constructor(
             val startTime = System.currentTimeMillis()
 
             while (!channel.isClosedForRead) {
+                // Timeout protection for entire streaming session
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
                     emit(StreamingResult.Error(
                         ClaudeApiException(
                             type = "timeout",
-                            message = "Streaming exceeded 5 minutes",
-                            cause = null
+                            message = "Streaming exceeded 5 minutes"
                         )
                     ))
                     return@flow
                 }
 
+                // Read line with timeout
                 val line = withTimeoutOrNull(READ_TIMEOUT_MS) {
                     channel.readUTF8Line()
                 }
@@ -101,13 +147,13 @@ class ClaudeApiClient @Inject constructor(
                     emit(StreamingResult.Error(
                         ClaudeApiException(
                             type = "timeout",
-                            message = "Stream timeout after 30s",
-                            cause = null
+                            message = "Stream timeout after 30s"
                         )
                     ))
                     return@flow
                 }
                 
+                // Parse SSE events
                 if (line.startsWith("data: ")) {
                     val data = line.removePrefix("data: ").trim()
                     if (data.isEmpty() || data == "[DONE]") continue
@@ -115,35 +161,38 @@ class ClaudeApiClient @Inject constructor(
                     try {
                         val event = json.decodeFromString<StreamEvent>(data)
                         when (event.type) {
-                            "message_start" -> emit(StreamingResult.Started(event.message?.id ?: ""))
+                            "message_start" -> {
+                                emit(StreamingResult.Started(event.message?.id ?: ""))
+                            }
+                            
                             "content_block_delta" -> {
                                 event.delta?.text?.let { text ->
                                     currentText.append(text)
                                     emit(StreamingResult.Delta(text, currentText.toString()))
                                 }
                             }
+                            
                             "message_delta" -> {
                                 event.usage?.let { totalUsage = it }
                                 event.delta?.stopReason?.let { reason ->
                                     emit(StreamingResult.StopReason(reason))
                                 }
                             }
+                            
                             "message_stop" -> {
                                 emit(StreamingResult.Completed(currentText.toString(), totalUsage))
                             }
+                            
                             "error" -> {
                                 event.error?.let { error ->
-                                    // FIX: Explicitly pass cause = null to satisfy strict compiler checks
                                     emit(StreamingResult.Error(
                                         ClaudeApiException(
                                             type = error.type,
-                                            message = error.message,
-                                            cause = null
+                                            message = error.message
                                         )
                                     ))
                                 }
                             }
-                            else -> {}
                         }
                     } catch (e: Exception) {
                         android.util.Log.w("ClaudeAPI", "Failed to parse SSE event: $data", e)
@@ -160,10 +209,20 @@ class ClaudeApiClient @Inject constructor(
                 )
             ))
         } finally {
+            // Ensure channel is always closed
             channel?.cancel()
         }
-    }
+    }.cancellable() // ✅ FIX #1: Cancellation support
 
+    /**
+     * Send a non-streaming message to Claude API.
+     * 
+     * @param messages Conversation history
+     * @param systemPrompt Optional system prompt
+     * @param maxTokens Maximum tokens to generate
+     * @param temperature Sampling temperature (0.0-1.0)
+     * @return Result containing [ClaudeResponse] or error
+     */
     suspend fun sendMessage(
         messages: List<ClaudeMessage>,
         systemPrompt: String? = null,
@@ -203,15 +262,30 @@ class ClaudeApiClient @Inject constructor(
         }
     }
 
+    /**
+     * Parse error response from Anthropic API.
+     * 
+     * Handles:
+     * - Rate limit errors with Retry-After header
+     * - Authentication errors
+     * - Invalid request errors
+     * - Server errors
+     * 
+     * @param response HTTP response with error status
+     * @return [ClaudeApiException] with parsed error details
+     */
     private suspend fun parseError(response: HttpResponse): ClaudeApiException {
         return try {
             val errorBody = response.body<String>()
             val errorResponse = json.decodeFromString<ClaudeErrorResponse>(errorBody)
-            // FIX: Explicitly pass cause = null
+            
+            // ✅ FIX #2: Extract Retry-After header for rate limits
+            val retryAfter = response.headers["Retry-After"]?.toIntOrNull()
+            
             ClaudeApiException(
                 type = errorResponse.error.type,
                 message = errorResponse.error.message,
-                cause = null
+                retryAfterSeconds = retryAfter
             )
         } catch (e: Exception) {
             ClaudeApiException(
@@ -223,30 +297,102 @@ class ClaudeApiClient @Inject constructor(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// STREAMING RESULT TYPES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Sealed class representing streaming events from Claude API.
+ */
 sealed class StreamingResult {
+    /**
+     * Streaming started with message ID.
+     */
     data class Started(val messageId: String) : StreamingResult()
+    
+    /**
+     * Delta (chunk) of text received.
+     * 
+     * @property text New text chunk
+     * @property accumulated All accumulated text so far
+     */
     data class Delta(val text: String, val accumulated: String) : StreamingResult()
+    
+    /**
+     * Stop reason received (e.g., "end_turn", "max_tokens").
+     */
     data class StopReason(val reason: String) : StreamingResult()
+    
+    /**
+     * Streaming completed successfully.
+     * 
+     * @property fullText Complete generated text
+     * @property usage Token usage statistics
+     */
     data class Completed(val fullText: String, val usage: Usage?) : StreamingResult()
+    
+    /**
+     * Error occurred during streaming.
+     */
     data class Error(val exception: ClaudeApiException) : StreamingResult()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EXCEPTION CLASS (Using Secondary Constructor for Stability)
+// EXCEPTION CLASS (Production-ready, 2026 level)
 // ═══════════════════════════════════════════════════════════════════════════════
-class ClaudeApiException : Exception {
-    val type: String
+
+/**
+ * Exception thrown by Claude API operations.
+ * 
+ * Provides structured error information including:
+ * - Error type classification
+ * - Human-readable message
+ * - Retry-After header for rate limits
+ * - Original cause exception
+ * 
+ * @property type Error type from Anthropic API
+ * @property retryAfterSeconds Seconds to wait before retry (for rate limits)
+ * 
+ * @constructor Creates exception with type, message, and optional cause
+ * @param type Error type (e.g., "rate_limit_error", "invalid_request_error")
+ * @param message Human-readable error message
+ * @param cause Original exception that caused this error (optional)
+ * @param retryAfterSeconds Seconds to wait before retry (optional)
+ */
+class ClaudeApiException(
+    val type: String,
+    message: String,
+    cause: Throwable? = null,
+    val retryAfterSeconds: Int? = null
+) : Exception(message, cause) {
     
+    /**
+     * Convenience constructor without retry-after.
+     * ✅ FIX #3: This ensures backward compatibility
+     */
     constructor(
         type: String,
-        message: String,
-        cause: Throwable? = null
-    ) : super(message, cause) {
-        this.type = type
-    }
+        message: String
+    ) : this(type, message, null, null)
     
+    /** True if this is a rate limit error. */
     val isRateLimitError: Boolean get() = type == "rate_limit_error"
+    
+    /** True if this is an authentication error. */
     val isAuthError: Boolean get() = type == "authentication_error"
+    
+    /** True if this is an invalid request error. */
     val isInvalidRequest: Boolean get() = type == "invalid_request_error"
+    
+    /** True if the API is overloaded. */
     val isOverloaded: Boolean get() = type == "overloaded_error"
+    
+    /**
+     * User-friendly error message with retry information.
+     */
+    override fun toString(): String = buildString {
+        append("ClaudeApiException(type=$type, message=$message")
+        retryAfterSeconds?.let { append(", retryAfter=${it}s") }
+        append(")")
+    }
 }
