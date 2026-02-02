@@ -21,9 +21,8 @@ import com.opuside.app.core.ui.theme.OpusIDETheme
 import com.opuside.app.core.util.CrashLogger
 import com.opuside.app.navigation.OpusIDENavigation
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.runBlocking
+import kotlin.system.exitProcess
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_preferences")
 
@@ -40,25 +39,31 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             OpusIDETheme {
-                // ✅ Проверяем настройку показа Root Dialog
-                val showRootDialogSetting = remember {
-                    runBlocking {
-                        dataStore.data.map { prefs ->
-                            prefs[booleanPreferencesKey("show_root_dialog_on_startup")] ?: true
-                        }.first()
+                // ✅ ИСПРАВЛЕНО: Используем LaunchedEffect вместо runBlocking
+                var showRootDialogSetting by remember { mutableStateOf(true) }
+                var isLoading by remember { mutableStateOf(true) }
+                
+                LaunchedEffect(Unit) {
+                    dataStore.data.map { prefs ->
+                        prefs[booleanPreferencesKey("show_root_dialog_on_startup")] ?: true
+                    }.collect { enabled ->
+                        showRootDialogSetting = enabled
+                        isLoading = false
                     }
                 }
                 
                 val isRooted = remember { SecurityUtils.isDeviceRooted() }
-                var rootDialogDismissed by remember { mutableStateOf(!showRootDialogSetting) }
+                var rootDialogDismissed by remember { mutableStateOf(false) }
                 var sensitiveFeatureDisabled by remember { mutableStateOf(false) }
                 
-                if (!rootDialogDismissed) {
-                    // ✅ ВСЕГДА показываем диалог при первом запуске (если настройка включена)
+                // ✅ ИСПРАВЛЕНО: Показываем диалог ВСЕГДА если настройка включена
+                if (!isLoading && showRootDialogSetting && !rootDialogDismissed) {
                     RootStatusDialog(
                         isRooted = isRooted,
                         onExitApp = {
-                            finish()
+                            // ✅ ИСПРАВЛЕНО: Полное закрытие приложения
+                            finishAndRemoveTask()
+                            exitProcess(0)
                         },
                         onDisableSensitiveFeatures = {
                             sensitiveFeatureDisabled = true
@@ -69,7 +74,7 @@ class MainActivity : ComponentActivity() {
                             rootDialogDismissed = true
                         }
                     )
-                } else {
+                } else if (!isLoading) {
                     // Основной UI приложения
                     Surface(
                         modifier = Modifier.fillMaxSize(),
@@ -116,9 +121,18 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * ✅ НОВЫЙ КОМПОНЕНТ: Root Status Dialog
- * Показывается ВСЕГДА при старте, отображает реальный статус root
- * Кнопки активны/неактивны в зависимости от наличия root
+ * ✅ ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ: Root Status Dialog
+ * 
+ * ЛОГИКА:
+ * - Показывается ВСЕГДА при старте (если настройка включена)
+ * - Если НЕТ root:
+ *   • Кнопка "Continue" активна (зелёная)
+ *   • Кнопка "Disable Features" НЕАКТИВНА (серая)
+ *   • Кнопка "Exit App" активна
+ * - Если ЕСТЬ root:
+ *   • Кнопка "Proceed Anyway" активна (красная, опасная)
+ *   • Кнопка "Disable Features" активна (жёлтая)
+ *   • Кнопка "Exit App" активна
  */
 @Composable
 fun RootStatusDialog(
@@ -148,7 +162,9 @@ fun RootStatusDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (isRooted) {
+                    // ═══════════════════════════════════════════════════════════
                     // УСТРОЙСТВО С ROOT
+                    // ═══════════════════════════════════════════════════════════
                     Text(
                         text = "Your device has root access enabled. This significantly increases security risks:",
                         style = MaterialTheme.typography.bodyMedium
@@ -169,10 +185,12 @@ fun RootStatusDialog(
                     Text(
                         text = "How would you like to proceed?",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.error
                     )
                 } else {
+                    // ═══════════════════════════════════════════════════════════
                     // УСТРОЙСТВО БЕЗ ROOT
+                    // ═══════════════════════════════════════════════════════════
                     Text(
                         text = "Security check complete. No root access detected.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -219,42 +237,55 @@ fun RootStatusDialog(
             }
         },
         confirmButton = {
-            // ✅ КНОПКА "Proceed" - активна только если НЕТ root
-            TextButton(
+            // ═══════════════════════════════════════════════════════════
+            // ГЛАВНАЯ КНОПКА (справа)
+            // ═══════════════════════════════════════════════════════════
+            Button(
                 onClick = onProceedAnyway,
-                enabled = !isRooted,
-                colors = ButtonDefaults.textButtonColors(
-                    contentColor = if (isRooted) 
-                        MaterialTheme.colorScheme.error 
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isRooted) 
+                        MaterialTheme.colorScheme.error  // Красная если root
                     else 
-                        MaterialTheme.colorScheme.primary,
-                    disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                        MaterialTheme.colorScheme.primary, // Зелёная если нет root
+                    contentColor = if (isRooted)
+                        MaterialTheme.colorScheme.onError
+                    else
+                        MaterialTheme.colorScheme.onPrimary
                 )
             ) {
-                Text(if (isRooted) "Proceed Anyway (Risky)" else "Continue")
+                Text(
+                    if (isRooted) "Proceed Anyway (Risky)" else "Continue",
+                    style = MaterialTheme.typography.labelLarge
+                )
             }
         },
         dismissButton = {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // ✅ КНОПКА "Exit App" - всегда активна
-                TextButton(
+                // ═══════════════════════════════════════════════════════════
+                // КНОПКА "Exit App" - ВСЕГДА АКТИВНА
+                // ═══════════════════════════════════════════════════════════
+                OutlinedButton(
                     onClick = onExitApp,
-                    colors = ButtonDefaults.textButtonColors(
+                    colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.onSurface
                     )
                 ) {
                     Text("Exit App")
                 }
                 
-                // ✅ КНОПКА "Disable Features" - активна только если ЕСТЬ root
-                TextButton(
+                // ═══════════════════════════════════════════════════════════
+                // КНОПКА "Disable Features" - АКТИВНА ТОЛЬКО ПРИ ROOT
+                // ═══════════════════════════════════════════════════════════
+                OutlinedButton(
                     onClick = onDisableSensitiveFeatures,
-                    enabled = isRooted,
-                    colors = ButtonDefaults.textButtonColors(
-                        contentColor = MaterialTheme.colorScheme.primary,
-                        disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                    enabled = isRooted, // ✅ АКТИВНА только если есть root
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = if (isRooted)
+                            MaterialTheme.colorScheme.tertiary
+                        else
+                            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
                     )
                 ) {
                     Text("Disable Sensitive Features")
