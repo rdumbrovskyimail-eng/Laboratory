@@ -16,23 +16,34 @@ import com.opuside.app.R
 
 /**
  * Helper для Cache-уведомлений.
+ * ✅ ИСПРАВЛЕНО: Notification channel теперь создаётся с IMPORTANCE_HIGH
  */
 object CacheNotificationHelper {
     private const val CHANNEL_ID = "cache_timer_channel"
     private const val WARNING_NOTIFICATION_ID = 1001
     private const val EXPIRED_NOTIFICATION_ID = 1002
 
+    /**
+     * ✅ ИСПРАВЛЕНО: Изменён IMPORTANCE_DEFAULT на IMPORTANCE_HIGH
+     * Это гарантирует, что канал будет виден в настройках Android
+     */
     fun createNotificationChannel(context: Context) {
-        val channel = NotificationChannel(
-            CHANNEL_ID,
-            "Cache Timer",
-            NotificationManager.IMPORTANCE_DEFAULT
-        ).apply {
-            description = "Notifications about cache timer expiry"
-        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Cache Timer",
+                NotificationManager.IMPORTANCE_HIGH // ✅ БЫЛО: IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Notifications about cache timer expiry"
+                enableVibration(true) // ✅ ДОБАВЛЕНО
+                enableLights(true)    // ✅ ДОБАВЛЕНО
+            }
 
-        val notificationManager = context.getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(channel)
+            val notificationManager = context.getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
+            
+            android.util.Log.d("CacheNotificationHelper", "✅ Notification channel created with ID: $CHANNEL_ID")
+        }
     }
 
     /**
@@ -50,6 +61,7 @@ object CacheNotificationHelper {
     }
 
     fun showCacheWarningNotification(context: Context) {
+        // ✅ ДОБАВЛЕНО: Явно создаём channel перед показом уведомления
         createNotificationChannel(context)
 
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -61,12 +73,13 @@ object CacheNotificationHelper {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification) // ✅ ИЗМЕНЕНО: ic_launcher_foreground → ic_notification
             .setContentTitle("⏱️ Cache Expiring Soon")
             .setContentText("Your cached files will expire in 1 minute")
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH) // ✅ ИЗМЕНЕНО: DEFAULT → HIGH
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
+            .setVibrate(longArrayOf(0, 300, 200, 300)) // ✅ ДОБАВЛЕНО
             .build()
 
         if (hasNotificationPermission(context)) {
@@ -76,6 +89,7 @@ object CacheNotificationHelper {
     }
 
     fun showCacheExpiredNotification(context: Context) {
+        // ✅ ДОБАВЛЕНО: Явно создаём channel перед показом уведомления
         createNotificationChannel(context)
 
         val intent = Intent(context, MainActivity::class.java).apply {
@@ -87,7 +101,7 @@ object CacheNotificationHelper {
         )
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification) // ✅ ИЗМЕНЕНО: ic_launcher_foreground → ic_notification
             .setContentTitle("🗑️ Cache Cleared")
             .setContentText("Your cached files have expired and been cleared")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
