@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -23,22 +24,15 @@ import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.util.CrashLogger
 import com.opuside.app.core.util.CrashTestUtil
 
-/**
- * ✅ ИСПРАВЛЕНО (Проблема №6): Убран параметр secureSettings, получаем локально через remember
- * 🔥 ДОБАВЛЕНО: Секция Developer Tools с CrashLogger
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    viewModel: SettingsViewModel = hiltViewModel()
+    viewModel: SettingsViewModel = hiltViewModel(),
+    sensitiveFeatureDisabled: Boolean = false  // ← НОВЫЙ ПАРАМЕТР
 ) {
-    // ✅ ДОБАВЛЕНО: Получаем secureSettings локально
     val context = LocalContext.current
-    val secureSettings = remember {
-        SecureSettingsDataStore(context)
-    }
+    val secureSettings = remember { SecureSettingsDataStore(context) }
     
-    // ✅ ИСПРАВЛЕНО: Добавлен параметр initial для gitHubConfig
     val gitHubConfig by viewModel.gitHubConfig.collectAsState(initial = SecureSettingsDataStore.GitHubConfig("", "", "main", ""))
     val githubStatus by viewModel.githubStatus.collectAsState()
     val repoInfo by viewModel.repoInfo.collectAsState()
@@ -56,7 +50,6 @@ fun SettingsScreen(
     val isSaving by viewModel.isSaving.collectAsState()
     val message by viewModel.message.collectAsState()
     
-    // ✅ НОВОЕ (Проблема №8): Event для биометрии
     val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
     
     var useBiometric by remember { mutableStateOf(false) }
@@ -71,25 +64,16 @@ fun SettingsScreen(
         }
     }
 
-    // ✅ НОВОЕ (Проблема №8): Обработка биометрического запроса через LaunchedEffect
     if (biometricAuthRequest && activity != null) {
         LaunchedEffect(Unit) {
             secureSettings.getAnthropicApiKeyWithBiometric(
                 activity = activity,
                 onSuccess = { key ->
-                    Toast.makeText(
-                        context,
-                        "Key retrieved: ${key.take(10)}...",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(context, "Key retrieved: ${key.take(10)}...", Toast.LENGTH_SHORT).show()
                     viewModel.clearBiometricRequest()
                 },
                 onError = { error ->
-                    Toast.makeText(
-                        context,
-                        "Auth failed: $error",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(context, "Auth failed: $error", Toast.LENGTH_SHORT).show()
                     viewModel.clearBiometricRequest()
                 }
             )
@@ -107,6 +91,43 @@ fun SettingsScreen(
         ) {
             Text("Settings", style = MaterialTheme.typography.headlineMedium)
 
+            // ✅ ДОБАВЛЕНО: Root Warning Banner
+            if (sensitiveFeatureDisabled) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(32.dp)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Root Access Detected",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                text = "Sensitive settings are disabled for security",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        }
+                    }
+                }
+            }
+
             // GITHUB SETTINGS
             SettingsSection(title = "GitHub Repository", icon = Icons.Default.Code) {
                 OutlinedTextField(
@@ -116,7 +137,8 @@ fun SettingsScreen(
                     placeholder = { Text("username") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    leadingIcon = { Icon(Icons.Default.Person, null) }
+                    leadingIcon = { Icon(Icons.Default.Person, null) },
+                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -126,7 +148,8 @@ fun SettingsScreen(
                     placeholder = { Text("my-android-app") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    leadingIcon = { Icon(Icons.Default.Folder, null) }
+                    leadingIcon = { Icon(Icons.Default.Folder, null) },
+                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -144,7 +167,14 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = githubTokenInput,
                     onValueChange = viewModel::updateGitHubToken,
-                    label = { Text("Personal Access Token") },
+                    label = { 
+                        Text(
+                            if (sensitiveFeatureDisabled)
+                                "Personal Access Token (Disabled - Root Access)"
+                            else
+                                "Personal Access Token"
+                        )
+                    },
                     placeholder = { Text("ghp_xxxxxxxxxxxx") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
@@ -154,15 +184,26 @@ fun SettingsScreen(
                         IconButton(onClick = { showToken = !showToken }) {
                             Icon(if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
-                    }
+                    },
+                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
                 )
                 Spacer(Modifier.height(12.dp))
                 
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = githubStatus)
                     Row {
-                        TextButton(onClick = viewModel::testGitHubConnection) { Text("Test") }
-                        Button(onClick = viewModel::saveGitHubSettings, enabled = !isSaving) { Text("Save") }
+                        TextButton(
+                            onClick = viewModel::testGitHubConnection,
+                            enabled = !sensitiveFeatureDisabled
+                        ) { 
+                            Text("Test") 
+                        }
+                        Button(
+                            onClick = viewModel::saveGitHubSettings, 
+                            enabled = !isSaving && !sensitiveFeatureDisabled
+                        ) { 
+                            Text("Save") 
+                        }
                     }
                 }
                 
@@ -183,7 +224,14 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = anthropicKeyInput,
                     onValueChange = viewModel::updateAnthropicKey,
-                    label = { Text("API Key") },
+                    label = { 
+                        Text(
+                            if (sensitiveFeatureDisabled)
+                                "API Key (Disabled - Root Access)"
+                            else
+                                "API Key"
+                        )
+                    },
                     placeholder = { Text("sk-ant-api03-xxxx") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
@@ -193,7 +241,8 @@ fun SettingsScreen(
                         IconButton(onClick = { showApiKey = !showApiKey }) {
                             Icon(if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
-                    }
+                    },
+                    enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
                 )
                 Spacer(Modifier.height(8.dp))
                 
@@ -215,14 +264,22 @@ fun SettingsScreen(
                 }
                 Spacer(Modifier.height(12.dp))
                 
-                // Биометрическая защита
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Biometric Protection")
+                        Text(
+                            if (sensitiveFeatureDisabled)
+                                "Biometric Protection (Disabled - Root Access)"
+                            else
+                                "Biometric Protection",
+                            color = if (sensitiveFeatureDisabled) 
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            else
+                                MaterialTheme.colorScheme.onSurface
+                        )
                         Text(
                             "Require fingerprint/face to access API key",
                             style = MaterialTheme.typography.bodySmall,
@@ -231,7 +288,8 @@ fun SettingsScreen(
                     }
                     Switch(
                         checked = useBiometric,
-                        onCheckedChange = { useBiometric = it }
+                        onCheckedChange = { useBiometric = it },
+                        enabled = !sensitiveFeatureDisabled  // ← БЛОКИРУЕМ
                     )
                 }
                 
@@ -240,21 +298,25 @@ fun SettingsScreen(
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
                     Row {
-                        TextButton(onClick = viewModel::testClaudeConnection) { Text("Test") }
+                        TextButton(
+                            onClick = viewModel::testClaudeConnection,
+                            enabled = !sensitiveFeatureDisabled
+                        ) { 
+                            Text("Test") 
+                        }
                         Button(
                             onClick = { viewModel.saveAnthropicSettings(useBiometric) }, 
-                            enabled = !isSaving
+                            enabled = !isSaving && !sensitiveFeatureDisabled
                         ) { 
                             Text("Save") 
                         }
                     }
                 }
                 
-                // ✅ ОБНОВЛЕНО (Проблема №8): Используем Event pattern вместо прямого вызова
-                if (useBiometric) {
+                if (useBiometric && !sensitiveFeatureDisabled) {
                     Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick = { viewModel.requestBiometricAuth() }, // ✅ Event
+                        onClick = { viewModel.requestBiometricAuth() },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = activity != null
                     ) {
@@ -265,7 +327,7 @@ fun SettingsScreen(
                 }
             }
 
-            // CACHE SETTINGS
+            // CACHE SETTINGS (не блокируем - безопасно)
             SettingsSection(title = "Cache & Timer", icon = Icons.Default.Timer) {
                 Text("Cache keeps files for Claude analysis. Timer resets when adding files.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -296,7 +358,7 @@ fun SettingsScreen(
                 }
             }
 
-            // 🔥 НОВАЯ СЕКЦИЯ: DEVELOPER TOOLS
+            // DEVELOPER TOOLS
             SettingsSection(title = "Developer Tools", icon = Icons.Default.BugReport) {
                 Text(
                     "Debug and testing tools for development",
@@ -306,7 +368,6 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
                 
-                // Crash Logger Info
                 val crashLogger = remember { CrashLogger.getInstance() }
                 val crashStats = remember { 
                     crashLogger?.let {
@@ -346,7 +407,6 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
                 
-                // Crash Test Buttons
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -358,11 +418,7 @@ fun SettingsScreen(
                             contentColor = Color(0xFFEF4444)
                         )
                     ) {
-                        Icon(
-                            Icons.Default.Warning,
-                            null,
-                            Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.Warning, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Test Crash")
                     }
@@ -371,11 +427,7 @@ fun SettingsScreen(
                         onClick = { CrashTestUtil.printLatestCrashLog() },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            Icons.Default.Print,
-                            null,
-                            Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.Print, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Print Log")
                     }
@@ -391,11 +443,7 @@ fun SettingsScreen(
                         onClick = { CrashTestUtil.openLatestCrashLog(context) },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            Icons.Default.FolderOpen,
-                            null,
-                            Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.FolderOpen, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Open File")
                     }
@@ -404,11 +452,7 @@ fun SettingsScreen(
                         onClick = { CrashTestUtil.shareLatestCrashLog(context) },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            Icons.Default.Share,
-                            null,
-                            Modifier.size(18.dp)
-                        )
+                        Icon(Icons.Default.Share, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Share Log")
                     }
@@ -416,7 +460,6 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
                 
-                // Warning Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -467,7 +510,11 @@ fun SettingsScreen(
                     Spacer(Modifier.width(4.dp))
                     Text("Reset")
                 }
-                Button(onClick = viewModel::saveAllSettings, modifier = Modifier.weight(1f), enabled = !isSaving) {
+                Button(
+                    onClick = viewModel::saveAllSettings, 
+                    modifier = Modifier.weight(1f), 
+                    enabled = !isSaving && !sensitiveFeatureDisabled
+                ) {
                     if (isSaving) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     else Icon(Icons.Default.Save, null, Modifier.size(18.dp))
                     Spacer(Modifier.width(4.dp))
