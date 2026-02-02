@@ -285,13 +285,15 @@ class ClaudeApiClient @Inject constructor(
             ClaudeApiException(
                 type = errorResponse.error.type,
                 message = errorResponse.error.message,
+                cause = null,  // ✅ КРИТИЧНО: Явно указываем cause = null перед retryAfterSeconds
                 retryAfterSeconds = retryAfter
             )
         } catch (e: Exception) {
+            // Fallback for unparseable errors
             ClaudeApiException(
                 type = "http_error",
                 message = "HTTP ${response.status.value}: ${response.status.description}",
-                cause = e
+                cause = e  // ✅ Здесь передаем exception как cause
             )
         }
     }
