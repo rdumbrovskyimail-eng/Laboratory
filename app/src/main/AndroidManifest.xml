@@ -2,32 +2,23 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
     <!-- PERMISSIONS -->
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
-    
-    <!-- Интернет для API запросов -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
-    <!-- ✅ ДОБАВЛЕНО: Биометрия (опционально) -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
-    
-    <!-- ✅ ДОБАВЛЕНО: Нотификации для Android 13+ -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     
-    <!-- 🔥 ДОБАВЛЕНО: Разрешения для CrashLogger -->
+    <!-- 🔥 ДЛЯ ЗАПИСИ В /storage/emulated/0/log/ -->
     <uses-permission android:name="android.permission.READ_LOGS"
         tools:ignore="ProtectedPermissions" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
+        android:maxSdkVersion="28"
+        tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
-    <!-- APPLICATION -->
-    <!-- ═══════════════════════════════════════════════════════════════════════ -->
-    
     <application
         android:name=".OpusIDEApplication"
         android:allowBackup="false"
@@ -41,10 +32,6 @@
         android:requestLegacyExternalStorage="true"
         tools:targetApi="36">
 
-        <!-- ═══════════════════════════════════════════════════════════════════ -->
-        <!-- MAIN ACTIVITY -->
-        <!-- ═══════════════════════════════════════════════════════════════════ -->
-        
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -57,7 +44,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Deep Links (для будущего) -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -69,7 +55,6 @@
             
         </activity>
 
-        <!-- 🔥 ДОБАВЛЕНО: FileProvider для шаринга crash логов -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
