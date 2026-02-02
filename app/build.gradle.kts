@@ -66,8 +66,8 @@ android {
         )
 
         // APP CONSTANTS
-        buildConfigField("Long", "CACHE_TIMEOUT_MS", "300000L")
-        buildConfigField("Int", "MAX_CACHE_FILES", "20")
+        buildConfigField("long", "CACHE_TIMEOUT_MS", "300000L")
+        buildConfigField("int", "MAX_CACHE_FILES", "20")
     }
 
     buildTypes.configureEach {
