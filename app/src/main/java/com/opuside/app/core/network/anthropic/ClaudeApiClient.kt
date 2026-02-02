@@ -18,6 +18,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.utils.io.readUTF8Line
+import io.ktor.utils.io.cancel  // ✅ FIX: Add this import for the extension function ByteReadChannel.cancel()
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.flow
@@ -289,7 +290,6 @@ class ClaudeApiClient @Inject constructor(
                 retryAfterSeconds = retryAfter
             )
         } catch (e: Exception) {
-            // Fallback for unparseable errors
             ClaudeApiException(
                 type = "http_error",
                 message = "HTTP ${response.status.value}: ${response.status.description}",
