@@ -364,4 +364,35 @@ object NetworkModule {
             contentType(ContentType.Application.Json)
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // API CONFIGURATION STRINGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Provides Anthropic API URL from BuildConfig.
+     * Used for ClaudeApiClient dependency injection.
+     */
+    @Provides
+    @Singleton
+    @Named("anthropicApiUrl")
+    fun provideAnthropicApiUrl(): String = BuildConfig.ANTHROPIC_API_URL
+
+    /**
+     * Provides GitHub API URL from BuildConfig.
+     * Used for GitHubApiClient dependency injection.
+     */
+    @Provides
+    @Singleton
+    @Named("githubApiUrl")
+    fun provideGitHubApiUrl(): String = BuildConfig.GITHUB_API_URL
+
+    /**
+     * Provides GitHub GraphQL URL from BuildConfig.
+     * Used for GitHubGraphQLClient dependency injection.
+     */
+    @Provides
+    @Singleton
+    @Named("githubGraphQLUrl")
+    fun provideGitHubGraphQLUrl(): String = BuildConfig.GITHUB_GRAPHQL_URL
 }
