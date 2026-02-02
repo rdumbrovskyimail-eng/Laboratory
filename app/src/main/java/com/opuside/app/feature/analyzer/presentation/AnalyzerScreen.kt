@@ -26,6 +26,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -36,7 +37,10 @@ import com.opuside.app.core.network.github.model.WorkflowRun
 import com.opuside.app.core.util.TimerState
 
 @Composable
-fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
+fun AnalyzerScreen(
+    viewModel: AnalyzerViewModel = hiltViewModel(),
+    sensitiveFeatureDisabled: Boolean = false  // ← НОВЫЙ ПАРАМЕТР
+) {
     val cachedFiles by viewModel.cachedFiles.collectAsState()
     val fileCount by viewModel.fileCount.collectAsState()
     val formattedTimer by viewModel.formattedTimer.collectAsState()
@@ -57,7 +61,7 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     var userInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    // ✅ ДОБАВЛЕНО: Проблема №17 (BUG #17) - Обработка notification permission
+    // ✅ Notification permission handling
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val requestPermission by viewModel.requestNotificationPermission.collectAsState()
         val showCacheWarning by viewModel.showCacheWarningInApp.collectAsState()
@@ -81,7 +85,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
             }
         }
         
-        // Показываем in-app warning если нет permission
         showCacheWarning?.let { message ->
             NotificationPermissionWarning(
                 message = message,
@@ -95,6 +98,12 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     }
 
     LaunchedEffect(Unit) { viewModel.loadWorkflowRuns() }
+
+    // ✅ ДОБАВЛЕНО: Проверка на отключенные функции
+    if (sensitiveFeatureDisabled) {
+        SensitiveFeaturesDisabledScreen()
+        return
+    }
 
     Column(Modifier.fillMaxSize()) {
         // CACHE PANEL with Timer
@@ -117,7 +126,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
             contentPadding = PaddingValues(vertical = 8.dp)
         ) {
-            // Welcome message if empty
             if (chatMessages.isEmpty() && !isStreaming) {
                 item {
                     WelcomeCard(isCacheActive = isCacheActive, fileCount = fileCount)
@@ -136,12 +144,10 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
             }
         }
 
-        // Error
         chatError?.let {
             ErrorBanner(message = it, onDismiss = viewModel::clearChatError)
         }
 
-        // Token counter
         if (tokensUsed > 0) {
             Text(
                 "Session tokens: ~$tokensUsed",
@@ -151,7 +157,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
             )
         }
 
-        // INPUT
         ChatInput(
             value = userInput,
             onValueChange = { userInput = it },
@@ -167,7 +172,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
             modifier = Modifier.padding(16.dp)
         )
 
-        // GITHUB ACTIONS
         ActionsPanel(
             runs = workflowRuns,
             isLoading = actionsLoading,
@@ -178,12 +182,100 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// NOTIFICATION PERMISSION WARNING (BUG #17)
+// ✅ НОВЫЙ КОМПОНЕНТ: Экран для root-устройств
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * ✅ ДОБАВЛЕНО: Проблема №17 (BUG #17) - Warning для случая когда нет notification permission
- */
+@Composable
+private fun SensitiveFeaturesDisabledScreen() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Warning,
+            contentDescription = null,
+            modifier = Modifier.size(80.dp),
+            tint = MaterialTheme.colorScheme.error
+        )
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Text(
+            text = "Analyzer Disabled",
+            style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.error,
+            textAlign = TextAlign.Center
+        )
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        Text(
+            text = "Sensitive features are disabled due to root access on this device.",
+            style = MaterialTheme.typography.bodyLarge,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "The following functions are unavailable:",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+                
+                listOf(
+                    "File caching with encryption",
+                    "Chat with Claude AI",
+                    "API key storage",
+                    "Secure data handling"
+                ).forEach { feature ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Close,
+                            null,
+                            Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            feature,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Text(
+            text = "To use these features, restart the app and choose 'Proceed Anyway' (not recommended for security reasons).",
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATION PERMISSION WARNING
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun NotificationPermissionWarning(message: String, onDismiss: () -> Unit) {
     Card(
@@ -255,7 +347,6 @@ private fun CachePanel(
         Column(Modifier.padding(16.dp)) {
             Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Animated icon
                     if (timerState == TimerState.RUNNING) {
                         val infiniteTransition = rememberInfiniteTransition(label = "pulse")
                         val alpha by infiniteTransition.animateFloat(
@@ -288,7 +379,6 @@ private fun CachePanel(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Timer display
                     if (timerState == TimerState.RUNNING || timerState == TimerState.PAUSED) {
                         Box(contentAlignment = Alignment.Center) {
                             CircularProgressIndicator(
@@ -311,7 +401,6 @@ private fun CachePanel(
                 }
             }
 
-            // File chips
             if (files.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -338,10 +427,6 @@ private fun CachePanel(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// WELCOME CARD
-// ═══════════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun WelcomeCard(isCacheActive: Boolean, fileCount: Int) {
     Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.secondaryContainer)) {
@@ -364,10 +449,6 @@ private fun WelcomeCard(isCacheActive: Boolean, fileCount: Int) {
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CHAT COMPONENTS
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun ChatBubble(message: ChatMessageEntity) {
@@ -462,10 +543,6 @@ private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ACTIONS PANEL
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun ActionsPanel(
