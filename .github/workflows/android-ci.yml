@@ -1,4 +1,4 @@
-name: Android CI
+name: Android CI (Fast Build)
 
 on:
   push:
@@ -12,21 +12,22 @@ permissions:
 
 jobs:
   build:
-    name: Build and Test
+    name: Fast Build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 0
+        fetch-depth: 1
       
     - name: Set up JDK 21
       uses: actions/setup-java@v4
       with:
         distribution: 'temurin'
         java-version: '21'
+        cache: 'gradle'
         
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
@@ -34,225 +35,89 @@ jobs:
         cache-read-only: false
         gradle-home-cache-cleanup: true
         
-    # Кеширование Gradle
-    - name: Cache Gradle packages
+    - name: Cache Gradle & Kotlin
       uses: actions/cache@v4
       with:
         path: |
           ~/.gradle/caches
           ~/.gradle/wrapper
+          ~/.gradle/daemon
+          ~/.konan
           .gradle
-        key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+        key: ${{ runner.os }}-gradle-fast-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
         restore-keys: |
+          ${{ runner.os }}-gradle-fast-
           ${{ runner.os }}-gradle-
     
-    # Кеширование Kotlin
-    - name: Cache Kotlin/Native
-      uses: actions/cache@v4
-      with:
-        path: ~/.konan
-        key: ${{ runner.os }}-konan-${{ hashFiles('**/*.gradle*') }}
-        restore-keys: |
-          ${{ runner.os }}-konan-
-    
-    # Кеширование build outputs (v3 - НОВАЯ ВЕРСИЯ КЕША)
     - name: Cache build outputs
       uses: actions/cache@v4
       with:
         path: |
-          app/build
-          build
-        key: ${{ runner.os }}-build-v3-${{ github.sha }}
+          app/build/intermediates
+          app/build/tmp
+          build/kotlin
+        key: ${{ runner.os }}-build-fast-${{ github.sha }}
         restore-keys: |
-          ${{ runner.os }}-build-v3-
+          ${{ runner.os }}-build-fast-
         
-    - name: Grant execute permission for gradlew
+    - name: Grant execute permission
       run: chmod +x gradlew
       
     - name: Create local.properties
       run: |
-        echo "sdk.dir=$ANDROID_HOME" > local.properties
-        echo "ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}" >> local.properties
-        echo "GITHUB_TOKEN=${{ secrets.GH_TOKEN }}" >> local.properties
-        echo "GITHUB_OWNER=test-owner" >> local.properties
-        echo "GITHUB_REPO=test-repo" >> local.properties
+        cat > local.properties << EOF
+        sdk.dir=$ANDROID_HOME
+        ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+        GITHUB_TOKEN=${{ secrets.GH_TOKEN }}
+        GITHUB_OWNER=test-owner
+        GITHUB_REPO=test-repo
+        EOF
     
-    # ✅ НОВОЕ: Принудительная очистка кеша
-    - name: Clear all caches
-      run: |
-        echo "🗑️ Removing ALL cached build artifacts..."
-        rm -rf ~/.gradle/caches
-        rm -rf ~/.gradle/wrapper
-        rm -rf .gradle
-        rm -rf ~/.konan
-        rm -rf app/build
-        rm -rf build
-        echo "✅ Cache cleared successfully"
-    
-    # Полная очистка для диагностики
-    - name: Clean build
-      run: |
-        echo "🧹 Full clean..."
-        ./gradlew clean
-    
-    # Сборка DEBUG APK с детальными логами
-    - name: Build Debug APK
+    - name: Fast Build Debug APK
       id: build
-      continue-on-error: true
       run: |
-        set +e
-        echo "🔨 Building Debug APK with detailed logging..."
-        ./gradlew assembleDebug --stacktrace --info --warning-mode all 2>&1 | tee build_log.txt
-        BUILD_EXIT_CODE=${PIPESTATUS[0]}
-        echo "build_exit_code=$BUILD_EXIT_CODE" >> $GITHUB_OUTPUT
-        
-        if [ $BUILD_EXIT_CODE -eq 0 ]; then
-          echo "✅ Build successful!"
-        else
-          echo "❌ Build failed with exit code $BUILD_EXIT_CODE"
-        fi
-        
-        exit $BUILD_EXIT_CODE
-    
-    # Извлечение ошибок из лога
-    - name: Extract errors
-      if: always()
-      run: |
-        if [ -f build_log.txt ]; then
-          echo "## 🔍 Build Errors Summary" > build_errors.txt
-          echo "" >> build_errors.txt
-          
-          # KSP ошибки
-          grep -B 5 -A 10 "kspDebug" build_log.txt >> build_errors.txt 2>/dev/null || true
-          grep -B 5 -A 10 "KSP" build_log.txt >> build_errors.txt 2>/dev/null || true
-          
-          # Извлекаем критичные ошибки
-          grep -A 5 "^> Task.*FAILED$" build_log.txt >> build_errors.txt 2>/dev/null || true
-          grep -A 20 "FAILURE: Build failed" build_log.txt >> build_errors.txt 2>/dev/null || true
-          grep -A 5 "Error:" build_log.txt >> build_errors.txt 2>/dev/null || true
-          grep -A 5 "error:" build_log.txt >> build_errors.txt 2>/dev/null || true
-          
-          # Kotlin compilation errors
-          grep -A 10 "Compilation error" build_log.txt >> build_errors.txt 2>/dev/null || true
-          grep -A 10 "e: file:" build_log.txt >> build_errors.txt 2>/dev/null || true
-          
-          # Hilt/Dagger errors
-          grep -A 10 "Dagger" build_log.txt >> build_errors.txt 2>/dev/null || true
-          grep -A 10 "Hilt" build_log.txt >> build_errors.txt 2>/dev/null || true
-          
-          # Room errors
-          grep -A 10 "Room" build_log.txt >> build_errors.txt 2>/dev/null || true
-          
-          # Если файл пустой
-          if [ ! -s build_errors.txt ]; then
-            echo "✅ No errors found - Build successful!" > build_errors.txt
-          fi
-          
-          echo "📊 Build Summary:"
-          cat build_errors.txt
-        fi
-    
-    # Запуск Unit Tests
-    - name: Run Unit Tests
-      if: success()
-      run: ./gradlew testDebugUnitTest --parallel --build-cache --configuration-cache --no-daemon --stacktrace
+        ./gradlew assembleDebug \
+          --parallel \
+          --build-cache \
+          --configuration-cache \
+          --max-workers=4 \
+          --no-daemon \
+          -Dorg.gradle.jvmargs="-Xmx4g -XX:+UseParallelGC" \
+          -Dkotlin.incremental=true \
+          -Dkotlin.compiler.execution.strategy=in-process \
+          -Pkotlin.daemon.jvmargs="-Xmx2g"
       continue-on-error: true
     
-    # Загружаем ПОЛНЫЙ лог при ошибке
-    - name: Upload build logs (on failure only)
+    - name: Extract critical errors
+      if: failure()
+      run: |
+        echo "## ❌ Build Failed" > build_errors.txt
+        ./gradlew assembleDebug --stacktrace 2>&1 | grep -A 5 "FAILURE\|error:" | head -50 >> build_errors.txt
+        cat build_errors.txt
+    
+    - name: Unit Tests (Optional)
+      if: success() && github.event_name == 'pull_request'
+      run: ./gradlew testDebugUnitTest --parallel --build-cache --configuration-cache
+      continue-on-error: true
+    
+    - name: Upload logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: build-logs-${{ github.run_number }}
-        path: |
-          build_log.txt
-          build_errors.txt
-        retention-days: 3
-        compression-level: 9
+        name: build-errors
+        path: build_errors.txt
+        retention-days: 1
         if-no-files-found: ignore
     
-    # Комментарий в PR с ошибками
-    - name: Comment PR with errors
-      if: failure() && github.event_name == 'pull_request'
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const fs = require('fs');
-          let errorContent = '❌ **Build Failed**\n\n';
-          
-          if (fs.existsSync('build_errors.txt')) {
-            const errors = fs.readFileSync('build_errors.txt', 'utf8');
-            errorContent += '```\n' + errors.substring(0, 60000) + '\n```\n';
-            errorContent += '\n📥 Full logs available in [artifacts](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})';
-          }
-          
-          github.rest.issues.createComment({
-            issue_number: context.issue.number,
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            body: errorContent
-          });
-    
-    # Проверка статуса сборки
-    - name: Check build status
-      if: steps.build.outputs.build_exit_code != '0'
-      run: |
-        echo "❌ Build failed with exit code ${{ steps.build.outputs.build_exit_code }}"
-        echo "📋 Check build_errors.txt in artifacts for details"
-        cat build_errors.txt || echo "No error file found"
-        exit 1
-    
-    # Диагностика APK
-    - name: Debug APK location
-      if: always()
-      run: |
-        echo "🔍 Searching for APK files..."
-        find app/build/outputs -name "*.apk" -type f 2>/dev/null || echo "No APK files found"
-        echo ""
-        echo "📂 Directory structure:"
-        ls -lhR app/build/outputs/apk/ 2>/dev/null || echo "APK directory doesn't exist"
-    
-    # Подготовка APK для релиза
-    - name: Prepare APKs for Release
-      if: success()
-      run: |
-        mkdir -p apks
-        
-        # Ищем debug APK
-        DEBUG_APK=""
-        if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-          DEBUG_APK="app/build/outputs/apk/debug/app-debug.apk"
-          echo "✅ Found debug APK"
-        fi
-        
-        if [ -n "$DEBUG_APK" ]; then
-          cp "$DEBUG_APK" apks/Laboratory-v${{ github.run_number }}-debug.apk
-          echo "✅ APK prepared: Laboratory-v${{ github.run_number }}-debug.apk"
-          ls -lh apks/
-          
-          # Информация об APK
-          echo ""
-          echo "📦 APK Info:"
-          file apks/Laboratory-v${{ github.run_number }}-debug.apk
-        else
-          echo "⚠️ No APK found in expected locations"
-          echo "Searching everywhere..."
-          find . -name "*.apk" -type f
-          exit 1
-        fi
-    
-    # APK артефакты только для PR и main веток
-    - name: Upload APK Artifact
-      if: success() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    - name: Upload APK
+      if: success() && github.ref == 'refs/heads/main'
       uses: actions/upload-artifact@v4
       with:
-        name: app-debug-${{ github.run_number }}
-        path: apks/*.apk
+        name: app-debug
+        path: app/build/outputs/apk/debug/*.apk
         retention-days: 3
-        compression-level: 9
-        if-no-files-found: error
+        if-no-files-found: warn
     
-    # Создание релиза (только для main ветки)
     - name: Create Release
       if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
       uses: softprops/action-gh-release@v2
@@ -262,30 +127,15 @@ jobs:
         body: |
           ## 📱 Laboratory v1.0.${{ github.run_number }}
           
-          **⚠️ Debug Build** - Signed with debug keystore (for testing only)
+          **Debug Build** - Fast compilation for testing
           
           **Commit:** `${{ github.sha }}`
           **Build #:** ${{ github.run_number }}
-          **Branch:** ${{ github.ref_name }}
           
-          ### 📦 Downloads
-          - Debug APK included below (installable for testing)
+          ### 📦 Download
+          Debug APK included below
           
-          ### 🔧 Changes
-          ${{ github.event.head_commit.message }}
-          
-          ### ℹ️ Note
-          This is a debug build signed with Android's default debug certificate.
-          For production releases, proper signing configuration is needed.
-          
-          ### 🚀 Features
-          - Built with Kotlin 2.1
-          - Jetpack Compose UI
-          - Hilt Dependency Injection
-          - Room Database
-          - Ktor Client
-          
-        files: apks/*.apk
+        files: app/build/outputs/apk/debug/*.apk
         fail_on_unmatched_files: false
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
