@@ -25,8 +25,9 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
-import com.opuside.app.core.util.CrashLogger
+import com.opuside.app.core.util.CacheNotificationHelper
 import com.opuside.app.core.util.CrashTestUtil
+import com.opuside.app.core.util.LogViewerScreen
 import com.opuside.app.dataStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -483,12 +484,11 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(16.dp))
                 
-                val crashLogger = remember { CrashLogger.getInstance() }
-                val crashStats = remember { 
-                    crashLogger?.let {
-                        val logs = it.getCrashLogs()
-                        "Total crashes: ${logs.size}\nLocation: ${it.getCrashLogDirectory()}"
-                    } ?: "CrashLogger not initialized"
+                // Logger Statistics
+                var crashStats by remember { mutableStateOf<com.opuside.app.core.util.LogStats?>(null) }
+                
+                LaunchedEffect(Unit) {
+                    crashStats = CrashTestUtil.getLogStats()
                 }
                 
                 Card(
@@ -507,13 +507,13 @@ fun SettingsScreen(
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                "Crash Logger Statistics",
+                                "Logger Statistics",
                                 style = MaterialTheme.typography.titleSmall
                             )
                         }
                         Spacer(Modifier.height(8.dp))
                         Text(
-                            crashStats,
+                            crashStats?.toString() ?: "Loading...",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -522,9 +522,7 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
 
-                // ═══════════════════════════════════════════════════════════
-                // ТЕСТ УВЕДОМЛЕНИЙ
-                // ═══════════════════════════════════════════════════════════
+                // Notification Tests
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -563,7 +561,7 @@ fun SettingsScreen(
                 ) {
                     Button(
                         onClick = { 
-                            com.opuside.app.core.util.CacheNotificationHelper.showCacheWarningNotification(context)
+                            CacheNotificationHelper.showCacheWarningNotification(context)
                             Toast.makeText(context, "Warning notification sent! Check notification shade.", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f)
@@ -575,7 +573,7 @@ fun SettingsScreen(
                     
                     OutlinedButton(
                         onClick = { 
-                            com.opuside.app.core.util.CacheNotificationHelper.showCacheExpiredNotification(context)
+                            CacheNotificationHelper.showCacheExpiredNotification(context)
                             Toast.makeText(context, "Expired notification sent! Check notification shade.", Toast.LENGTH_SHORT).show()
                         },
                         modifier = Modifier.weight(1f)
@@ -587,6 +585,9 @@ fun SettingsScreen(
                 }
 
                 Spacer(Modifier.height(16.dp))
+                
+                // Logger Controls
+                var showLogViewer by remember { mutableStateOf(false) }
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -605,12 +606,29 @@ fun SettingsScreen(
                     }
                     
                     Button(
-                        onClick = { CrashTestUtil.printLatestCrashLog() },
+                        onClick = { 
+                            val file = CrashTestUtil.saveLogCatErrors(context)
+                            if (file != null) {
+                                Toast.makeText(
+                                    context,
+                                    "✅ LogCat errors saved!\n${file.name}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                // Update statistics
+                                crashStats = CrashTestUtil.getLogStats()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "❌ Failed to save LogCat",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
                         modifier = Modifier.weight(1f)
                     ) {
-                        Icon(Icons.Default.Print, null, Modifier.size(18.dp))
+                        Icon(Icons.Default.Save, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Print Log")
+                        Text("Save LogCat")
                     }
                 }
                 
@@ -620,13 +638,16 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = { CrashTestUtil.openLatestCrashLog(context) },
-                        modifier = Modifier.weight(1f)
+                    Button(
+                        onClick = { showLogViewer = true },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondary
+                        )
                     ) {
                         Icon(Icons.Default.FolderOpen, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Open File")
+                        Text("View Logs")
                     }
                     
                     OutlinedButton(
@@ -639,8 +660,14 @@ fun SettingsScreen(
                     }
                 }
                 
+                // Log Viewer Modal
+                if (showLogViewer) {
+                    LogViewerScreen(onBack = { showLogViewer = false })
+                }
+                
                 Spacer(Modifier.height(12.dp))
                 
+                // Warning Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -660,12 +687,12 @@ fun SettingsScreen(
                         Spacer(Modifier.width(8.dp))
                         Column {
                             Text(
-                                "Warning",
+                                "Info",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = Color(0xFFD97706)
                             )
                             Text(
-                                "\"Test Crash\" will immediately crash the app to test crash logger. All logs will be saved to:\n/storage/emulated/0/OpusIDE_CrashLogs/",
+                                "• \"Test Crash\" will immediately crash the app\n• Crash logs auto-save when app crashes\n• \"Save LogCat\" saves only errors from logcat\n• \"View Logs\" shows all crash & logcat logs with red error highlighting",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFF92400E)
                             )
