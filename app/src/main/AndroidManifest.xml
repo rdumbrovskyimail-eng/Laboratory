@@ -8,14 +8,22 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     
-    <!-- 🔥 ДЛЯ ЗАПИСИ В /storage/emulated/0/log/ -->
+    <!-- Логи -->
     <uses-permission android:name="android.permission.READ_LOGS"
         tools:ignore="ProtectedPermissions" />
+    
+    <!-- Хранилище (Android 10 и ниже) -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28"
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    
+    <!-- ✅ ДОБАВЛЕНО: Android 13+ медиа разрешения -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    
+    <!-- Полный доступ к хранилищу -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
@@ -32,8 +40,7 @@
         android:requestLegacyExternalStorage="true"
         tools:targetApi="36">
 
-        <!-- ✅ ДОБАВЛЕНО: Отключение автоматической инициализации WorkManager -->
-        <!-- Решает проблему двойной инициализации (BUG #14) -->
+        <!-- Отключение автоматической инициализации WorkManager -->
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
