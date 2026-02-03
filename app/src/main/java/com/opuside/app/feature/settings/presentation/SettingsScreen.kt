@@ -27,7 +27,9 @@ import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.util.CacheNotificationHelper
 import com.opuside.app.core.util.CrashTestUtil
-import com.opuside.app.core.util.LogViewerScreen
+import com.opuside.app.core.util.LogContentDialog
+import com.opuside.app.core.util.LogFile
+import com.opuside.app.core.util.LogViewerDialog
 import com.opuside.app.dataStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -586,8 +588,9 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(16.dp))
                 
-                // Logger Controls
+                // Logger Controls with Dialog Integration
                 var showLogViewer by remember { mutableStateOf(false) }
+                var selectedLogForViewing by remember { mutableStateOf<LogFile?>(null) }
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -660,9 +663,25 @@ fun SettingsScreen(
                     }
                 }
                 
-                // Log Viewer Modal
+                // Log Viewer Dialog
                 if (showLogViewer) {
-                    LogViewerScreen(onBack = { showLogViewer = false })
+                    LogViewerDialog(
+                        onDismiss = { 
+                            showLogViewer = false
+                            selectedLogForViewing = null
+                        },
+                        onLogSelected = { logFile ->
+                            selectedLogForViewing = logFile
+                        }
+                    )
+                }
+                
+                // Log Content Viewer Dialog
+                selectedLogForViewing?.let { logFile ->
+                    LogContentDialog(
+                        logFile = logFile,
+                        onDismiss = { selectedLogForViewing = null }
+                    )
                 }
                 
                 Spacer(Modifier.height(12.dp))
