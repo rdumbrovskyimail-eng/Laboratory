@@ -808,3 +808,4 @@ private fun ConnectionStatusBadge(status: ConnectionStatus) {
         Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 20.dp))
     }
 }
+
