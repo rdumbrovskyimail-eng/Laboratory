@@ -434,3 +434,4 @@ fun LogContentDialog(
         }
     }
 }
+
