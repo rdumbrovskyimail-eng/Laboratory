@@ -1,7 +1,7 @@
 package com.opuside.app.core.network.github
 
 import android.util.Base64
-import com.opuside.app.BuildConfig
+import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.model.*
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
@@ -13,6 +13,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -23,49 +24,56 @@ import javax.inject.Singleton
 /**
  * Клиент для работы с GitHub REST API.
  * 
- * Поддерживает:
- * - Операции с файлами (CRUD)
- * - GitHub Actions (запуск, статус, логи)
- * - Артефакты
+ * ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Чтение настроек из AppSettings (DataStore)
  * 
- * ✅ ИСПРАВЛЕНО:
- * - Проблема #2: API Keys Logging - убран BuildConfig.DEBUG из логирования токена
- * - Проблема №4: Добавлена валидация BuildConfig полей
- * - Проблема №11: Добавлен retry logic с exponential backoff
- * - CRASH #4: GitHub Rate Limit Retry с учётом Retry-After header
- * - BUG #10: Unicode Paths - добавлено URL encoding для кириллицы и эмодзи
+ * СТАРАЯ ПРОБЛЕМА:
+ * ────────────────
+ * - owner/repo/token читались из BuildConfig (local.properties)
+ * - BuildConfig компилируется ОДИН РАЗ при сборке
+ * - Пользователь НЕ МОГ изменить настройки в UI
+ * - Ошибка: "GITHUB_OWNER not configured in local.properties"
+ * 
+ * НОВОЕ РЕШЕНИЕ:
+ * ──────────────
+ * - Все настройки читаются из AppSettings (DataStore)
+ * - Пользователь может изменить их в Settings UI
+ * - Изменения применяются немедленно
+ * - BuildConfig используется только для fallback/default значений
  */
 @Singleton
 class GitHubApiClient @Inject constructor(
     @Named("github") private val httpClient: HttpClient,
-    private val json: Json
+    private val json: Json,
+    private val appSettings: AppSettings  // ✅ ДОБАВЛЕНО: Dependency Injection для настроек
 ) {
     companion object {
         private const val BASE_URL = "https://api.github.com"
         private const val API_VERSION = "2022-11-28"
     }
 
-    // ✅ ИСПРАВЛЕНО (Проблема #2): Валидация БЕЗ логирования токена
-    // Никогда не логируем API токены, даже в DEBUG режиме!
-    private val owner: String
-        get() = BuildConfig.GITHUB_OWNER.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("GITHUB_OWNER not configured in local.properties")
-
-    private val repo: String
-        get() = BuildConfig.GITHUB_REPO.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("GITHUB_REPO not configured in local.properties")
-
-    private val token: String
-        get() {
-            val tokenValue = BuildConfig.GITHUB_TOKEN
-            // ✅ ИСПРАВЛЕНО (Проблема #2): Проверяем токен БЕЗ логирования
-            if (tokenValue.isBlank()) {
-                throw IllegalStateException("GITHUB_TOKEN not configured in local.properties")
-            }
-            // ✅ КРИТИЧНО: Никогда не логируем токен, даже частично!
-            // ЗАПРЕЩЕНО: Log.d("GitHub", "Token: ${token.take(10)}...")
-            return tokenValue
+    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Читаем настройки из AppSettings
+    // Больше НЕ используем BuildConfig для runtime конфигурации
+    
+    /**
+     * Получает текущую конфигурацию GitHub из DataStore.
+     * Вызывается перед каждым API запросом.
+     */
+    private suspend fun getConfig(): GitHubConfig {
+        val config = appSettings.gitHubConfig.first()
+        
+        // Валидация: проверяем что все поля заполнены
+        if (config.owner.isBlank()) {
+            throw IllegalStateException("GitHub Owner not configured. Please set it in Settings.")
         }
+        if (config.repo.isBlank()) {
+            throw IllegalStateException("GitHub Repository not configured. Please set it in Settings.")
+        }
+        if (config.token.isBlank()) {
+            throw IllegalStateException("GitHub Token not configured. Please set it in Settings.")
+        }
+        
+        return config
+    }
 
     // ✅ ДОБАВЛЕНО: BUG #10 - Helper для URL encoding путей с Unicode
     private fun encodePath(path: String): String {
@@ -82,29 +90,35 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * Получить содержимое директории или файла.
-     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun getContent(
         path: String = "",
         ref: String? = null
-    ): Result<List<GitHubContent>> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
-            setupHeaders()
-            ref?.let { parameter("ref", it) }
+    ): Result<List<GitHubContent>> {
+        val config = getConfig()  // ✅ Читаем настройки из DataStore
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
+                setupHeaders(config.token)
+                ref?.let { parameter("ref", it) }
+            }
         }
     }
 
     /**
      * Получить содержимое одного файла.
-     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun getFileContent(
         path: String,
         ref: String? = null
-    ): Result<GitHubContent> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
-            setupHeaders()
-            ref?.let { parameter("ref", it) }
+    ): Result<GitHubContent> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
+                setupHeaders(config.token)
+                ref?.let { parameter("ref", it) }
+            }
         }
     }
 
@@ -124,26 +138,26 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * Создать или обновить файл.
-     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun createOrUpdateFile(
         path: String,
         content: String,
         message: String,
-        sha: String? = null, // Требуется для обновления
+        sha: String? = null,
         branch: String? = null
     ): Result<CreateOrUpdateFileResponse> {
+        val config = getConfig()
         val encodedContent = Base64.encodeToString(content.toByteArray(), Base64.NO_WRAP)
         val request = CreateOrUpdateFileRequest(
             message = message,
             content = encodedContent,
             sha = sha,
-            branch = branch
+            branch = branch ?: config.branch
         )
         
         return apiCall {
-            httpClient.put("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
-                setupHeaders()
+            httpClient.put("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
+                setupHeaders(config.token)
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
@@ -152,22 +166,25 @@ class GitHubApiClient @Inject constructor(
 
     /**
      * Удалить файл.
-     * ✅ ИСПРАВЛЕНО: BUG #10 - Добавлено URL encoding для path
      */
     suspend fun deleteFile(
         path: String,
         message: String,
         sha: String,
         branch: String? = null
-    ): Result<Unit> = apiCall {
-        httpClient.delete("$BASE_URL/repos/$owner/$repo/contents/${encodePath(path)}") {
-            setupHeaders()
-            contentType(ContentType.Application.Json)
-            setBody(mapOf(
-                "message" to message,
-                "sha" to sha,
-                "branch" to (branch ?: "main")
-            ))
+    ): Result<Unit> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.delete("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
+                setupHeaders(config.token)
+                contentType(ContentType.Application.Json)
+                setBody(mapOf(
+                    "message" to message,
+                    "sha" to sha,
+                    "branch" to (branch ?: config.branch)
+                ))
+            }
         }
     }
 
@@ -175,21 +192,23 @@ class GitHubApiClient @Inject constructor(
     // BRANCHES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Получить список веток.
-     */
-    suspend fun getBranches(): Result<List<GitHubBranch>> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/branches") {
-            setupHeaders()
+    suspend fun getBranches(): Result<List<GitHubBranch>> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/branches") {
+                setupHeaders(config.token)
+            }
         }
     }
 
-    /**
-     * Получить информацию о ветке.
-     */
-    suspend fun getBranch(branch: String): Result<GitHubBranch> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/branches/$branch") {
-            setupHeaders()
+    suspend fun getBranch(branch: String): Result<GitHubBranch> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/branches/$branch") {
+                setupHeaders(config.token)
+            }
         }
     }
 
@@ -197,82 +216,82 @@ class GitHubApiClient @Inject constructor(
     // GITHUB ACTIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Получить список workflows.
-     */
-    suspend fun getWorkflows(): Result<WorkflowsResponse> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/actions/workflows") {
-            setupHeaders()
+    suspend fun getWorkflows(): Result<WorkflowsResponse> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/workflows") {
+                setupHeaders(config.token)
+            }
         }
     }
 
-    /**
-     * Запустить workflow (workflow_dispatch).
-     */
     suspend fun triggerWorkflow(
         workflowId: Long,
         ref: String = "main",
         inputs: Map<String, String>? = null
     ): Result<Unit> {
+        val config = getConfig()
         val request = WorkflowDispatchRequest(ref = ref, inputs = inputs)
         
         return apiCallUnit {
-            httpClient.post("$BASE_URL/repos/$owner/$repo/actions/workflows/$workflowId/dispatches") {
-                setupHeaders()
+            httpClient.post("$BASE_URL/repos/${config.owner}/${config.repo}/actions/workflows/$workflowId/dispatches") {
+                setupHeaders(config.token)
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
         }
     }
 
-    /**
-     * Получить последние запуски workflow.
-     */
     suspend fun getWorkflowRuns(
         workflowId: Long? = null,
         branch: String? = null,
         status: String? = null,
         perPage: Int = 10
-    ): Result<WorkflowRunsResponse> = apiCall {
+    ): Result<WorkflowRunsResponse> {
+        val config = getConfig()
         val url = if (workflowId != null) {
-            "$BASE_URL/repos/$owner/$repo/actions/workflows/$workflowId/runs"
+            "$BASE_URL/repos/${config.owner}/${config.repo}/actions/workflows/$workflowId/runs"
         } else {
-            "$BASE_URL/repos/$owner/$repo/actions/runs"
+            "$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs"
         }
         
-        httpClient.get(url) {
-            setupHeaders()
-            branch?.let { parameter("branch", it) }
-            status?.let { parameter("status", it) }
-            parameter("per_page", perPage)
+        return apiCall {
+            httpClient.get(url) {
+                setupHeaders(config.token)
+                branch?.let { parameter("branch", it) }
+                status?.let { parameter("status", it) }
+                parameter("per_page", perPage)
+            }
         }
     }
 
-    /**
-     * Получить информацию о конкретном запуске.
-     */
-    suspend fun getWorkflowRun(runId: Long): Result<WorkflowRun> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/actions/runs/$runId") {
-            setupHeaders()
+    suspend fun getWorkflowRun(runId: Long): Result<WorkflowRun> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId") {
+                setupHeaders(config.token)
+            }
         }
     }
 
-    /**
-     * Получить jobs для запуска workflow.
-     */
-    suspend fun getWorkflowJobs(runId: Long): Result<WorkflowJobsResponse> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/actions/runs/$runId/jobs") {
-            setupHeaders()
+    suspend fun getWorkflowJobs(runId: Long): Result<WorkflowJobsResponse> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/jobs") {
+                setupHeaders(config.token)
+            }
         }
     }
 
-    /**
-     * Получить логи job.
-     */
     suspend fun getJobLogs(jobId: Long): Result<String> {
+        val config = getConfig()
+        
         return try {
-            val response = httpClient.get("$BASE_URL/repos/$owner/$repo/actions/jobs/$jobId/logs") {
-                setupHeaders()
+            val response = httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/jobs/$jobId/logs") {
+                setupHeaders(config.token)
             }
             
             if (response.status.isSuccess()) {
@@ -285,21 +304,23 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Перезапустить workflow.
-     */
-    suspend fun rerunWorkflow(runId: Long): Result<Unit> = apiCallUnit {
-        httpClient.post("$BASE_URL/repos/$owner/$repo/actions/runs/$runId/rerun") {
-            setupHeaders()
+    suspend fun rerunWorkflow(runId: Long): Result<Unit> {
+        val config = getConfig()
+        
+        return apiCallUnit {
+            httpClient.post("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/rerun") {
+                setupHeaders(config.token)
+            }
         }
     }
 
-    /**
-     * Отменить workflow.
-     */
-    suspend fun cancelWorkflow(runId: Long): Result<Unit> = apiCallUnit {
-        httpClient.post("$BASE_URL/repos/$owner/$repo/actions/runs/$runId/cancel") {
-            setupHeaders()
+    suspend fun cancelWorkflow(runId: Long): Result<Unit> {
+        val config = getConfig()
+        
+        return apiCallUnit {
+            httpClient.post("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/cancel") {
+                setupHeaders(config.token)
+            }
         }
     }
 
@@ -307,25 +328,24 @@ class GitHubApiClient @Inject constructor(
     // ARTIFACTS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Получить артефакты для запуска workflow.
-     */
-    suspend fun getRunArtifacts(runId: Long): Result<ArtifactsResponse> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo/actions/runs/$runId/artifacts") {
-            setupHeaders()
+    suspend fun getRunArtifacts(runId: Long): Result<ArtifactsResponse> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/artifacts") {
+                setupHeaders(config.token)
+            }
         }
     }
 
-    /**
-     * Получить URL для скачивания артефакта.
-     */
     suspend fun getArtifactDownloadUrl(artifactId: Long): Result<String> {
+        val config = getConfig()
+        
         return try {
-            val response = httpClient.get("$BASE_URL/repos/$owner/$repo/actions/artifacts/$artifactId/zip") {
-                setupHeaders()
+            val response = httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/artifacts/$artifactId/zip") {
+                setupHeaders(config.token)
             }
             
-            // GitHub возвращает 302 redirect на URL скачивания
             val location = response.headers["Location"]
             if (location != null) {
                 Result.success(location)
@@ -341,12 +361,13 @@ class GitHubApiClient @Inject constructor(
     // REPOSITORY INFO
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Получить информацию о репозитории.
-     */
-    suspend fun getRepository(): Result<GitHubRepository> = apiCall {
-        httpClient.get("$BASE_URL/repos/$owner/$repo") {
-            setupHeaders()
+    suspend fun getRepository(): Result<GitHubRepository> {
+        val config = getConfig()
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}") {
+                setupHeaders(config.token)
+            }
         }
     }
 
@@ -355,22 +376,14 @@ class GitHubApiClient @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #2): setupHeaders БЕЗ логирования токена.
-     * Токен передается через header, но НИКОГДА не логируется.
+     * ✅ ИСПРАВЛЕНО: setupHeaders теперь принимает токен как параметр
      */
-    private fun HttpRequestBuilder.setupHeaders() {
+    private fun HttpRequestBuilder.setupHeaders(token: String) {
         header("Authorization", "Bearer $token")
         header("Accept", "application/vnd.github+json")
         header("X-GitHub-Api-Version", API_VERSION)
-        
-        // ✅ КРИТИЧНО: Запрещено логировать headers с токенами!
-        // ЗАПРЕЩЕНО: if (BuildConfig.DEBUG) { Log.d("GitHub", "Headers: $headers") }
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Проблема №11 - Добавлен retry logic с exponential backoff
-     * ✅ ИСПРАВЛЕНО: CRASH #4 - Учёт Retry-After header для rate limiting
-     */
     private suspend inline fun <reified T> apiCall(
         maxRetries: Int = 3,
         initialDelayMs: Long = 1000,
@@ -386,26 +399,23 @@ class GitHubApiClient @Inject constructor(
                     return Result.success(response.body<T>())
                 }
 
-                // Не retry для client errors (4xx кроме 429 Rate Limit)
                 if (response.status.value in 400..499 && response.status.value != 429) {
                     return Result.failure(parseError(response))
                 }
 
-                // Последняя попытка - возвращаем ошибку
                 if (attempt == maxRetries - 1) {
                     return Result.failure(parseError(response))
                 }
 
-                // ✅ ИСПРАВЛЕНО: CRASH #4 - Exponential backoff с учётом Retry-After header
                 if (response.status.value == 429) {
                     val retryAfter = response.headers["Retry-After"]?.toLongOrNull()
                     val delayMs = if (retryAfter != null) {
-                        retryAfter * 1000 // GitHub возвращает секунды
+                        retryAfter * 1000
                     } else {
                         currentDelay
                     }
                     delay(delayMs)
-                    currentDelay = (delayMs * 2).coerceAtMost(60_000) // Макс 60 сек
+                    currentDelay = (delayMs * 2).coerceAtMost(60_000)
                 } else {
                     delay(currentDelay)
                     currentDelay *= 2
@@ -423,10 +433,6 @@ class GitHubApiClient @Inject constructor(
         return Result.failure(GitHubApiException("max_retries", "Max retries exceeded"))
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Проблема №11 - Добавлен retry logic с exponential backoff
-     * ✅ ИСПРАВЛЕНО: CRASH #4 - Учёт Retry-After header для rate limiting
-     */
     private suspend fun apiCallUnit(
         maxRetries: Int = 3,
         initialDelayMs: Long = 1000,
@@ -442,17 +448,14 @@ class GitHubApiClient @Inject constructor(
                     return Result.success(Unit)
                 }
 
-                // Не retry для client errors (4xx кроме 429 Rate Limit)
                 if (response.status.value in 400..499 && response.status.value != 429) {
                     return Result.failure(parseError(response))
                 }
 
-                // Последняя попытка - возвращаем ошибку
                 if (attempt == maxRetries - 1) {
                     return Result.failure(parseError(response))
                 }
 
-                // ✅ ИСПРАВЛЕНО: CRASH #4 - Exponential backoff с учётом Retry-After header
                 if (response.status.value == 429) {
                     val retryAfter = response.headers["Retry-After"]?.toLongOrNull()
                     val delayMs = if (retryAfter != null) {
@@ -511,3 +514,6 @@ class GitHubApiException(
     val isForbidden: Boolean get() = statusCode == 403
     val isRateLimited: Boolean get() = statusCode == 403 && message.contains("rate limit", ignoreCase = true)
 }
+
+// ✅ ДОБАВЛЕНО: typealias для удобства
+typealias GitHubConfig = com.opuside.app.core.data.GitHubConfig
