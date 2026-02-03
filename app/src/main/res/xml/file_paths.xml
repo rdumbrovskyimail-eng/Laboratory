@@ -1,9 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- 🔥 Crash логи в корне телефона -->
+    <!-- Crash логи в корне телефона -->
     <external-path
         name="crash_logs"
         path="OpusIDE_CrashLogs/" />
+    
+    <!-- ✅ ДОБАВЛЕНО: Папка Downloads -->
+    <external-path 
+        name="downloads" 
+        path="Download/" />
+    
+    <!-- ✅ ДОБАВЛЕНО: Корень внешнего хранилища -->
+    <external-path 
+        name="external_files" 
+        path="." />
+    
+    <!-- ✅ ДОБАВЛЕНО: Внутренние файлы приложения -->
+    <files-path 
+        name="files" 
+        path="." />
     
     <!-- Внешние файлы приложения -->
     <external-files-path
