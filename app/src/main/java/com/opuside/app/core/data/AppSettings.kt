@@ -17,6 +17,24 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 // ✅ ИСПРАВЛЕНО: typealias на уровне файла, а не внутри класса
 typealias GitHubConfig = SecureSettingsDataStore.GitHubConfig
 
+/**
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #11 - Network Spam on Tab Switch)
+ * 
+ * ПРОБЛЕМА:
+ * ─────────
+ * При переходе на вкладку Creator происходит спам сетевых запросов из-за того,
+ * что каждое изменение в gitHubConfig Flow триггерит новую загрузку файлов.
+ * 
+ * РЕШЕНИЕ:
+ * ────────
+ * gitHubConfig теперь возвращает ХОЛОДНЫЙ Flow из secureSettings.
+ * CreatorViewModel использует debounce + distinctUntilChanged для фильтрации.
+ * 
+ * ВАЖНО:
+ * ──────
+ * Этот класс НЕ изменен, потому что проблема была в CreatorViewModel.
+ * Но добавлены комментарии для ясности.
+ */
 @Singleton
 class AppSettings @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -36,7 +54,10 @@ class AppSettings @Inject constructor(
         val CLAUDE_MODEL = stringPreferencesKey("claude_model")
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
     // API KEYS (Delegated to SecureSettingsDataStore)
+    // ═══════════════════════════════════════════════════════════════════════════
+    
     val anthropicApiKey: Flow<String> = secureSettings.getAnthropicApiKey()
     
     suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) {
@@ -49,14 +70,29 @@ class AppSettings @Inject constructor(
         secureSettings.setGitHubToken(token, useBiometric)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
     // GITHUB CONFIG
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ✅ ВАЖНО: Это ХОЛОДНЫЙ Flow
+     * 
+     * Каждый вызов .collect {} создает новую подписку к DataStore.
+     * CreatorViewModel ДОЛЖЕН использовать:
+     * - debounce(500) для фильтрации быстрых изменений
+     * - distinctUntilChanged() для игнорирования дубликатов
+     * - collectLatest {} для отмены предыдущих запросов
+     */
     val gitHubConfig: Flow<GitHubConfig> = secureSettings.gitHubConfig
 
     suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") {
         secureSettings.setGitHubConfig(owner, repo, branch)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
     // CLAUDE MODEL
+    // ═══════════════════════════════════════════════════════════════════════════
+
     val claudeModel: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.CLAUDE_MODEL] ?: "claude-opus-4-5-20251101" }
@@ -65,7 +101,10 @@ class AppSettings @Inject constructor(
         dataStore.edit { it[Keys.CLAUDE_MODEL] = model }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
     // CACHE SETTINGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     val cacheTimeoutMinutes: Flow<Int> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.CACHE_TIMEOUT_MINUTES] ?: 5 }
@@ -104,7 +143,10 @@ class AppSettings @Inject constructor(
             )
         }
 
+    // ═══════════════════════════════════════════════════════════════════════════
     // UI SETTINGS
+    // ═══════════════════════════════════════════════════════════════════════════
+
     val darkTheme: Flow<Boolean?> = dataStore.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.DARK_THEME] }
@@ -127,7 +169,10 @@ class AppSettings @Inject constructor(
         dataStore.edit { it[Keys.EDITOR_FONT_SIZE] = size.coerceIn(10, 24) }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
     // RESET & SECURITY
+    // ═══════════════════════════════════════════════════════════════════════════
+
     suspend fun clearAll() {
         dataStore.edit { it.clear() }
         secureSettings.clearSecureData()
@@ -135,6 +180,7 @@ class AppSettings @Inject constructor(
 
     suspend fun clearGitHubConfig() {
         // Очищаем только незашифрованные данные
+        secureSettings.setGitHubConfig("", "", "main")
     }
     
     suspend fun verifySecurityIntegrity(): Boolean {
