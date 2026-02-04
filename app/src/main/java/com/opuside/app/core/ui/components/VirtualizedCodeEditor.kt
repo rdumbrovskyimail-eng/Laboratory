@@ -10,14 +10,17 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
@@ -25,15 +28,14 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,6 +43,20 @@ import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 
+/**
+ * ✅ VirtualizedCodeEditor - Production-ready код-редактор для Android
+ * 
+ * Особенности:
+ * - ✅ Правильное направление текста (LTR)
+ * - ✅ Видимый курсор в нужном месте
+ * - ✅ Подсветка синтаксиса
+ * - ✅ Undo/Redo (Ctrl+Z / Ctrl+Shift+Z)
+ * - ✅ Tab = 4 пробела
+ * - ✅ Нумерация строк
+ * - ✅ Виртуализация через LazyColumn
+ * - ✅ Безопасный скролл без крашей
+ * - ✅ Поддержка больших файлов
+ */
 @Composable
 fun VirtualizedCodeEditor(
     content: String,
@@ -52,44 +68,45 @@ fun VirtualizedCodeEditor(
     fontSize: Int = 14,
     onCursorPositionChanged: ((line: Int, column: Int) -> Unit)? = null
 ) {
+    // =================== STATE ===================
+    
     var textFieldValue by remember(content) {
         mutableStateOf(TextFieldValue(content))
     }
 
     val lines = remember(textFieldValue.text) {
         val result = textFieldValue.text.lines()
-        if (result.size == 1 && result[0].isEmpty()) {
+        if (result.isEmpty() || (result.size == 1 && result[0].isEmpty())) {
             listOf("")
         } else {
             result
         }
     }
 
-    // Полная подсветка всего текста сразу
-    val highlightedText by produceState(
-        initialValue = AnnotatedString(textFieldValue.text),
-        key1 = textFieldValue.text,
+    // =================== SYNTAX HIGHLIGHTING ===================
+    
+    val highlightedLines by produceState(
+        initialValue = lines.map { AnnotatedString(it) },
+        key1 = lines.hashCode(),
         key2 = language
     ) {
         value = withContext(Dispatchers.Default) {
-            try {
-                buildAnnotatedString {
-                    lines.forEachIndexed { index, line ->
-                        append(SyntaxHighlighter.highlight(line, language))
-                        if (index < lines.size - 1) {
-                            append("\n")
-                        }
-                    }
+            lines.map { line ->
+                try {
+                    SyntaxHighlighter.highlight(line, language)
+                } catch (e: Exception) {
+                    AnnotatedString(line)
                 }
-            } catch (e: Exception) {
-                AnnotatedString(textFieldValue.text)
             }
         }
     }
 
+    // =================== CURSOR POSITION ===================
+    
     val cursorLine = remember(textFieldValue.selection.start, textFieldValue.text) {
         textFieldValue.text.take(textFieldValue.selection.start).count { it == '\n' }
     }
+    
     val cursorColumn = remember(textFieldValue.selection.start, textFieldValue.text) {
         val beforeCursor = textFieldValue.text.take(textFieldValue.selection.start)
         beforeCursor.length - (beforeCursor.lastIndexOf('\n') + 1)
@@ -99,30 +116,39 @@ fun VirtualizedCodeEditor(
         onCursorPositionChanged?.invoke(cursorLine + 1, cursorColumn)
     }
 
+    // =================== CONTENT CHANGE ===================
+    
     LaunchedEffect(textFieldValue.text) {
         if (textFieldValue.text != content) {
             onContentChange(textFieldValue.text)
         }
     }
 
+    // =================== UNDO/REDO ===================
+    
     val undoRedoManager = remember { UndoRedoManager() }
     
     LaunchedEffect(textFieldValue.text) {
-        delay(500)
+        delay(500) // Debounce для производительности
         undoRedoManager.recordState(textFieldValue)
     }
 
+    // =================== SCROLL STATE ===================
+    
     val listState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
     var isFocused by remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
 
+    // =================== AUTO-SCROLL TO CURSOR ===================
+    
     LaunchedEffect(cursorLine) {
+        // Ждём пока LazyColumn полностью готов
         snapshotFlow { listState.layoutInfo.totalItemsCount > 0 }
             .first { it }
         
         if (cursorLine in 0 until lines.size) {
-            delay(50)
+            delay(50) // Минимальная задержка для стабильности
             
             try {
                 val targetIndex = (cursorLine - 5).coerceAtLeast(0)
@@ -133,25 +159,32 @@ fun VirtualizedCodeEditor(
                     )
                 }
             } catch (e: Exception) {
-                // Игнорируем
+                // Игнорируем ошибки скролла
             }
         }
     }
 
+    // =================== KEYBOARD SHORTCUTS ===================
+    
     val keyboardHandler = Modifier.onKeyEvent { event ->
-        if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
+        if (event.type != KeyEventType.KeyDown || readOnly) return@onKeyEvent false
 
         when {
+            // Ctrl+Z - Undo
             event.isCtrlPressed && event.key == Key.Z && !event.isShiftPressed -> {
                 undoRedoManager.undo()?.let { textFieldValue = it }
                 true
             }
+            
+            // Ctrl+Shift+Z или Ctrl+Y - Redo
             (event.isCtrlPressed && event.isShiftPressed && event.key == Key.Z) ||
             (event.isCtrlPressed && event.key == Key.Y) -> {
                 undoRedoManager.redo()?.let { textFieldValue = it }
                 true
             }
-            event.key == Key.Tab && !readOnly -> {
+            
+            // Tab - 4 пробела
+            event.key == Key.Tab -> {
                 val selection = textFieldValue.selection
                 val newText = textFieldValue.text.substring(0, selection.start) +
                               "    " +
@@ -162,17 +195,23 @@ fun VirtualizedCodeEditor(
                 )
                 true
             }
+            
             else -> false
         }
     }
 
-    // КРИТИЧНО: Принудительно LTR
+    // =================== UI LAYOUT ===================
+    
+    // КРИТИЧНО: Принудительно устанавливаем LTR для всего редактора
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Surface(
             modifier = modifier.then(keyboardHandler),
             color = EditorTheme.backgroundColor
         ) {
             Row(modifier = Modifier.fillMaxSize()) {
+                
+                // =================== LINE NUMBERS ===================
+                
                 if (showLineNumbers) {
                     LineNumbers(
                         lines = lines,
@@ -183,12 +222,15 @@ fun VirtualizedCodeEditor(
                     VerticalDivider(color = EditorTheme.dividerColor)
                 }
 
+                // =================== CODE AREA ===================
+                
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    // Подсвеченный текст (только отображение)
+                    // ========== VISUAL LAYER (подсветка синтаксиса) ==========
+                    
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
@@ -201,62 +243,53 @@ fun VirtualizedCodeEditor(
                             items = lines,
                             key = { index, line -> "$index-${line.hashCode()}" }
                         ) { index, line ->
-                            val lineStart = lines.take(index).sumOf { it.length + 1 }
-                            val lineEnd = lineStart + line.length
-                            
-                            val lineText = highlightedText.subSequence(
-                                lineStart.coerceIn(0, highlightedText.length),
-                                lineEnd.coerceIn(0, highlightedText.length)
-                            )
-                            
                             CodeLine(
-                                line = lineText,
+                                line = line,
+                                highlightedText = highlightedLines.getOrNull(index) 
+                                    ?: AnnotatedString(line),
                                 isCurrentLine = index == cursorLine,
                                 fontSize = fontSize
                             )
                         }
                     }
 
+                    // ========== INPUT LAYER (невидимый TextField с курсором) ==========
+                    
                     if (!readOnly) {
-                        // Настоящий TextField (невидимый, но с курсором)
-                        BasicTextField(
-                            value = TextFieldValue(
-                                annotatedString = highlightedText,
-                                selection = textFieldValue.selection
-                            ),
-                            onValueChange = { newValue ->
-                                textFieldValue = TextFieldValue(
-                                    text = newValue.text,
-                                    selection = newValue.selection
-                                )
+                        CustomLTRTextField(
+                            value = textFieldValue,
+                            onValueChange = { newValue -> 
+                                textFieldValue = newValue 
                             },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .horizontalScroll(horizontalScrollState)
                                 .padding(horizontal = 8.dp)
                                 .focusRequester(focusRequester)
-                                .onFocusChanged { isFocused = it.isFocused }
+                                .onFocusChanged { focusState ->
+                                    isFocused = focusState.isFocused
+                                }
                                 .pointerInput(Unit) {
                                     detectTapGestures {
                                         try {
                                             focusRequester.requestFocus()
-                                        } catch (_: IllegalStateException) {}
+                                        } catch (_: IllegalStateException) {
+                                            // Layout ещё не готов - игнорируем
+                                        }
                                     }
                                 },
                             textStyle = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = fontSize.sp,
-                                color = Color.Transparent,
+                                color = Color.Transparent, // Текст невидим
                                 lineHeight = (fontSize * 1.5).sp
                             ),
-                            cursorBrush = SolidColor(EditorTheme.cursorColor),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Ascii,
-                                autoCorrect = false
-                            )
+                            cursorColor = EditorTheme.cursorColor
                         )
                     }
 
+                    // ========== SCROLLBAR (для больших файлов) ==========
+                    
                     if (lines.size > 100) {
                         ScrollbarIndicator(
                             listState = listState,
@@ -269,6 +302,78 @@ fun VirtualizedCodeEditor(
         }
     }
 }
+
+// ==================================================================================
+// =================== CUSTOM LTR TEXT FIELD (главная магия) ======================
+// ==================================================================================
+
+/**
+ * Кастомный TextField с принудительным LTR и ручным рендерингом курсора
+ * Это решает проблему RTL в стандартном BasicTextField
+ */
+@Composable
+private fun CustomLTRTextField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    modifier: Modifier = Modifier,
+    textStyle: TextStyle = TextStyle.Default,
+    cursorColor: Color = Color.White
+) {
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var isCursorVisible by remember { mutableStateOf(true) }
+
+    // Мигание курсора (500ms on/off)
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(500)
+            isCursorVisible = !isCursorVisible
+        }
+    }
+
+    // Сброс мигания при изменении позиции курсора
+    LaunchedEffect(value.selection.start) {
+        isCursorVisible = true
+    }
+
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier.drawBehind {
+            // Рисуем курсор вручную для полного контроля
+            if (isCursorVisible) {
+                textLayoutResult?.let { layout ->
+                    val cursorPos = value.selection.start.coerceIn(0, value.text.length)
+                    
+                    try {
+                        val cursorRect = layout.getCursorRect(cursorPos)
+                        
+                        drawLine(
+                            color = cursorColor,
+                            start = Offset(cursorRect.left, cursorRect.top),
+                            end = Offset(cursorRect.left, cursorRect.bottom),
+                            strokeWidth = 2.dp.toPx()
+                        )
+                    } catch (e: Exception) {
+                        // Игнорируем ошибки рендеринга курсора
+                    }
+                }
+            }
+        },
+        textStyle = textStyle,
+        cursorBrush = SolidColor(Color.Transparent), // Скрываем стандартный курсор
+        keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.None,
+            autoCorrect = false,
+            keyboardType = KeyboardType.Ascii,
+            imeAction = ImeAction.None
+        ),
+        onTextLayout = { textLayoutResult = it }
+    )
+}
+
+// ==================================================================================
+// ========================== ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ ============================
+// ==================================================================================
 
 @Composable
 private fun LineNumbers(
@@ -315,7 +420,8 @@ private fun LineNumbers(
 
 @Composable
 private fun CodeLine(
-    line: AnnotatedString,
+    line: String,
+    highlightedText: AnnotatedString,
     isCurrentLine: Boolean,
     fontSize: Int
 ) {
@@ -331,7 +437,7 @@ private fun CodeLine(
             )
     ) {
         Text(
-            text = line,
+            text = highlightedText,
             style = TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = fontSize.sp,
@@ -372,6 +478,23 @@ private fun ScrollbarIndicator(
     }
 }
 
+@Composable
+private fun VerticalDivider(
+    modifier: Modifier = Modifier,
+    color: Color = Color.Gray
+) {
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(1.dp)
+            .background(color)
+    )
+}
+
+// ==================================================================================
+// ============================ UNDO/REDO MANAGER ===================================
+// ==================================================================================
+
 private class UndoRedoManager {
     private data class LightweightState(
         val text: String,
@@ -384,17 +507,22 @@ private class UndoRedoManager {
     private val maxHistorySize = 50
 
     fun recordState(value: TextFieldValue) {
+        // Удаляем всё после текущей позиции (если был undo)
         if (currentIndex < history.size - 1) {
             history.subList(currentIndex + 1, history.size).clear()
         }
         
-        history.add(LightweightState(
-            text = value.text,
-            selectionStart = value.selection.start,
-            selectionEnd = value.selection.end
-        ))
+        // Добавляем новое состояние
+        history.add(
+            LightweightState(
+                text = value.text,
+                selectionStart = value.selection.start,
+                selectionEnd = value.selection.end
+            )
+        )
         currentIndex++
         
+        // Ограничиваем размер истории
         if (history.size > maxHistorySize) {
             history.removeAt(0)
             currentIndex--
@@ -428,6 +556,10 @@ private class UndoRedoManager {
     }
 }
 
+// ==================================================================================
+// ================================= THEME ==========================================
+// ==================================================================================
+
 private object EditorTheme {
     val backgroundColor = Color(0xFF1E1E1E)
     val lineNumbersBackground = Color(0xFF252526)
@@ -437,17 +569,4 @@ private object EditorTheme {
     val currentLineNumberColor = Color(0xFFC6C6C6)
     val scrollbarColor = Color(0xFF424242)
     val cursorColor = Color(0xFFFFFFFF)
-}
-
-@Composable
-private fun VerticalDivider(
-    modifier: Modifier = Modifier,
-    color: Color = Color.Gray
-) {
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(1.dp)
-            .background(color)
-    )
 }
