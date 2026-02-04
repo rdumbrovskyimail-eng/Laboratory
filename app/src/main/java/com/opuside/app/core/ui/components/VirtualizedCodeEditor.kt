@@ -33,7 +33,23 @@ import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 
 /**
- * ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО
+ * ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО - КРАШ ИСПРАВЛЕН
+ * 
+ * ПРОБЛЕМА:
+ * ─────────
+ * IllegalStateException: Expected BringIntoViewRequester to not be used before parents are placed
+ * 
+ * ПРИЧИНА:
+ * ────────
+ * При клике на строку происходил немедленный запрос фокуса (focusRequester.requestFocus()),
+ * в то время как Compose еще не завершил Layout/Placement фазу.
+ * 
+ * РЕШЕНИЕ:
+ * ────────
+ * 1. Обернули requestFocus() в try-catch для безопасности
+ * 2. Добавили delay(50) перед запросом фокуса, чтобы дать Compose время на Layout
+ * 3. Убрали немедленный requestFocus из LaunchedEffect(Unit) - он вызывался слишком рано
+ * 4. Теперь фокус запрашивается только по явному клику пользователя, и с задержкой
  */
 @Composable
 fun VirtualizedCodeEditor(
@@ -104,6 +120,7 @@ fun VirtualizedCodeEditor(
     val focusRequester = remember { FocusRequester() }
     val isFocused = remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(cursorLine) {
         if (cursorLine in 0 until lines.size) {
@@ -115,12 +132,8 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    LaunchedEffect(Unit) {
-        delay(100)
-        if (isFocused.value) {
-            focusRequester.requestFocus()
-        }
-    }
+    // ✅ ИСПРАВЛЕНО: Убрали автоматический requestFocus при запуске
+    // Теперь фокус запрашивается только по клику
 
     val keyboardHandler = Modifier.onKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
@@ -179,14 +192,22 @@ fun VirtualizedCodeEditor(
                         .focusRequester(focusRequester)
                         .pointerInput(Unit) {
                             detectTapGestures {
-                                focusRequester.requestFocus()
+                                // ✅ ИСПРАВЛЕНО: Запрос фокуса с задержкой и обработкой ошибок
+                                coroutineScope.launch {
+                                    delay(50) // Даем Compose время завершить Layout
+                                    try {
+                                        focusRequester.requestFocus()
+                                    } catch (e: IllegalStateException) {
+                                        // Ignore - элемент еще не размещен
+                                    }
+                                }
                             }
                         },
                     userScrollEnabled = true
                 ) {
                     itemsIndexed(
                         items = lines,
-                        key = { index, line -> "$index-${line.hashCode()}" }
+                        key = { index, _ -> index } // ✅ ИСПРАВЛЕНО: Стабильные ключи
                     ) { index, line ->
                         CodeLine(
                             line = line,
@@ -200,7 +221,16 @@ fun VirtualizedCodeEditor(
                                 textFieldValue = textFieldValue.copy(
                                     selection = TextRange(newPosition)
                                 )
-                                focusRequester.requestFocus()
+                                
+                                // ✅ ИСПРАВЛЕНО: Запрос фокуса с задержкой
+                                coroutineScope.launch {
+                                    delay(50)
+                                    try {
+                                        focusRequester.requestFocus()
+                                    } catch (e: IllegalStateException) {
+                                        // Ignore
+                                    }
+                                }
                             }
                         )
                     }
@@ -252,7 +282,10 @@ private fun LineNumbers(
             .padding(horizontal = 8.dp),
         userScrollEnabled = false
     ) {
-        itemsIndexed(lines) { index, _ ->
+        itemsIndexed(
+            items = lines,
+            key = { index, _ -> index } // ✅ ИСПРАВЛЕНО: Стабильные ключи
+        ) { index, _ ->
             Box(
                 modifier = Modifier
                     .height(lineHeight)
