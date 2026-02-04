@@ -1,5 +1,3 @@
-Проблема в VirtualizedCodeEditor.kt - при клике на строку происходит попытка запросить фокус до того, как Compose завершил размещение элементов.
-Вот полный исправленный файл:
 package com.opuside.app.core.ui.components
 
 import androidx.compose.foundation.background
@@ -34,25 +32,6 @@ import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 
-/**
- * ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО - КРАШ ИСПРАВЛЕН
- * 
- * ПРОБЛЕМА:
- * ─────────
- * IllegalStateException: Expected BringIntoViewRequester to not be used before parents are placed
- * 
- * ПРИЧИНА:
- * ────────
- * При клике на строку происходил немедленный запрос фокуса (focusRequester.requestFocus()),
- * в то время как Compose еще не завершил Layout/Placement фазу.
- * 
- * РЕШЕНИЕ:
- * ────────
- * 1. Обернули requestFocus() в try-catch для безопасности
- * 2. Добавили delay(50) перед запросом фокуса, чтобы дать Compose время на Layout
- * 3. Убрали немедленный requestFocus из LaunchedEffect(Unit) - он вызывался слишком рано
- * 4. Теперь фокус запрашивается только по явному клику пользователя, и с задержкой
- */
 @Composable
 fun VirtualizedCodeEditor(
     content: String,
@@ -122,20 +101,28 @@ fun VirtualizedCodeEditor(
     val focusRequester = remember { FocusRequester() }
     val isFocused = remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
-    val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(cursorLine) {
+    LaunchedEffect(cursorLine, lines.size) {
         if (cursorLine in 0 until lines.size) {
-            delay(50)
-            listState.animateScrollToItem(
-                index = (cursorLine - 5).coerceAtLeast(0),
-                scrollOffset = 0
-            )
+            delay(150)
+            
+            try {
+                if (listState.layoutInfo.totalItemsCount > 0) {
+                    val targetIndex = (cursorLine - 5).coerceAtLeast(0)
+                    if (targetIndex < listState.layoutInfo.totalItemsCount) {
+                        listState.animateScrollToItem(
+                            index = targetIndex,
+                            scrollOffset = 0
+                        )
+                    }
+                }
+            } catch (e: IllegalStateException) {
+                // Ignore
+            } catch (e: Exception) {
+                android.util.Log.w("VirtualizedCodeEditor", "Scroll failed", e)
+            }
         }
     }
-
-    // ✅ ИСПРАВЛЕНО: Убрали автоматический requestFocus при запуске
-    // Теперь фокус запрашивается только по клику
 
     val keyboardHandler = Modifier.onKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown) return@onKeyEvent false
@@ -194,14 +181,10 @@ fun VirtualizedCodeEditor(
                         .focusRequester(focusRequester)
                         .pointerInput(Unit) {
                             detectTapGestures {
-                                // ✅ ИСПРАВЛЕНО: Запрос фокуса с задержкой и обработкой ошибок
-                                coroutineScope.launch {
-                                    delay(50) // Даем Compose время завершить Layout
-                                    try {
-                                        focusRequester.requestFocus()
-                                    } catch (e: IllegalStateException) {
-                                        // Ignore - элемент еще не размещен
-                                    }
+                                try {
+                                    focusRequester.requestFocus()
+                                } catch (e: IllegalStateException) {
+                                    // Ignore
                                 }
                             }
                         },
@@ -209,7 +192,7 @@ fun VirtualizedCodeEditor(
                 ) {
                     itemsIndexed(
                         items = lines,
-                        key = { index, _ -> index } // ✅ ИСПРАВЛЕНО: Стабильные ключи
+                        key = { index, _ -> index }
                     ) { index, line ->
                         CodeLine(
                             line = line,
@@ -224,14 +207,10 @@ fun VirtualizedCodeEditor(
                                     selection = TextRange(newPosition)
                                 )
                                 
-                                // ✅ ИСПРАВЛЕНО: Запрос фокуса с задержкой
-                                coroutineScope.launch {
-                                    delay(50)
-                                    try {
-                                        focusRequester.requestFocus()
-                                    } catch (e: IllegalStateException) {
-                                        // Ignore
-                                    }
+                                try {
+                                    focusRequester.requestFocus()
+                                } catch (e: IllegalStateException) {
+                                    // Ignore
                                 }
                             }
                         )
@@ -286,7 +265,7 @@ private fun LineNumbers(
     ) {
         itemsIndexed(
             items = lines,
-            key = { index, _ -> index } // ✅ ИСПРАВЛЕНО: Стабильные ключи
+            key = { index, _ -> index }
         ) { index, _ ->
             Box(
                 modifier = Modifier
