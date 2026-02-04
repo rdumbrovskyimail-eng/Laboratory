@@ -36,6 +36,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextDirection  // NEW IMPORT
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -282,7 +283,8 @@ fun VirtualizedCodeEditor(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = fontSize.sp,
                                 color = Color.Transparent, // Текст невидим
-                                lineHeight = (fontSize * 1.5).sp
+                                lineHeight = (fontSize * 1.5).sp,
+                                textDirection = TextDirection.Ltr  // NEW: Force LTR
                             ),
                             cursorColor = EditorTheme.cursorColor
                         )
@@ -441,7 +443,8 @@ private fun CodeLine(
             style = TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = fontSize.sp,
-                lineHeight = (fontSize * 1.5).sp
+                lineHeight = (fontSize * 1.5).sp,
+                textDirection = TextDirection.Ltr  // NEW: Force LTR
             ),
             modifier = Modifier.align(Alignment.CenterStart)
         )
