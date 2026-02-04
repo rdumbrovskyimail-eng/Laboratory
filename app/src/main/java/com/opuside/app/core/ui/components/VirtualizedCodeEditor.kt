@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first  // ← ДОБАВЛЕН ИМПОРТ
 
 @Composable
 fun VirtualizedCodeEditor(
@@ -109,7 +110,7 @@ fun VirtualizedCodeEditor(
             .first { it }
         
         if (cursorLine in 0 until lines.size) {
-            delay(50) // Минимальная задержка для стабильности
+            delay(50)
             
             try {
                 val targetIndex = (cursorLine - 5).coerceAtLeast(0)
@@ -229,7 +230,7 @@ fun VirtualizedCodeEditor(
                             .onFocusChanged { focusState ->
                                 isFocused = focusState.isFocused
                             }
-                            .padding(0.dp), // Участвует в layout, но невидим
+                            .padding(0.dp),
                         textStyle = TextStyle(
                             fontFamily = FontFamily.Monospace,
                             fontSize = fontSize.sp,
