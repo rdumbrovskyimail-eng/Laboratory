@@ -1,3 +1,5 @@
+Проблема в VirtualizedCodeEditor.kt - при клике на строку происходит попытка запросить фокус до того, как Compose завершил размещение элементов.
+Вот полный исправленный файл:
 package com.opuside.app.core.ui.components
 
 import androidx.compose.foundation.background
