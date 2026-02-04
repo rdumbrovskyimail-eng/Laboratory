@@ -22,16 +22,18 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.first  // ← ДОБАВЛЕН ИМПОРТ
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun VirtualizedCodeEditor(
@@ -103,9 +105,7 @@ fun VirtualizedCodeEditor(
     var isFocused by remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
 
-    // Безопасный скролл к курсору только когда layout готов
     LaunchedEffect(cursorLine) {
-        // Ждём пока LazyColumn полностью готов
         snapshotFlow { listState.layoutInfo.totalItemsCount > 0 }
             .first { it }
         
@@ -121,7 +121,7 @@ fun VirtualizedCodeEditor(
                     )
                 }
             } catch (e: Exception) {
-                // Игнорируем ошибки скролла
+                // Игнорируем
             }
         }
     }
@@ -154,102 +154,123 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    Surface(
-        modifier = modifier.then(keyboardHandler),
-        color = EditorTheme.backgroundColor
-    ) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            if (showLineNumbers) {
-                LineNumbers(
-                    lines = lines,
-                    currentLine = cursorLine,
-                    listState = listState,
-                    fontSize = fontSize
-                )
-                VerticalDivider(color = EditorTheme.dividerColor)
-            }
-
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-            ) {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .horizontalScroll(horizontalScrollState)
-                        .padding(horizontal = 8.dp)
-                        .pointerInput(Unit) {
-                            detectTapGestures {
-                                // Прямой запрос фокуса без side-effect
-                                try {
-                                    focusRequester.requestFocus()
-                                } catch (_: IllegalStateException) {
-                                    // Layout ещё не готов - игнорируем
-                                }
-                            }
-                        },
-                    userScrollEnabled = true
-                ) {
-                    itemsIndexed(
-                        items = lines,
-                        key = { index, line -> "$index-${line.hashCode()}" }
-                    ) { index, line ->
-                        CodeLine(
-                            line = line,
-                            lineNumber = index,
-                            highlightedText = highlightedLines.getOrNull(index) ?: AnnotatedString(line),
-                            isCurrentLine = index == cursorLine,
-                            fontSize = fontSize,
-                            onLineClick = { offset ->
-                                val beforeLines = lines.take(index).sumOf { it.length + 1 }
-                                val newPosition = beforeLines + offset
-                                textFieldValue = textFieldValue.copy(
-                                    selection = TextRange(newPosition)
-                                )
-                                // Фокусируем БЕЗ установки state
-                                try {
-                                    focusRequester.requestFocus()
-                                } catch (_: IllegalStateException) {
-                                    // Игнорируем
-                                }
-                            }
+    // КРИТИЧНО: Форсируем LTR (left-to-right) направление
+    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+        Surface(
+            modifier = modifier.then(keyboardHandler),
+            color = EditorTheme.backgroundColor
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                Row(modifier = Modifier.fillMaxSize()) {
+                    if (showLineNumbers) {
+                        LineNumbers(
+                            lines = lines,
+                            currentLine = cursorLine,
+                            listState = listState,
+                            fontSize = fontSize
                         )
+                        VerticalDivider(color = EditorTheme.dividerColor)
                     }
-                }
 
-                if (!readOnly) {
-                    // КРИТИЧНО: BasicTextField теперь участвует в layout
-                    BasicTextField(
-                        value = textFieldValue,
-                        onValueChange = { newValue -> textFieldValue = newValue },
+                    Box(
                         modifier = Modifier
-                            .fillMaxSize()
-                            .focusRequester(focusRequester)
-                            .onFocusChanged { focusState ->
-                                isFocused = focusState.isFocused
+                            .weight(1f)
+                            .fillMaxHeight()
+                    ) {
+                        // Визуальный слой с подсветкой (только для отображения)
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .horizontalScroll(horizontalScrollState)
+                                .padding(horizontal = 8.dp)
+                                .pointerInput(Unit) {
+                                    detectTapGestures { offset ->
+                                        // Вычисляем позицию клика
+                                        val firstVisible = listState.firstVisibleItemIndex
+                                        val itemInfo = listState.layoutInfo.visibleItemsInfo
+                                            .firstOrNull()
+                                        
+                                        if (itemInfo != null) {
+                                            val lineIndex = firstVisible + 
+                                                ((offset.y + listState.firstVisibleItemScrollOffset) / 
+                                                itemInfo.size).toInt()
+                                            
+                                            if (lineIndex in lines.indices) {
+                                                val charWidth = fontSize * 0.6f
+                                                val charOffset = ((offset.x - 8.dp.value) / charWidth)
+                                                    .toInt()
+                                                    .coerceIn(0, lines[lineIndex].length)
+                                                
+                                                val absolutePos = lines.take(lineIndex)
+                                                    .sumOf { it.length + 1 } + charOffset
+                                                
+                                                textFieldValue = textFieldValue.copy(
+                                                    selection = TextRange(absolutePos)
+                                                )
+                                            }
+                                        }
+                                        
+                                        try {
+                                            focusRequester.requestFocus()
+                                        } catch (_: IllegalStateException) {}
+                                    }
+                                },
+                            userScrollEnabled = true
+                        ) {
+                            itemsIndexed(
+                                items = lines,
+                                key = { index, line -> "$index-${line.hashCode()}" }
+                            ) { index, line ->
+                                CodeLine(
+                                    line = line,
+                                    lineNumber = index,
+                                    highlightedText = highlightedLines.getOrNull(index) 
+                                        ?: AnnotatedString(line),
+                                    isCurrentLine = index == cursorLine,
+                                    fontSize = fontSize
+                                )
                             }
-                            .padding(0.dp),
-                        textStyle = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = fontSize.sp,
-                            color = Color.Transparent
-                        ),
-                        cursorBrush = SolidColor(Color.Transparent),
-                        decorationBox = { innerTextField ->
-                            // Пустая decoration box - элемент невидим, но существует
-                            Box(modifier = Modifier.size(0.dp))
                         }
-                    )
-                }
 
-                if (lines.size > 100) {
-                    ScrollbarIndicator(
-                        listState = listState,
-                        totalItems = lines.size,
-                        modifier = Modifier.align(Alignment.CenterEnd)
-                    )
+                        if (!readOnly) {
+                            // Настоящий input с ВИДИМЫМ курсором
+                            BasicTextField(
+                                value = textFieldValue,
+                                onValueChange = { newValue -> 
+                                    textFieldValue = newValue 
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .horizontalScroll(horizontalScrollState)
+                                    .padding(horizontal = 8.dp)
+                                    .focusRequester(focusRequester)
+                                    .onFocusChanged { focusState ->
+                                        isFocused = focusState.isFocused
+                                    },
+                                textStyle = TextStyle(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = fontSize.sp,
+                                    color = Color.Transparent, // Текст невидим
+                                    lineHeight = (fontSize * 1.5).sp
+                                ),
+                                cursorBrush = SolidColor(EditorTheme.cursorColor), // ВИДИМЫЙ курсор!
+                                decorationBox = { innerTextField ->
+                                    // TextField рендерится, но текст прозрачный
+                                    // Курсор видимый!
+                                    innerTextField()
+                                }
+                            )
+                        }
+
+                        if (lines.size > 100) {
+                            ScrollbarIndicator(
+                                listState = listState,
+                                totalItems = lines.size,
+                                modifier = Modifier.align(Alignment.CenterEnd)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -305,8 +326,7 @@ private fun CodeLine(
     lineNumber: Int,
     highlightedText: AnnotatedString,
     isCurrentLine: Boolean,
-    fontSize: Int,
-    onLineClick: (offset: Int) -> Unit
+    fontSize: Int
 ) {
     val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
     
@@ -318,13 +338,6 @@ private fun CodeLine(
                 if (isCurrentLine) EditorTheme.currentLineBackground 
                 else Color.Transparent
             )
-            .pointerInput(lineNumber, line.length) {
-                detectTapGestures { offset ->
-                    val charWidth = fontSize * 0.6f
-                    val clickedChar = (offset.x / charWidth).toInt().coerceIn(0, line.length)
-                    onLineClick(clickedChar)
-                }
-            }
     ) {
         Text(
             text = highlightedText,
@@ -432,6 +445,7 @@ private object EditorTheme {
     val lineNumberColor = Color(0xFF858585)
     val currentLineNumberColor = Color(0xFFC6C6C6)
     val scrollbarColor = Color(0xFF424242)
+    val cursorColor = Color(0xFFFFFFFF) // ← БЕЛЫЙ ВИДИМЫЙ КУРСОР
 }
 
 @Composable
