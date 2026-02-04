@@ -27,14 +27,14 @@ import javax.inject.Inject
  * - Работа с ветками
  * - Добавление файлов в кеш (для Analyzer)
  * 
- * ✅ ИСПРАВЛЕНО (Проблема #11): Добавлен debounce + distinctUntilChanged + collectLatest
- * для предотвращения спама сетевых запросов при изменении настроек.
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #11): Unbounded Flow → Network Spam
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #21): Обработка ошибок конфигурации
  */
 @HiltViewModel
 class CreatorViewModel @Inject constructor(
     private val gitHubClient: GitHubApiClient,
     private val graphQLClient: GitHubGraphQLClient,
-    private val cacheManager: PersistentCacheManager, // ✅ ИСПРАВЛЕНО: CacheManager → PersistentCacheManager
+    private val cacheManager: PersistentCacheManager,
     private val appSettings: AppSettings,
     private val conflictResolver: GitConflictResolver
 ) : ViewModel() {
@@ -118,40 +118,47 @@ class CreatorViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ ИСПРАВЛЕНО (Проблема #11): Unbounded Flow → DDoS GitHub API
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #11): Unbounded Flow → DDoS GitHub API
      * 
      * БЫЛО:
      * ```kotlin
-     * appSettings.gitHubConfig.collect { config ->
-     *     if (config.isConfigured) {
-     *         loadContents("")  // При КАЖДОМ изменении → сетевой запрос
-     *         loadBranches()
+     * init {
+     *     viewModelScope.launch {
+     *         appSettings.gitHubConfig.collect { config ->  // ← БЕСКОНЕЧНЫЙ ЦИКЛ
+     *             if (config.isConfigured) {
+     *                 loadContents("")  // ← При КАЖДОМ изменении символа в Settings
+     *                 loadBranches()
+     *             }
+     *         }
      *     }
      * }
      * ```
      * 
      * ПРОБЛЕМЫ:
-     * - При вводе "OpusIDE" посимвольно: O, Op, Opu, Opus, OpusI, OpusID, OpusIDE
-     * - 7 символов = 14 сетевых запросов (loadContents + loadBranches каждый раз)
-     * - Запросы могут прийти не по порядку → UI показывает устаревшие данные
-     * - GitHub API rate limit (60 req/hour без токена, 5000/hour с токеном)
+     * 1. collect {} бесконечен - НИКОГДА не завершается
+     * 2. При вводе "OpusIDE" посимвольно: O, Op, Opu, Opus, OpusI, OpusID, OpusIDE
+     * 3. 7 символов = 14 сетевых запросов (loadContents + loadBranches)
+     * 4. Запросы приходят не по порядку → UI показывает устаревшие данные
+     * 5. GitHub API rate limit (60 req/hour без токена, 5000/hour с токеном)
      * 
      * РЕШЕНИЕ:
+     * ────────
      * 1. debounce(500) - ждем 500ms после последнего изменения
      * 2. distinctUntilChanged() - игнорируем дубликаты
      * 3. collectLatest {} - отменяем предыдущую загрузку при новом изменении
      * 4. Проверяем реальное изменение owner/repo/branch перед загрузкой
      * 
      * РЕЗУЛЬТАТ:
-     * - Ввод "OpusIDE" за 1 секунду → 1 запрос через 500ms после окончания ввода
-     * - Экономия: 14 запросов → 2 запроса (93% снижение)
+     * ──────────
+     * Ввод "OpusIDE" за 1 секунду → 1 запрос через 500ms после окончания ввода
+     * Экономия: 14 запросов → 2 запроса (93% снижение)
      */
     init {
         viewModelScope.launch {
             appSettings.gitHubConfig
-                .debounce(500) // ✅ Ждем 500ms после последнего изменения
-                .distinctUntilChanged() // ✅ Игнорируем дубликаты
-                .collectLatest { config -> // ✅ Отменяем предыдущий при новом
+                .debounce(500)              // ✅ Ждем 500ms после последнего изменения
+                .distinctUntilChanged()     // ✅ Игнорируем дубликаты
+                .collectLatest { config ->  // ✅ Отменяем предыдущий при новом
                     if (config.isConfigured) {
                         // ✅ Проверяем реальное изменение перед загрузкой
                         val ownerChanged = _currentOwner.value != config.owner
@@ -159,6 +166,9 @@ class CreatorViewModel @Inject constructor(
                         val branchChanged = _currentBranch.value != config.branch
                         
                         if (ownerChanged || repoChanged || branchChanged) {
+                            android.util.Log.d("CreatorViewModel", 
+                                "📡 Config changed: ${config.owner}/${config.repo}@${config.branch}")
+                            
                             _currentOwner.value = config.owner
                             _currentRepo.value = config.repo
                             _currentBranch.value = config.branch
@@ -167,6 +177,14 @@ class CreatorViewModel @Inject constructor(
                             loadContents("")
                             loadBranches()
                         }
+                    } else {
+                        // ✅ Конфиг не настроен - очищаем состояние
+                        _currentOwner.value = ""
+                        _currentRepo.value = ""
+                        _currentBranch.value = "main"
+                        _contents.value = emptyList()
+                        _branches.value = emptyList()
+                        _error.value = null
                     }
                 }
         }
@@ -203,6 +221,9 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             gitHubClient.getBranches()
                 .onSuccess { _branches.value = it }
+                .onFailure { e ->
+                    android.util.Log.e("CreatorViewModel", "Failed to load branches", e)
+                }
         }
     }
 
@@ -225,6 +246,7 @@ class CreatorViewModel @Inject constructor(
                 }
                 .onFailure { e ->
                     _error.value = e.message
+                    android.util.Log.e("CreatorViewModel", "Failed to load contents", e)
                 }
 
             _isLoading.value = false
