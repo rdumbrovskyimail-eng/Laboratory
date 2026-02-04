@@ -99,9 +99,10 @@ fun VirtualizedCodeEditor(
 
     val listState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
-    val isFocused = remember { mutableStateOf(false) }
+    var isFocused by remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
 
+    // Отложенный скролл к курсору после layout
     LaunchedEffect(cursorLine, lines.size) {
         if (cursorLine in 0 until lines.size) {
             delay(150)
@@ -116,8 +117,6 @@ fun VirtualizedCodeEditor(
                         )
                     }
                 }
-            } catch (e: IllegalStateException) {
-                // Ignore
             } catch (e: Exception) {
                 android.util.Log.w("VirtualizedCodeEditor", "Scroll failed", e)
             }
@@ -178,14 +177,10 @@ fun VirtualizedCodeEditor(
                         .fillMaxSize()
                         .horizontalScroll(horizontalScrollState)
                         .padding(horizontal = 8.dp)
-                        .focusRequester(focusRequester)
                         .pointerInput(Unit) {
                             detectTapGestures {
-                                try {
-                                    focusRequester.requestFocus()
-                                } catch (e: IllegalStateException) {
-                                    // Ignore
-                                }
+                                // Запуск фокуса через side-effect, без прямого вызова
+                                isFocused = true
                             }
                         },
                     userScrollEnabled = true
@@ -206,12 +201,8 @@ fun VirtualizedCodeEditor(
                                 textFieldValue = textFieldValue.copy(
                                     selection = TextRange(newPosition)
                                 )
-                                
-                                try {
-                                    focusRequester.requestFocus()
-                                } catch (e: IllegalStateException) {
-                                    // Ignore
-                                }
+                                // Запуск фокуса через state
+                                isFocused = true
                             }
                         )
                     }
@@ -224,7 +215,9 @@ fun VirtualizedCodeEditor(
                         modifier = Modifier
                             .size(0.dp)
                             .focusRequester(focusRequester)
-                            .onFocusChanged { isFocused.value = it.isFocused },
+                            .onFocusChanged { focusState ->
+                                isFocused = focusState.isFocused
+                            },
                         textStyle = TextStyle(
                             fontFamily = FontFamily.Monospace,
                             fontSize = fontSize.sp,
@@ -232,6 +225,20 @@ fun VirtualizedCodeEditor(
                         ),
                         cursorBrush = SolidColor(Color.Transparent)
                     )
+                }
+
+                // Отложенный фокус через LaunchedEffect
+                LaunchedEffect(isFocused) {
+                    if (isFocused) {
+                        try {
+                            focusRequester.requestFocus()
+                        } catch (e: IllegalStateException) {
+                            android.util.Log.e("VirtualizedCodeEditor", "Focus request failed", e)
+                            // Можно добавить retry с delay, если нужно
+                            delay(100)
+                            focusRequester.requestFocus()
+                        }
+                    }
                 }
 
                 if (lines.size > 100) {
