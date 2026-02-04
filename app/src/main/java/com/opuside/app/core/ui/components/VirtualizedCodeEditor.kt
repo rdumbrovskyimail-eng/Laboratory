@@ -33,32 +33,7 @@ import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 
 /**
- * ✅ ИСПРАВЛЕНО (Проблема #4 - MEMORY BOMB CRITICAL)
- * 
- * 2026-уровневый Code Editor с виртуализацией и async подсветкой.
- * 
- * КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ:
- * ────────────────────────────────────────────────────────────────
- * ✅ #4: Out Of Memory в UndoRedoManager
- *    СТАРАЯ ПРОБЛЕМА:
- *    - UndoRedoManager хранил полные TextFieldValue объекты
- *    - Каждый TextFieldValue содержит AnnotatedString с spans (100-500 KB)
- *    - История 50 действий × 500 KB = 25 MB утечки на один файл
- *    - При редактировании 3-4 файлов → 100 MB → OOM на устройствах с 3GB RAM
- *    
- *    НОВОЕ РЕШЕНИЕ:
- *    - Храним только LightweightState (text + cursor position)
- *    - Размер одного состояния: ~текст + 16 байт (2 × Int для cursor)
- *    - История 50 действий × ~100 KB текста = 5 MB (5x экономия)
- *    - AnnotatedString не хранится, регенерируется при undo/redo
- *    - Spans пересчитываются через produceState с highlightedLines
- * 
- * Особенности:
- * - Виртуализация: рендерятся только видимые строки (LazyColumn)
- * - Async highlighting: подсветка синтаксиса в background thread
- * - Smart cursor: автоматический скролл к курсору
- * - Undo/Redo: облегченная история изменений (только text + cursor)
- * - Performance: оптимизирован для файлов 10k+ строк
+ * ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО
  */
 @Composable
 fun VirtualizedCodeEditor(
@@ -84,18 +59,21 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // ✅ Безопасный вызов подсветки вне Composition
-    val highlightedLines = produceState(
+    val highlightedLines by produceState(
         initialValue = lines.map { AnnotatedString(it) },
-        lines, 
-        language
+        key1 = lines.hashCode(),
+        key2 = language
     ) {
         value = withContext(Dispatchers.Default) {
             lines.map { line ->
-                SyntaxHighlighter.highlight(line, language)
+                try {
+                    SyntaxHighlighter.highlight(line, language)
+                } catch (e: Exception) {
+                    AnnotatedString(line)
+                }
             }
         }
-    }.value
+    }
 
     val cursorLine = remember(textFieldValue.selection.start, textFieldValue.text) {
         textFieldValue.text.take(textFieldValue.selection.start).count { it == '\n' }
@@ -129,6 +107,7 @@ fun VirtualizedCodeEditor(
 
     LaunchedEffect(cursorLine) {
         if (cursorLine in 0 until lines.size) {
+            delay(50)
             listState.animateScrollToItem(
                 index = (cursorLine - 5).coerceAtLeast(0),
                 scrollOffset = 0
@@ -136,11 +115,11 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    DisposableEffect(Unit) {
+    LaunchedEffect(Unit) {
+        delay(100)
         if (isFocused.value) {
             focusRequester.requestFocus()
         }
-        onDispose { }
     }
 
     val keyboardHandler = Modifier.onKeyEvent { event ->
@@ -207,7 +186,7 @@ fun VirtualizedCodeEditor(
                 ) {
                     itemsIndexed(
                         items = lines,
-                        key = { index, _ -> index }
+                        key = { index, line -> "$index-${line.hashCode()}" }
                     ) { index, line ->
                         CodeLine(
                             line = line,
@@ -244,7 +223,6 @@ fun VirtualizedCodeEditor(
                     )
                 }
 
-                // ✅ Исправлено место вызова ScrollbarIndicator (внутри BoxScope)
                 if (lines.size > 100) {
                     ScrollbarIndicator(
                         listState = listState,
@@ -256,10 +234,6 @@ fun VirtualizedCodeEditor(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// LINE NUMBERS COLUMN
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun LineNumbers(
@@ -301,10 +275,6 @@ private fun LineNumbers(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SINGLE CODE LINE
-// ═══════════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun CodeLine(
     line: String,
@@ -324,7 +294,7 @@ private fun CodeLine(
                 if (isCurrentLine) EditorTheme.currentLineBackground 
                 else Color.Transparent
             )
-            .pointerInput(lineNumber) {
+            .pointerInput(lineNumber, line.length) {
                 detectTapGestures { offset ->
                     val charWidth = fontSize * 0.6f
                     val clickedChar = (offset.x / charWidth).toInt().coerceIn(0, line.length)
@@ -344,13 +314,6 @@ private fun CodeLine(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// SCROLLBAR INDICATOR
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * ✅ ИСПРАВЛЕНО: Добавлена @Composable аннотация для корректной работы с Compose UI
- */
 @Composable
 private fun ScrollbarIndicator(
     listState: LazyListState,
@@ -381,92 +344,22 @@ private fun ScrollbarIndicator(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// UNDO/REDO MANAGER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #4 - Memory Leak)
- * 
- * Облегченный менеджер undo/redo для редактора кода.
- * 
- * СТАРАЯ ПРОБЛЕМА:
- * ────────────────────────────────────────────────────────────────
- * ```kotlin
- * private val history = mutableListOf<TextFieldValue>()  // ❌ УТЕЧКА!
- * ```
- * 
- * Хранил полные TextFieldValue объекты:
- * - text: String (~100 KB для 2000-строчного файла)
- * - annotatedString: AnnotatedString с spans (~400-500 KB!)
- * - selection: TextRange (~100 bytes)
- * - composition: TextRange? (~100 bytes)
- * 
- * ИТОГО на одно состояние: ~500 KB
- * История 50 состояний: 50 × 500 KB = 25 MB утечки на один файл!
- * При редактировании 3-4 файлов: 100 MB → OOM на Samsung Galaxy A12 (3GB RAM)
- * 
- * НОВОЕ РЕШЕНИЕ:
- * ────────────────────────────────────────────────────────────────
- * Храним только LightweightState (text + cursor position):
- * - text: String (~100 KB)
- * - selectionStart: Int (4 bytes)
- * - selectionEnd: Int (4 bytes)
- * 
- * ИТОГО на одно состояние: ~100 KB (5x экономия!)
- * История 50 состояний: 50 × 100 KB = 5 MB
- * 
- * AnnotatedString spans НЕ хранятся - они регенерируются через produceState
- * при undo/redo. Это дешево (1-2ms на Snapdragon 8 Gen 1) и безопасно для памяти.
- * 
- * PROOF OF IMPROVEMENT:
- * ────────────────────────────────────────────────────────────────
- * Тест на Samsung Galaxy A12 (3GB RAM):
- * 
- * СТАРАЯ ВЕРСИЯ:
- * - Открыть MainActivity.kt (2000 строк)
- * - Печатать непрерывно 5 минут
- * - Результат: OutOfMemoryError после ~200 undo операций
- * 
- * НОВАЯ ВЕРСИЯ:
- * - Открыть MainActivity.kt (2000 строк)
- * - Печатать непрерывно 5 минут
- * - Результат: Stable, память не растет, 500+ undo операций без проблем
- */
 private class UndoRedoManager {
-    /**
-     * ✅ ИСПРАВЛЕНО: Облегченное состояние БЕЗ AnnotatedString spans.
-     * 
-     * Хранит только:
-     * - text (основные данные)
-     * - cursor position (для восстановления курсора)
-     * 
-     * Spans будут пересчитаны автоматически через produceState в VirtualizedCodeEditor.
-     */
     private data class LightweightState(
         val text: String,
         val selectionStart: Int,
         val selectionEnd: Int
     )
     
-    // ✅ ИСПРАВЛЕНО: История теперь хранит только облегченные состояния
     private val history = mutableListOf<LightweightState>()
     private var currentIndex = -1
     private val maxHistorySize = 50
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Записываем только text + cursor position.
-     * 
-     * TextFieldValue.annotatedString ИГНОРИРУЕТСЯ - не сохраняется в истории.
-     * Это экономит ~400 KB на каждое состояние.
-     */
     fun recordState(value: TextFieldValue) {
-        // Очищаем "будущее" если мы не в конце истории
         if (currentIndex < history.size - 1) {
             history.subList(currentIndex + 1, history.size).clear()
         }
         
-        // ✅ Сохраняем ТОЛЬКО text + cursor position (БЕЗ AnnotatedString!)
         history.add(LightweightState(
             text = value.text,
             selectionStart = value.selection.start,
@@ -474,48 +367,30 @@ private class UndoRedoManager {
         ))
         currentIndex++
         
-        // Ограничиваем размер истории
         if (history.size > maxHistorySize) {
             history.removeAt(0)
             currentIndex--
         }
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Восстанавливаем TextFieldValue БЕЗ spans.
-     * 
-     * Spans будут автоматически добавлены через produceState с highlightedLines
-     * в VirtualizedCodeEditor. Это происходит асинхронно в Dispatchers.Default
-     * и не блокирует UI.
-     * 
-     * @return TextFieldValue с text и cursor position, БЕЗ AnnotatedString spans
-     */
     fun undo(): TextFieldValue? {
         if (currentIndex > 0) {
             currentIndex--
             val state = history[currentIndex]
             
-            // ✅ Восстанавливаем TextFieldValue БЕЗ spans
-            // Spans будут пересчитаны автоматически в produceState
             return TextFieldValue(
                 text = state.text,
                 selection = TextRange(state.selectionStart, state.selectionEnd)
-                // annotatedString НЕ указываем - будет plain text
-                // Подсветка синтаксиса добавится через highlightedLines
             )
         }
         return null
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Аналогично undo - восстанавливаем БЕЗ spans.
-     */
     fun redo(): TextFieldValue? {
         if (currentIndex < history.size - 1) {
             currentIndex++
             val state = history[currentIndex]
             
-            // ✅ Восстанавливаем TextFieldValue БЕЗ spans
             return TextFieldValue(
                 text = state.text,
                 selection = TextRange(state.selectionStart, state.selectionEnd)
@@ -523,27 +398,7 @@ private class UndoRedoManager {
         }
         return null
     }
-
-    fun canUndo() = currentIndex > 0
-    fun canRedo() = currentIndex < history.size - 1
-    
-    /**
-     * ✅ НОВЫЙ МЕТОД: Получить размер истории для дебага/мониторинга.
-     */
-    fun getHistorySize() = history.size
-    
-    /**
-     * ✅ НОВЫЙ МЕТОД: Очистить историю (для освобождения памяти).
-     */
-    fun clear() {
-        history.clear()
-        currentIndex = -1
-    }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// EDITOR THEME (VS Code Dark)
-// ═══════════════════════════════════════════════════════════════════════════════
 
 private object EditorTheme {
     val backgroundColor = Color(0xFF1E1E1E)
@@ -554,10 +409,6 @@ private object EditorTheme {
     val currentLineNumberColor = Color(0xFFC6C6C6)
     val scrollbarColor = Color(0xFF424242)
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// EXTENSIONS
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun VerticalDivider(
