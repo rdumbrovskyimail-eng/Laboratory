@@ -20,15 +20,27 @@ import javax.inject.Inject
 /**
  * ViewModel для Creator (Окно 1) — Редактирование без кеша/таймера.
  * 
- * Функции:
- * - Навигация по файлам репозитория
- * - Создание/редактирование/удаление файлов
- * - Commit и Push с обработкой конфликтов
- * - Работа с ветками
- * - Добавление файлов в кеш (для Analyzer)
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-05):
  * 
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #11): Unbounded Flow → Network Spam
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #21): Обработка ошибок конфигурации
+ * ПРОБЛЕМА #1: Репозиторий не загружается при старте
+ * ────────────────────────────────────────────────────────
+ * ПРИЧИНА:
+ * - init {} проверял config.isConfigured (требует токен)
+ * - Токен расшифровывается асинхронно → при старте пустой
+ * - Условие if (config.isConfigured) возвращает false
+ * - Репозиторий НЕ загружается
+ * 
+ * РЕШЕНИЕ:
+ * - Загружаем репозиторий если есть owner И repo (независимо от токена)
+ * - Токен проверяется при реальных API запросах
+ * - Добавлено логирование для диагностики
+ * 
+ * ПРОБЛЕМА #2: Network spam при переключении вкладок
+ * ────────────────────────────────────────────────────────
+ * СОХРАНЕНО РЕШЕНИЕ:
+ * - debounce(500ms) для фильтрации быстрых изменений
+ * - distinctUntilChanged() для игнорирования дубликатов
+ * - collectLatest {} для отмены предыдущих запросов
  */
 @HiltViewModel
 class CreatorViewModel @Inject constructor(
@@ -39,9 +51,9 @@ class CreatorViewModel @Inject constructor(
     private val conflictResolver: GitConflictResolver
 ) : ViewModel() {
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // REPOSITORY STATE
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     private val _currentOwner = MutableStateFlow("")
     val currentOwner: StateFlow<String> = _currentOwner.asStateFlow()
@@ -55,9 +67,9 @@ class CreatorViewModel @Inject constructor(
     private val _branches = MutableStateFlow<List<GitHubBranch>>(emptyList())
     val branches: StateFlow<List<GitHubBranch>> = _branches.asStateFlow()
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // FILE BROWSER STATE
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     private val _currentPath = MutableStateFlow("")
     val currentPath: StateFlow<String> = _currentPath.asStateFlow()
@@ -80,9 +92,9 @@ class CreatorViewModel @Inject constructor(
     private val _loadingProgress = MutableStateFlow<Pair<Int, Int>?>(null)
     val loadingProgress: StateFlow<Pair<Int, Int>?> = _loadingProgress.asStateFlow()
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // EDITOR STATE
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     private val _selectedFile = MutableStateFlow<GitHubContent?>(null)
     val selectedFile: StateFlow<GitHubContent?> = _selectedFile.asStateFlow()
@@ -102,9 +114,9 @@ class CreatorViewModel @Inject constructor(
     private val _conflictState = MutableStateFlow<ConflictResult?>(null)
     val conflictState: StateFlow<ConflictResult?> = _conflictState.asStateFlow()
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // MULTI-SELECT FOR CACHE
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     private val _selectedForCache = MutableStateFlow<Set<String>>(emptySet())
     val selectedForCache: StateFlow<Set<String>> = _selectedForCache.asStateFlow()
@@ -113,61 +125,57 @@ class CreatorViewModel @Inject constructor(
         .map { it.size }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // INITIALIZATION
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #11): Unbounded Flow → DDoS GitHub API
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Автоинициализация репозитория при старте
      * 
      * БЫЛО:
      * ```kotlin
-     * init {
-     *     viewModelScope.launch {
-     *         appSettings.gitHubConfig.collect { config ->  // ← БЕСКОНЕЧНЫЙ ЦИКЛ
-     *             if (config.isConfigured) {
-     *                 loadContents("")  // ← При КАЖДОМ изменении символа в Settings
-     *                 loadBranches()
-     *             }
-     *         }
-     *     }
+     * if (config.isConfigured) {  // ← Требует токен
+     *     loadContents("")
      * }
      * ```
      * 
-     * ПРОБЛЕМЫ:
-     * 1. collect {} бесконечен - НИКОГДА не завершается
-     * 2. При вводе "OpusIDE" посимвольно: O, Op, Opu, Opus, OpusI, OpusID, OpusIDE
-     * 3. 7 символов = 14 сетевых запросов (loadContents + loadBranches)
-     * 4. Запросы приходят не по порядку → UI показывает устаревшие данные
-     * 5. GitHub API rate limit (60 req/hour без токена, 5000/hour с токеном)
+     * СТАЛО:
+     * ```kotlin
+     * if (config.owner.isNotBlank() && config.repo.isNotBlank()) {  // ← НЕ требует токен
+     *     loadContents("")
+     * }
+     * ```
      * 
-     * РЕШЕНИЕ:
-     * ────────
-     * 1. debounce(500) - ждем 500ms после последнего изменения
-     * 2. distinctUntilChanged() - игнорируем дубликаты
-     * 3. collectLatest {} - отменяем предыдущую загрузку при новом изменении
-     * 4. Проверяем реальное изменение owner/repo/branch перед загрузкой
-     * 
-     * РЕЗУЛЬТАТ:
-     * ──────────
-     * Ввод "OpusIDE" за 1 секунду → 1 запрос через 500ms после окончания ввода
-     * Экономия: 14 запросов → 2 запроса (93% снижение)
+     * ПОЧЕМУ:
+     * - Токен расшифровывается асинхронно
+     * - При первом запуске config.token может быть пустым
+     * - Но owner/repo уже доступны
+     * - Токен проверится при реальном API запросе
      */
     init {
+        android.util.Log.d("CreatorViewModel", "🚀 Initializing CreatorViewModel...")
+        
         viewModelScope.launch {
             appSettings.gitHubConfig
                 .debounce(500)              // ✅ Ждем 500ms после последнего изменения
                 .distinctUntilChanged()     // ✅ Игнорируем дубликаты
                 .collectLatest { config ->  // ✅ Отменяем предыдущий при новом
-                    if (config.isConfigured) {
+                    
+                    android.util.Log.d("CreatorViewModel", "📡 Config received:")
+                    android.util.Log.d("CreatorViewModel", "   Owner: ${config.owner}")
+                    android.util.Log.d("CreatorViewModel", "   Repo: ${config.repo}")
+                    android.util.Log.d("CreatorViewModel", "   Branch: ${config.branch}")
+                    android.util.Log.d("CreatorViewModel", "   Token: ${if (config.token.isNotEmpty()) "[SET]" else "[EMPTY]"}")
+                    
+                    // ✅ ИСПРАВЛЕНО: Проверяем ТОЛЬКО owner и repo (не токен)
+                    if (config.owner.isNotBlank() && config.repo.isNotBlank()) {
                         // ✅ Проверяем реальное изменение перед загрузкой
                         val ownerChanged = _currentOwner.value != config.owner
                         val repoChanged = _currentRepo.value != config.repo
                         val branchChanged = _currentBranch.value != config.branch
                         
                         if (ownerChanged || repoChanged || branchChanged) {
-                            android.util.Log.d("CreatorViewModel", 
-                                "📡 Config changed: ${config.owner}/${config.repo}@${config.branch}")
+                            android.util.Log.d("CreatorViewModel", "🔄 Config changed, reloading repository...")
                             
                             _currentOwner.value = config.owner
                             _currentRepo.value = config.repo
@@ -176,8 +184,12 @@ class CreatorViewModel @Inject constructor(
                             // Загружаем данные только если что-то реально изменилось
                             loadContents("")
                             loadBranches()
+                        } else {
+                            android.util.Log.d("CreatorViewModel", "⏭️  Config unchanged, skipping reload")
                         }
                     } else {
+                        android.util.Log.d("CreatorViewModel", "⚠️  Config incomplete (missing owner or repo), clearing state")
+                        
                         // ✅ Конфиг не настроен - очищаем состояние
                         _currentOwner.value = ""
                         _currentRepo.value = ""
@@ -190,12 +202,14 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // REPOSITORY OPERATIONS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     fun setRepository(owner: String, repo: String, branch: String = "main") {
         viewModelScope.launch {
+            android.util.Log.d("CreatorViewModel", "📝 Setting repository: $owner/$repo@$branch")
+            
             appSettings.setGitHubConfig(owner, repo, branch)
             _currentOwner.value = owner
             _currentRepo.value = repo
@@ -209,6 +223,8 @@ class CreatorViewModel @Inject constructor(
 
     fun switchBranch(branch: String) {
         viewModelScope.launch {
+            android.util.Log.d("CreatorViewModel", "🌿 Switching to branch: $branch")
+            
             _currentBranch.value = branch
             appSettings.setGitHubConfig(_currentOwner.value, _currentRepo.value, branch)
             _currentPath.value = ""
@@ -219,22 +235,29 @@ class CreatorViewModel @Inject constructor(
 
     private fun loadBranches() {
         viewModelScope.launch {
+            android.util.Log.d("CreatorViewModel", "🌿 Loading branches...")
+            
             gitHubClient.getBranches()
-                .onSuccess { _branches.value = it }
+                .onSuccess { branches ->
+                    _branches.value = branches
+                    android.util.Log.d("CreatorViewModel", "✅ Loaded ${branches.size} branches")
+                }
                 .onFailure { e ->
-                    android.util.Log.e("CreatorViewModel", "Failed to load branches", e)
+                    android.util.Log.e("CreatorViewModel", "❌ Failed to load branches", e)
                 }
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // FILE BROWSER OPERATIONS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     fun loadContents(path: String) {
         viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
+            
+            android.util.Log.d("CreatorViewModel", "📂 Loading contents: ${if (path.isEmpty()) "/" else path}")
 
             gitHubClient.getContent(path, _currentBranch.value)
                 .onSuccess { contentList ->
@@ -243,10 +266,11 @@ class CreatorViewModel @Inject constructor(
                             .thenBy { it.name.lowercase() }
                     )
                     _currentPath.value = path
+                    android.util.Log.d("CreatorViewModel", "✅ Loaded ${contentList.size} items")
                 }
                 .onFailure { e ->
                     _error.value = e.message
-                    android.util.Log.e("CreatorViewModel", "Failed to load contents", e)
+                    android.util.Log.e("CreatorViewModel", "❌ Failed to load contents", e)
                 }
 
             _isLoading.value = false
@@ -254,6 +278,7 @@ class CreatorViewModel @Inject constructor(
     }
 
     fun navigateToFolder(folderPath: String) {
+        android.util.Log.d("CreatorViewModel", "📁 Navigating to: $folderPath")
         _pathHistory.value = _pathHistory.value + folderPath
         loadContents(folderPath)
     }
@@ -261,23 +286,26 @@ class CreatorViewModel @Inject constructor(
     fun navigateBack() {
         val history = _pathHistory.value
         if (history.size > 1) {
+            android.util.Log.d("CreatorViewModel", "⬅️  Navigating back")
             _pathHistory.value = history.dropLast(1)
             loadContents(history[history.size - 2])
         }
     }
 
     fun navigateToRoot() {
+        android.util.Log.d("CreatorViewModel", "🏠 Navigating to root")
         _pathHistory.value = listOf("")
         loadContents("")
     }
 
     fun refresh() {
+        android.util.Log.d("CreatorViewModel", "🔄 Refreshing current path")
         loadContents(_currentPath.value)
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // FILE OPERATIONS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     fun openFile(file: GitHubContent) {
         if (file.type != "file") return
@@ -285,15 +313,19 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _selectedFile.value = file
+            
+            android.util.Log.d("CreatorViewModel", "📄 Opening file: ${file.path}")
 
             gitHubClient.getFileContentDecoded(file.path, _currentBranch.value)
                 .onSuccess { content ->
                     _fileContent.value = content
                     _originalContent.value = content
+                    android.util.Log.d("CreatorViewModel", "✅ File loaded: ${content.length} chars")
                 }
                 .onFailure { e ->
                     _error.value = "Failed to load file: ${e.message}"
                     _selectedFile.value = null
+                    android.util.Log.e("CreatorViewModel", "❌ Failed to open file", e)
                 }
 
             _isLoading.value = false
@@ -305,12 +337,14 @@ class CreatorViewModel @Inject constructor(
     }
 
     fun closeFile() {
+        android.util.Log.d("CreatorViewModel", "❌ Closing file")
         _selectedFile.value = null
         _fileContent.value = ""
         _originalContent.value = ""
     }
 
     fun discardChanges() {
+        android.util.Log.d("CreatorViewModel", "↩️  Discarding changes")
         _fileContent.value = _originalContent.value
     }
 
@@ -320,6 +354,9 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             _error.value = null
+            
+            android.util.Log.d("CreatorViewModel", "💾 Saving file: ${file.path}")
+            android.util.Log.d("CreatorViewModel", "   Commit message: $commitMessage")
 
             val result = conflictResolver.saveFileWithConflictHandling(
                 path = file.path,
@@ -338,14 +375,18 @@ class CreatorViewModel @Inject constructor(
                     if (cacheManager.hasFile(file.path)) {
                         cacheManager.updateFileContent(file.path, _fileContent.value)
                     }
+                    
+                    android.util.Log.d("CreatorViewModel", "✅ File saved successfully")
                 }
                 
                 is ConflictResult.Conflict -> {
                     _conflictState.value = result
+                    android.util.Log.w("CreatorViewModel", "⚠️  Conflict detected")
                 }
                 
                 is ConflictResult.Error -> {
                     _error.value = result.message
+                    android.util.Log.e("CreatorViewModel", "❌ Save failed: ${result.message}")
                 }
             }
 
@@ -358,6 +399,8 @@ class CreatorViewModel @Inject constructor(
 
         viewModelScope.launch {
             _isSaving.value = true
+            
+            android.util.Log.d("CreatorViewModel", "🔧 Resolving conflict with strategy: $strategy")
 
             val result = when (strategy) {
                 ConflictStrategy.KEEP_MINE -> 
@@ -388,9 +431,12 @@ class CreatorViewModel @Inject constructor(
                     _selectedFile.value?.let { file ->
                         _selectedFile.value = file.copy(sha = result.newSha)
                     }
+                    
+                    android.util.Log.d("CreatorViewModel", "✅ Conflict resolved")
                 }
                 is ConflictResult.Error -> {
                     _error.value = result.message
+                    android.util.Log.e("CreatorViewModel", "❌ Conflict resolution failed: ${result.message}")
                 }
                 else -> {}
             }
@@ -409,6 +455,8 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             _error.value = null
+            
+            android.util.Log.d("CreatorViewModel", "➕ Creating new file: $path")
 
             gitHubClient.createOrUpdateFile(
                 path = path,
@@ -417,10 +465,12 @@ class CreatorViewModel @Inject constructor(
                 branch = _currentBranch.value
             )
                 .onSuccess {
+                    android.util.Log.d("CreatorViewModel", "✅ File created successfully")
                     refresh()
                 }
                 .onFailure { e ->
                     _error.value = "Failed to create: ${e.message}"
+                    android.util.Log.e("CreatorViewModel", "❌ Failed to create file", e)
                 }
 
             _isSaving.value = false
@@ -431,6 +481,8 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
+            
+            android.util.Log.d("CreatorViewModel", "🗑️  Deleting file: ${file.path}")
 
             gitHubClient.deleteFile(
                 path = file.path,
@@ -443,10 +495,12 @@ class CreatorViewModel @Inject constructor(
                         closeFile()
                     }
                     cacheManager.removeFile(file.path)
+                    android.util.Log.d("CreatorViewModel", "✅ File deleted successfully")
                     refresh()
                 }
                 .onFailure { e ->
                     _error.value = "Failed to delete: ${e.message}"
+                    android.util.Log.e("CreatorViewModel", "❌ Failed to delete file", e)
                 }
 
             _isLoading.value = false
@@ -456,6 +510,8 @@ class CreatorViewModel @Inject constructor(
     fun renameFile(file: GitHubContent, newName: String) {
         viewModelScope.launch {
             _isLoading.value = true
+            
+            android.util.Log.d("CreatorViewModel", "✏️  Renaming file: ${file.name} → $newName")
             
             val contentResult = gitHubClient.getFileContentDecoded(file.path)
             
@@ -476,19 +532,21 @@ class CreatorViewModel @Inject constructor(
                         sha = file.sha,
                         branch = _currentBranch.value
                     )
+                    android.util.Log.d("CreatorViewModel", "✅ File renamed successfully")
                     refresh()
                 }
             }.onFailure { e ->
                 _error.value = "Failed to rename: ${e.message}"
+                android.util.Log.e("CreatorViewModel", "❌ Failed to rename file", e)
             }
             
             _isLoading.value = false
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // CACHE OPERATIONS (для передачи в Analyzer)
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     fun toggleFileSelection(filePath: String) {
         _selectedForCache.value = _selectedForCache.value.toMutableSet().apply {
@@ -499,10 +557,12 @@ class CreatorViewModel @Inject constructor(
     fun selectAllInCurrentFolder() {
         val files = _contents.value.filter { it.type == "file" }.map { it.path }
         _selectedForCache.value = _selectedForCache.value + files
+        android.util.Log.d("CreatorViewModel", "✅ Selected ${files.size} files")
     }
 
     fun clearSelection() {
         _selectedForCache.value = emptySet()
+        android.util.Log.d("CreatorViewModel", "❌ Selection cleared")
     }
 
     fun addSelectedToCache() {
@@ -513,6 +573,8 @@ class CreatorViewModel @Inject constructor(
             _isLoading.value = true
             _error.value = null
             _loadingProgress.value = 0 to paths.size
+            
+            android.util.Log.d("CreatorViewModel", "📦 Adding ${paths.size} files to cache...")
 
             val cachedFiles = mutableListOf<com.opuside.app.core.database.entity.CachedFileEntity>()
             var loaded = 0
@@ -538,11 +600,13 @@ class CreatorViewModel @Inject constructor(
                     }
                     .onFailure { e ->
                         _error.value = "Failed to load $path: ${e.message}"
+                        android.util.Log.e("CreatorViewModel", "❌ Failed to load $path", e)
                     }
             }
 
             if (cachedFiles.isNotEmpty()) {
                 cacheManager.addFiles(cachedFiles)
+                android.util.Log.d("CreatorViewModel", "✅ Added ${cachedFiles.size} files to cache")
             }
             
             _selectedForCache.value = emptySet()
@@ -553,6 +617,8 @@ class CreatorViewModel @Inject constructor(
 
     fun addToCache(file: GitHubContent) {
         viewModelScope.launch {
+            android.util.Log.d("CreatorViewModel", "📦 Adding file to cache: ${file.path}")
+            
             val content = if (file.path == _selectedFile.value?.path) {
                 _fileContent.value
             } else {
@@ -570,6 +636,7 @@ class CreatorViewModel @Inject constructor(
             )
 
             cacheManager.addFile(cachedFile)
+            android.util.Log.d("CreatorViewModel", "✅ File added to cache")
         }
     }
 
@@ -577,29 +644,33 @@ class CreatorViewModel @Inject constructor(
         _selectedFile.value?.let { addToCache(it) }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // BRANCH OPERATIONS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     fun createBranch(branchName: String, fromBranch: String = _currentBranch.value) {
         viewModelScope.launch {
             _isLoading.value = true
             
+            android.util.Log.d("CreatorViewModel", "🌿 Creating branch: $branchName from $fromBranch")
+            
             gitHubClient.getBranch(fromBranch)
                 .onSuccess { branch ->
                     _error.value = "Branch creation via API requires refs endpoint (TODO)"
+                    android.util.Log.w("CreatorViewModel", "⚠️  Branch creation not implemented")
                 }
                 .onFailure { e ->
                     _error.value = "Failed: ${e.message}"
+                    android.util.Log.e("CreatorViewModel", "❌ Failed to create branch", e)
                 }
             
             _isLoading.value = false
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
     // HELPERS
-    // ═══════════════════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════════════
 
     fun clearError() {
         _error.value = null
