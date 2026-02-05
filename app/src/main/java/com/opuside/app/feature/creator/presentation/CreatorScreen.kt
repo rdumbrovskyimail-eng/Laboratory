@@ -16,7 +16,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.git.ConflictResolverDialog
 import com.opuside.app.core.git.ConflictResult
-import com.opuside.app.core.git.ConflictStrategy
 import com.opuside.app.core.network.github.model.GitHubContent
 import com.opuside.app.core.ui.components.VirtualizedCodeEditor
 import com.opuside.app.core.util.detectLanguage
@@ -39,10 +38,6 @@ fun CreatorScreen(
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showCommitDialog by remember { mutableStateOf(false) }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // DIALOGS
-    // ═══════════════════════════════════════════════════════════════════════════
-
     if (showNewFileDialog) {
         NewFileDialog(
             onDismiss = { showNewFileDialog = false },
@@ -63,7 +58,6 @@ fun CreatorScreen(
         )
     }
 
-    // Git Conflict Dialog
     conflictState?.let { conflict ->
         if (conflict is ConflictResult.Conflict) {
             ConflictResolverDialog(
@@ -76,12 +70,7 @@ fun CreatorScreen(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // MAIN UI
-    // ═══════════════════════════════════════════════════════════════════════════
-
     Column(modifier = Modifier.fillMaxSize()) {
-        // TOP BAR
         TopBar(
             path = currentPath,
             canGoBack = canGoBack,
@@ -92,7 +81,6 @@ fun CreatorScreen(
             onCloseFile = viewModel::closeFile
         )
 
-        // Error banner
         error?.let {
             ErrorBanner(
                 message = it,
@@ -100,9 +88,7 @@ fun CreatorScreen(
             )
         }
 
-        // CONTENT
         if (selectedFile != null) {
-            // EDITOR MODE - использует новый VirtualizedCodeEditor
             EditorMode(
                 file = selectedFile!!,
                 content = fileContent,
@@ -114,7 +100,6 @@ fun CreatorScreen(
                 modifier = Modifier.weight(1f)
             )
         } else {
-            // FILE BROWSER MODE
             if (isLoading) {
                 LoadingState()
             } else {
@@ -129,10 +114,6 @@ fun CreatorScreen(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TOP BAR
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun TopBar(
@@ -152,7 +133,6 @@ private fun TopBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (selectedFile != null) {
-                // File editor mode
                 IconButton(onClick = onCloseFile) {
                     Icon(Icons.Default.Close, "Close file")
                 }
@@ -162,14 +142,11 @@ private fun TopBar(
                     modifier = Modifier.weight(1f)
                 )
             } else {
-                // File browser mode
                 if (canGoBack) {
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
                 }
-
-                // Breadcrumb path
                 Row(
                     modifier = Modifier
                         .weight(1f)
@@ -189,7 +166,6 @@ private fun TopBar(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-
                 IconButton(onClick = onRefresh) {
                     Icon(Icons.Default.Refresh, "Refresh")
                 }
@@ -201,22 +177,13 @@ private fun TopBar(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// ERROR BANNER
-// ═══════════════════════════════════════════════════════════════════════════════
-
 @Composable
-private fun ErrorBanner(
-    message: String,
-    onDismiss: () -> Unit
-) {
+private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer
-        )
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
     ) {
         Row(
             modifier = Modifier.padding(12.dp),
@@ -246,33 +213,18 @@ private fun ErrorBanner(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// LOADING STATE
-// ═══════════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun LoadingState() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             CircularProgressIndicator()
-            Text(
-                text = "Loading files...",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Text("Loading files...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// FILE BROWSER
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun FileBrowser(
@@ -292,19 +244,10 @@ private fun FileBrowser(
             contentPadding = PaddingValues(vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(
-                items = contents,
-                key = { it.path }
-            ) { item ->
+            items(items = contents, key = { it.path }) { item ->
                 FileItem(
                     content = item,
-                    onClick = {
-                        if (item.type == "dir") {
-                            onFolderClick(item.path)
-                        } else {
-                            onFileClick(item)
-                        }
-                    },
+                    onClick = { if (item.type == "dir") onFolderClick(item.path) else onFileClick(item) },
                     onAddToCache = { onAddToCache(item) }
                 )
             }
@@ -314,95 +257,48 @@ private fun FileBrowser(
 
 @Composable
 private fun EmptyFolderState(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(
-                imageVector = Icons.Default.FolderOpen,
-                contentDescription = null,
-                modifier = Modifier.size(64.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-            )
-            Text(
-                text = "Empty folder",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Icon(Icons.Default.FolderOpen, null, Modifier.size(64.dp), MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+            Text("Empty folder", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
 
 @Composable
-private fun FileItem(
-    content: GitHubContent,
-    onClick: () -> Unit,
-    onAddToCache: () -> Unit
-) {
+private fun FileItem(content: GitHubContent, onClick: () -> Unit, onAddToCache: () -> Unit) {
     val isDir = content.type == "dir"
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onClick
-    ) {
-        Row(
-            modifier = Modifier.padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+    Card(modifier = Modifier.fillMaxWidth(), onClick = onClick) {
+        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = if (isDir) Icons.Default.Folder else Icons.Default.Description,
                 contentDescription = null,
-                tint = if (isDir) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
+                tint = if (isDir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(24.dp)
             )
-
             Spacer(Modifier.width(12.dp))
-
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = content.name,
-                    style = MaterialTheme.typography.bodyLarge
-                )
+                Text(content.name, style = MaterialTheme.typography.bodyLarge)
                 if (!isDir) {
                     Text(
-                        text = formatFileSize(content.size),
+                        formatFileSize(content.size),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-
             if (!isDir) {
                 IconButton(onClick = onAddToCache) {
-                    Icon(
-                        imageVector = Icons.Default.AddCircleOutline,
-                        contentDescription = "Add to cache",
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
+                    Icon(Icons.Default.AddCircleOutline, "Add to cache", tint = MaterialTheme.colorScheme.secondary)
                 }
             }
-
-            Icon(
-                imageVector = Icons.Default.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
-            )
+            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// EDITOR MODE - ОБНОВЛЕНО с VirtualizedCodeEditor
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun EditorMode(
@@ -416,7 +312,6 @@ private fun EditorMode(
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
-        // Editor toolbar
         EditorToolbar(
             language = detectLanguage(file.name),
             hasChanges = hasChanges,
@@ -425,20 +320,20 @@ private fun EditorMode(
             onAddToCache = onAddToCache
         )
 
-        // ✅ НОВЫЙ VirtualizedCodeEditor вместо старого CodeEditor
-        VirtualizedCodeEditor(
-            content = content,
-            onContentChange = onContentChange,
-            language = detectLanguage(file.name),
-            modifier = Modifier.fillMaxSize(),
-            readOnly = false,
-            showLineNumbers = true,
-            fontSize = 14,
-            onCursorPositionChanged = { line, column ->
-                // Опционально: можно показывать позицию курсора в статус-баре
-                // Пока игнорируем, но можно добавить в будущем
-            }
-        )
+        // ✅ ВАЖНОЕ ИСПРАВЛЕНИЕ: key(file.path)
+        // Заставляет редактор пересоздаваться при смене файла,
+        // чтобы текст нового файла загружался корректно.
+        key(file.path) {
+            VirtualizedCodeEditor(
+                content = content,
+                onContentChange = onContentChange,
+                language = detectLanguage(file.name),
+                modifier = Modifier.fillMaxSize(),
+                readOnly = false,
+                showLineNumbers = true,
+                fontSize = 14
+            )
+        }
     }
 }
 
@@ -458,51 +353,26 @@ private fun EditorToolbar(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Language badge
-            Surface(
-                shape = MaterialTheme.shapes.small,
-                color = MaterialTheme.colorScheme.primaryContainer
-            ) {
+            Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.primaryContainer) {
                 Text(
-                    text = language.uppercase(),
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    language.uppercase(),
+                    Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
-
             Spacer(Modifier.weight(1f))
-
-            // Add to cache button
             TextButton(onClick = onAddToCache) {
-                Icon(
-                    imageVector = Icons.Default.AddCircleOutline,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
+                Icon(Icons.Default.AddCircleOutline, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("Add to Cache")
             }
-
             Spacer(Modifier.width(8.dp))
-
-            // Save/Commit button
-            Button(
-                onClick = onSave,
-                enabled = hasChanges && !isSaving
-            ) {
+            Button(onClick = onSave, enabled = hasChanges && !isSaving) {
                 if (isSaving) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                 } else {
-                    Icon(
-                        imageVector = Icons.Default.Save,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Icon(Icons.Default.Save, null, Modifier.size(18.dp))
                 }
                 Spacer(Modifier.width(4.dp))
                 Text(if (hasChanges) "Commit" else "No changes")
@@ -511,17 +381,9 @@ private fun EditorToolbar(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// DIALOGS
-// ═══════════════════════════════════════════════════════════════════════════════
-
 @Composable
-private fun NewFileDialog(
-    onDismiss: () -> Unit,
-    onCreate: (String, String) -> Unit
-) {
+private fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
     var fileName by remember { mutableStateOf("") }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create New File") },
@@ -536,28 +398,15 @@ private fun NewFileDialog(
             )
         },
         confirmButton = {
-            TextButton(
-                onClick = { onCreate(fileName, "") },
-                enabled = fileName.isNotBlank()
-            ) {
-                Text("Create")
-            }
+            TextButton(onClick = { onCreate(fileName, "") }, enabled = fileName.isNotBlank()) { Text("Create") }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
 @Composable
-private fun CommitDialog(
-    onDismiss: () -> Unit,
-    onCommit: (String) -> Unit
-) {
+private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
     var message by remember { mutableStateOf("") }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Commit Changes") },
@@ -572,23 +421,11 @@ private fun CommitDialog(
             )
         },
         confirmButton = {
-            TextButton(
-                onClick = { onCommit(message.ifBlank { "Update file" }) }
-            ) {
-                Text("Commit")
-            }
+            TextButton(onClick = { onCommit(message.ifBlank { "Update file" }) }) { Text("Commit") }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════════════════════════
 
 private fun formatFileSize(bytes: Int): String = when {
     bytes < 1024 -> "$bytes B"
