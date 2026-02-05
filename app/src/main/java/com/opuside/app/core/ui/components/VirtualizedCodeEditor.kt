@@ -10,7 +10,6 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -36,7 +35,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.style.TextDirection  // NEW IMPORT
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,20 +43,6 @@ import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 
-/**
- * ✅ VirtualizedCodeEditor - Production-ready код-редактор для Android
- * 
- * Особенности:
- * - ✅ Правильное направление текста (LTR)
- * - ✅ Видимый курсор в нужном месте
- * - ✅ Подсветка синтаксиса
- * - ✅ Undo/Redo (Ctrl+Z / Ctrl+Shift+Z)
- * - ✅ Tab = 4 пробела
- * - ✅ Нумерация строк
- * - ✅ Виртуализация через LazyColumn
- * - ✅ Безопасный скролл без крашей
- * - ✅ Поддержка больших файлов
- */
 @Composable
 fun VirtualizedCodeEditor(
     content: String,
@@ -69,11 +54,28 @@ fun VirtualizedCodeEditor(
     fontSize: Int = 14,
     onCursorPositionChanged: ((line: Int, column: Int) -> Unit)? = null
 ) {
-    // =================== STATE ===================
-    
-    var textFieldValue by remember(content) {
+    // =================== STATE FIX (ИСПРАВЛЕНИЕ) ===================
+
+    // 1. Инициализируем стейт ОДИН раз. Убрали 'content' из ключей remember.
+    var textFieldValue by remember {
         mutableStateOf(TextFieldValue(content))
     }
+
+    // 2. Слушаем внешние изменения (Undo/Redo или загрузка файла),
+    // но игнорируем, если текст совпадает (чтобы не сбрасывать курсор при вводе)
+    LaunchedEffect(content) {
+        if (textFieldValue.text != content) {
+            // Пытаемся сохранить курсор в безопасных пределах или ставим в конец
+            val newSelection = if (textFieldValue.selection.start <= content.length) {
+                textFieldValue.selection
+            } else {
+                TextRange(content.length)
+            }
+            textFieldValue = TextFieldValue(text = content, selection = newSelection)
+        }
+    }
+
+    // =================== LOGIC ===================
 
     val lines = remember(textFieldValue.text) {
         val result = textFieldValue.text.lines()
@@ -84,8 +86,6 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // =================== SYNTAX HIGHLIGHTING ===================
-    
     val highlightedLines by produceState(
         initialValue = lines.map { AnnotatedString(it) },
         key1 = lines.hashCode(),
@@ -102,12 +102,10 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // =================== CURSOR POSITION ===================
-    
     val cursorLine = remember(textFieldValue.selection.start, textFieldValue.text) {
         textFieldValue.text.take(textFieldValue.selection.start).count { it == '\n' }
     }
-    
+
     val cursorColumn = remember(textFieldValue.selection.start, textFieldValue.text) {
         val beforeCursor = textFieldValue.text.take(textFieldValue.selection.start)
         beforeCursor.length - (beforeCursor.lastIndexOf('\n') + 1)
@@ -117,102 +115,73 @@ fun VirtualizedCodeEditor(
         onCursorPositionChanged?.invoke(cursorLine + 1, cursorColumn)
     }
 
-    // =================== CONTENT CHANGE ===================
-    
     LaunchedEffect(textFieldValue.text) {
         if (textFieldValue.text != content) {
             onContentChange(textFieldValue.text)
         }
     }
 
-    // =================== UNDO/REDO ===================
-    
     val undoRedoManager = remember { UndoRedoManager() }
-    
+
     LaunchedEffect(textFieldValue.text) {
-        delay(500) // Debounce для производительности
+        delay(500)
         undoRedoManager.recordState(textFieldValue)
     }
 
-    // =================== SCROLL STATE ===================
-    
     val listState = rememberLazyListState()
     val focusRequester = remember { FocusRequester() }
     var isFocused by remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
 
-    // =================== AUTO-SCROLL TO CURSOR ===================
-    
     LaunchedEffect(cursorLine) {
-        // Ждём пока LazyColumn полностью готов
         snapshotFlow { listState.layoutInfo.totalItemsCount > 0 }
             .first { it }
-        
+
         if (cursorLine in 0 until lines.size) {
-            delay(50) // Минимальная задержка для стабильности
-            
+            delay(50)
             try {
                 val targetIndex = (cursorLine - 5).coerceAtLeast(0)
                 if (targetIndex < listState.layoutInfo.totalItemsCount) {
-                    listState.animateScrollToItem(
-                        index = targetIndex,
-                        scrollOffset = 0
-                    )
+                    listState.animateScrollToItem(index = targetIndex, scrollOffset = 0)
                 }
-            } catch (e: Exception) {
-                // Игнорируем ошибки скролла
-            }
+            } catch (e: Exception) { /* ignore */ }
         }
     }
 
-    // =================== KEYBOARD SHORTCUTS ===================
-    
     val keyboardHandler = Modifier.onKeyEvent { event ->
         if (event.type != KeyEventType.KeyDown || readOnly) return@onKeyEvent false
 
         when {
-            // Ctrl+Z - Undo
             event.isCtrlPressed && event.key == Key.Z && !event.isShiftPressed -> {
                 undoRedoManager.undo()?.let { textFieldValue = it }
                 true
             }
-            
-            // Ctrl+Shift+Z или Ctrl+Y - Redo
             (event.isCtrlPressed && event.isShiftPressed && event.key == Key.Z) ||
             (event.isCtrlPressed && event.key == Key.Y) -> {
                 undoRedoManager.redo()?.let { textFieldValue = it }
                 true
             }
-            
-            // Tab - 4 пробела
             event.key == Key.Tab -> {
                 val selection = textFieldValue.selection
                 val newText = textFieldValue.text.substring(0, selection.start) +
-                              "    " +
-                              textFieldValue.text.substring(selection.end)
+                        "    " +
+                        textFieldValue.text.substring(selection.end)
                 textFieldValue = TextFieldValue(
                     text = newText,
                     selection = TextRange(selection.start + 4)
                 )
                 true
             }
-            
             else -> false
         }
     }
 
-    // =================== UI LAYOUT ===================
-    
-    // КРИТИЧНО: Принудительно устанавливаем LTR для всего редактора
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Surface(
             modifier = modifier.then(keyboardHandler),
             color = EditorTheme.backgroundColor
         ) {
             Row(modifier = Modifier.fillMaxSize()) {
-                
-                // =================== LINE NUMBERS ===================
-                
                 if (showLineNumbers) {
                     LineNumbers(
                         lines = lines,
@@ -223,15 +192,11 @@ fun VirtualizedCodeEditor(
                     VerticalDivider(color = EditorTheme.dividerColor)
                 }
 
-                // =================== CODE AREA ===================
-                
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    // ========== VISUAL LAYER (подсветка синтаксиса) ==========
-                    
                     LazyColumn(
                         state = listState,
                         modifier = Modifier
@@ -246,52 +211,39 @@ fun VirtualizedCodeEditor(
                         ) { index, line ->
                             CodeLine(
                                 line = line,
-                                highlightedText = highlightedLines.getOrNull(index) 
-                                    ?: AnnotatedString(line),
+                                highlightedText = highlightedLines.getOrNull(index) ?: AnnotatedString(line),
                                 isCurrentLine = index == cursorLine,
                                 fontSize = fontSize
                             )
                         }
                     }
 
-                    // ========== INPUT LAYER (невидимый TextField с курсором) ==========
-                    
                     if (!readOnly) {
                         CustomLTRTextField(
                             value = textFieldValue,
-                            onValueChange = { newValue -> 
-                                textFieldValue = newValue 
-                            },
+                            onValueChange = { newValue -> textFieldValue = newValue },
                             modifier = Modifier
                                 .fillMaxSize()
                                 .horizontalScroll(horizontalScrollState)
                                 .padding(horizontal = 8.dp)
                                 .focusRequester(focusRequester)
-                                .onFocusChanged { focusState ->
-                                    isFocused = focusState.isFocused
-                                }
+                                .onFocusChanged { isFocused = it.isFocused }
                                 .pointerInput(Unit) {
                                     detectTapGestures {
-                                        try {
-                                            focusRequester.requestFocus()
-                                        } catch (_: IllegalStateException) {
-                                            // Layout ещё не готов - игнорируем
-                                        }
+                                        try { focusRequester.requestFocus() } catch (_: Exception) {}
                                     }
                                 },
                             textStyle = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = fontSize.sp,
-                                color = Color.Transparent, // Текст невидим
+                                color = Color.Transparent,
                                 lineHeight = (fontSize * 1.5).sp,
-                                textDirection = TextDirection.Ltr  // NEW: Force LTR
+                                textDirection = TextDirection.Ltr
                             ),
                             cursorColor = EditorTheme.cursorColor
                         )
                     }
 
-                    // ========== SCROLLBAR (для больших файлов) ==========
-                    
                     if (lines.size > 100) {
                         ScrollbarIndicator(
                             listState = listState,
@@ -305,14 +257,6 @@ fun VirtualizedCodeEditor(
     }
 }
 
-// ==================================================================================
-// =================== CUSTOM LTR TEXT FIELD (главная магия) ======================
-// ==================================================================================
-
-/**
- * Кастомный TextField с принудительным LTR и ручным рендерингом курсора
- * Это решает проблему RTL в стандартном BasicTextField
- */
 @Composable
 private fun CustomLTRTextField(
     value: TextFieldValue,
@@ -324,15 +268,12 @@ private fun CustomLTRTextField(
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var isCursorVisible by remember { mutableStateOf(true) }
 
-    // Мигание курсора (500ms on/off)
     LaunchedEffect(Unit) {
         while (true) {
             delay(500)
             isCursorVisible = !isCursorVisible
         }
     }
-
-    // Сброс мигания при изменении позиции курсора
     LaunchedEffect(value.selection.start) {
         isCursorVisible = true
     }
@@ -341,28 +282,23 @@ private fun CustomLTRTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = modifier.drawBehind {
-            // Рисуем курсор вручную для полного контроля
             if (isCursorVisible) {
                 textLayoutResult?.let { layout ->
                     val cursorPos = value.selection.start.coerceIn(0, value.text.length)
-                    
                     try {
                         val cursorRect = layout.getCursorRect(cursorPos)
-                        
                         drawLine(
                             color = cursorColor,
                             start = Offset(cursorRect.left, cursorRect.top),
                             end = Offset(cursorRect.left, cursorRect.bottom),
                             strokeWidth = 2.dp.toPx()
                         )
-                    } catch (e: Exception) {
-                        // Игнорируем ошибки рендеринга курсора
-                    }
+                    } catch (_: Exception) {}
                 }
             }
         },
         textStyle = textStyle,
-        cursorBrush = SolidColor(Color.Transparent), // Скрываем стандартный курсор
+        cursorBrush = SolidColor(Color.Transparent),
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.None,
             autoCorrect = false,
@@ -373,19 +309,9 @@ private fun CustomLTRTextField(
     )
 }
 
-// ==================================================================================
-// ========================== ВСПОМОГАТЕЛЬНЫЕ КОМПОНЕНТЫ ============================
-// ==================================================================================
-
 @Composable
-private fun LineNumbers(
-    lines: List<String>,
-    currentLine: Int,
-    listState: LazyListState,
-    fontSize: Int
-) {
+private fun LineNumbers(lines: List<String>, currentLine: Int, listState: LazyListState, fontSize: Int) {
     val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
-    
     LazyColumn(
         state = listState,
         modifier = Modifier
@@ -394,25 +320,14 @@ private fun LineNumbers(
             .padding(horizontal = 8.dp),
         userScrollEnabled = false
     ) {
-        itemsIndexed(
-            items = lines,
-            key = { index, line -> "$index-${line.hashCode()}" }
-        ) { index, _ ->
-            Box(
-                modifier = Modifier
-                    .height(lineHeight)
-                    .fillMaxWidth(),
-                contentAlignment = Alignment.CenterEnd
-            ) {
+        itemsIndexed(lines) { index, _ ->
+            Box(modifier = Modifier.height(lineHeight).fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                 Text(
                     text = "${index + 1}",
                     style = TextStyle(
                         fontFamily = FontFamily.Monospace,
                         fontSize = fontSize.sp,
-                        color = if (index == currentLine) 
-                            EditorTheme.currentLineNumberColor 
-                        else 
-                            EditorTheme.lineNumberColor
+                        color = if (index == currentLine) EditorTheme.currentLineNumberColor else EditorTheme.lineNumberColor
                     )
                 )
             }
@@ -421,22 +336,13 @@ private fun LineNumbers(
 }
 
 @Composable
-private fun CodeLine(
-    line: String,
-    highlightedText: AnnotatedString,
-    isCurrentLine: Boolean,
-    fontSize: Int
-) {
+private fun CodeLine(line: String, highlightedText: AnnotatedString, isCurrentLine: Boolean, fontSize: Int) {
     val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
-    
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(lineHeight)
-            .background(
-                if (isCurrentLine) EditorTheme.currentLineBackground 
-                else Color.Transparent
-            )
+            .background(if (isCurrentLine) EditorTheme.currentLineBackground else Color.Transparent)
     ) {
         Text(
             text = highlightedText,
@@ -444,7 +350,7 @@ private fun CodeLine(
                 fontFamily = FontFamily.Monospace,
                 fontSize = fontSize.sp,
                 lineHeight = (fontSize * 1.5).sp,
-                textDirection = TextDirection.Ltr  // NEW: Force LTR
+                textDirection = TextDirection.Ltr
             ),
             modifier = Modifier.align(Alignment.CenterStart)
         )
@@ -452,80 +358,35 @@ private fun CodeLine(
 }
 
 @Composable
-private fun ScrollbarIndicator(
-    listState: LazyListState,
-    totalItems: Int,
-    modifier: Modifier = Modifier
-) {
-    val firstVisibleItem by remember {
-        derivedStateOf { listState.firstVisibleItemIndex }
-    }
-
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(4.dp)
-            .background(Color.Transparent)
-    ) {
+private fun ScrollbarIndicator(listState: LazyListState, totalItems: Int, modifier: Modifier = Modifier) {
+    val firstVisibleItem by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+    Box(modifier = modifier.fillMaxHeight().width(4.dp).background(Color.Transparent)) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .fillMaxHeight(0.1f)
                 .align(Alignment.TopEnd)
                 .offset(y = ((firstVisibleItem.toFloat() / totalItems) * 400).dp)
-                .background(
-                    color = EditorTheme.scrollbarColor,
-                    shape = MaterialTheme.shapes.small
-                )
+                .background(EditorTheme.scrollbarColor, MaterialTheme.shapes.small)
         )
     }
 }
 
 @Composable
-private fun VerticalDivider(
-    modifier: Modifier = Modifier,
-    color: Color = Color.Gray
-) {
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(1.dp)
-            .background(color)
-    )
+private fun VerticalDivider(modifier: Modifier = Modifier, color: Color = Color.Gray) {
+    Box(modifier = modifier.fillMaxHeight().width(1.dp).background(color))
 }
 
-// ==================================================================================
-// ============================ UNDO/REDO MANAGER ===================================
-// ==================================================================================
-
 private class UndoRedoManager {
-    private data class LightweightState(
-        val text: String,
-        val selectionStart: Int,
-        val selectionEnd: Int
-    )
-    
+    private data class LightweightState(val text: String, val selectionStart: Int, val selectionEnd: Int)
     private val history = mutableListOf<LightweightState>()
     private var currentIndex = -1
     private val maxHistorySize = 50
 
     fun recordState(value: TextFieldValue) {
-        // Удаляем всё после текущей позиции (если был undo)
-        if (currentIndex < history.size - 1) {
-            history.subList(currentIndex + 1, history.size).clear()
-        }
-        
-        // Добавляем новое состояние
-        history.add(
-            LightweightState(
-                text = value.text,
-                selectionStart = value.selection.start,
-                selectionEnd = value.selection.end
-            )
-        )
+        if (currentIndex < history.size - 1) history.subList(currentIndex + 1, history.size).clear()
+        history.add(LightweightState(value.text, value.selection.start, value.selection.end))
         currentIndex++
-        
-        // Ограничиваем размер истории
         if (history.size > maxHistorySize) {
             history.removeAt(0)
             currentIndex--
@@ -536,11 +397,7 @@ private class UndoRedoManager {
         if (currentIndex > 0) {
             currentIndex--
             val state = history[currentIndex]
-            
-            return TextFieldValue(
-                text = state.text,
-                selection = TextRange(state.selectionStart, state.selectionEnd)
-            )
+            return TextFieldValue(state.text, TextRange(state.selectionStart, state.selectionEnd))
         }
         return null
     }
@@ -549,19 +406,11 @@ private class UndoRedoManager {
         if (currentIndex < history.size - 1) {
             currentIndex++
             val state = history[currentIndex]
-            
-            return TextFieldValue(
-                text = state.text,
-                selection = TextRange(state.selectionStart, state.selectionEnd)
-            )
+            return TextFieldValue(state.text, TextRange(state.selectionStart, state.selectionEnd))
         }
         return null
     }
 }
-
-// ==================================================================================
-// ================================= THEME ==========================================
-// ==================================================================================
 
 private object EditorTheme {
     val backgroundColor = Color(0xFF1E1E1E)
