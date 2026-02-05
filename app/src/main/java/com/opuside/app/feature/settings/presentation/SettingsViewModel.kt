@@ -22,47 +22,29 @@ sealed class ConnectionStatus {
 }
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026 стандарты):
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-05):
  * 
- * ПРОБЛЕМА #1: Бесконечный .collect {} в loadSettings()
+ * ПРОБЛЕМА #1: GitHub Token пропадает после перезапуска
  * ────────────────────────────────────────────────────────
- * БЫЛО:
- * ```kotlin
- * private fun loadSettings() {
- *     viewModelScope.launch {
- *         gitHubConfig.collect { config ->  // ← НИКОГДА не завершается!
- *             _githubOwnerInput.value = config.owner
- *         }
- *     }
- *     viewModelScope.launch { /* Этот код НИКОГДА не выполнится */ }
- * }
- * ```
- * 
- * ПОСЛЕДСТВИЯ:
- * - После Save данные перезаписывались пустыми значениями из DataStore
- * - 4 разных coroutine конкурировали за обновление UI
- * - Memory leak при rotation
- * - Поля очищались после сохранения
+ * ПРИЧИНА: 
+ * - loadSettings() загружал токен из config.token
+ * - Но config.token содержит зашифрованный токен, который расшифровывается асинхронно
+ * - При первой загрузке расшифровка не успевает → токен пустой
  * 
  * РЕШЕНИЕ:
- * ────────
- * - Используем .first() для one-shot загрузки
- * - Инициализация ОДИН РАЗ в init {}
- * - Нет бесконечных collect {}
- * - После Save поля НЕ перезаписываются
+ * - Загружаем токен НАПРЯМУЮ из secureSettings.getGitHubToken().first()
+ * - Используем combine() для синхронной загрузки всех настроек
+ * - Добавлено логирование для диагностики
  * 
- * ПРОБЛЕМА #2: saveGitHubSettings() вызывается внутри saveAllSettings()
- * ─────────────────────────────────────────────────────────────────────
- * БЫЛО:
- * ```kotlin
- * fun saveAllSettings() {
- *     saveGitHubSettings()  // ← suspend fun в non-suspend context!
- * }
- * ```
+ * ПРОБЛЕМА #2: Настройки не загружаются автоматически
+ * ────────────────────────────────────────────────────────
+ * ПРИЧИНА:
+ * - loadSettings() вызывается в init {}, но UI не обновляется
+ * - StateFlow не триггерится если значение то же самое
  * 
  * РЕШЕНИЕ:
- * - Дублируем логику сохранения в saveAllSettings()
- * - Каждая функция автономна
+ * - Используем SharingStarted.Eagerly для немедленной подписки
+ * - Добавлена явная загрузка в init {} с логированием
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -146,60 +128,93 @@ class SettingsViewModel @Inject constructor(
     // ═════════════════════════════════════════════════════════════════════════
 
     init {
+        android.util.Log.d("SettingsViewModel", "🚀 Initializing SettingsViewModel...")
         loadSettings()
     }
 
     /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Правильная инициализация БЕЗ бесконечных collect {}
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Правильная загрузка ВСЕХ настроек
      * 
-     * БЫЛО:
+     * ПРОБЛЕМА:
      * ```kotlin
-     * private fun loadSettings() {
-     *     viewModelScope.launch {
-     *         gitHubConfig.collect { config ->  // ← БЕСКОНЕЧНЫЙ ЦИКЛ
-     *             _githubOwnerInput.value = config.owner
-     *         }
-     *     }
-     *     viewModelScope.launch { /* НИКОГДА не выполнится */ }
-     * }
+     * val config = appSettings.gitHubConfig.first()
+     * _githubTokenInput.value = config.token  // ← НЕПРАВИЛЬНО! Токен еще расшифровывается
      * ```
      * 
-     * СТАЛО:
+     * РЕШЕНИЕ:
      * ```kotlin
-     * private fun loadSettings() {
-     *     viewModelScope.launch {
-     *         val config = appSettings.gitHubConfig.first()  // ← ONE-SHOT
-     *         _githubOwnerInput.value = config.owner
-     *     }
-     * }
+     * val token = secureSettings.getGitHubToken().first()  // ← ПРАВИЛЬНО! Прямая загрузка
+     * _githubTokenInput.value = token
      * ```
      */
     private fun loadSettings() {
         viewModelScope.launch {
-            // ✅ ONE-SHOT загрузка настроек (не бесконечный collect!)
+            android.util.Log.d("SettingsViewModel", "📥 Loading settings from DataStore...")
             
-            // GitHub config
-            val config = appSettings.gitHubConfig.first()
-            _githubOwnerInput.value = config.owner
-            _githubRepoInput.value = config.repo
-            _githubBranchInput.value = config.branch
-            _githubTokenInput.value = config.token
-            
-            // Anthropic key
-            val apiKey = appSettings.anthropicApiKey.first()
-            _anthropicKeyInput.value = apiKey
-            
-            // Claude model
-            val model = appSettings.claudeModel.first()
-            _claudeModelInput.value = model
-            
-            // Cache settings
-            val cacheConfig = appSettings.cacheConfig.first()
-            _cacheTimeoutInput.value = cacheConfig.timeoutMinutes
-            _maxCacheFilesInput.value = cacheConfig.maxFiles
-            _autoClearCacheInput.value = cacheConfig.autoClear
+            try {
+                // ✅ ШАБЛОН: Загружаем все настройки параллельно через combine
+                combine(
+                    appSettings.gitHubConfig,
+                    secureSettings.getGitHubToken(),          // ✅ Прямая загрузка токена
+                    secureSettings.getAnthropicApiKey(),      // ✅ Прямая загрузка API ключа
+                    appSettings.claudeModel,
+                    appSettings.cacheConfig
+                ) { config, githubToken, anthropicKey, model, cacheConfig ->
+                    SettingsData(
+                        owner = config.owner,
+                        repo = config.repo,
+                        branch = config.branch,
+                        githubToken = githubToken,            // ✅ Расшифрованный токен
+                        anthropicKey = anthropicKey,          // ✅ Расшифрованный ключ
+                        claudeModel = model,
+                        cacheTimeout = cacheConfig.timeoutMinutes,
+                        maxFiles = cacheConfig.maxFiles,
+                        autoClear = cacheConfig.autoClear
+                    )
+                }.first().let { data ->
+                    // ✅ Обновляем UI состояние
+                    _githubOwnerInput.value = data.owner
+                    _githubRepoInput.value = data.repo
+                    _githubBranchInput.value = data.branch
+                    _githubTokenInput.value = data.githubToken
+                    _anthropicKeyInput.value = data.anthropicKey
+                    _claudeModelInput.value = data.claudeModel
+                    _cacheTimeoutInput.value = data.cacheTimeout
+                    _maxCacheFilesInput.value = data.maxFiles
+                    _autoClearCacheInput.value = data.autoClear
+                    
+                    // ✅ Диагностическое логирование
+                    android.util.Log.d("SettingsViewModel", "✅ Settings loaded successfully:")
+                    android.util.Log.d("SettingsViewModel", "   Owner: ${data.owner}")
+                    android.util.Log.d("SettingsViewModel", "   Repo: ${data.repo}")
+                    android.util.Log.d("SettingsViewModel", "   Branch: ${data.branch}")
+                    android.util.Log.d("SettingsViewModel", "   GitHub Token: ${if (data.githubToken.isNotEmpty()) "[SET (${data.githubToken.take(10)}...)]" else "[EMPTY]"}")
+                    android.util.Log.d("SettingsViewModel", "   Anthropic Key: ${if (data.anthropicKey.isNotEmpty()) "[SET (${data.anthropicKey.take(10)}...)]" else "[EMPTY]"}")
+                    android.util.Log.d("SettingsViewModel", "   Model: ${data.claudeModel}")
+                    android.util.Log.d("SettingsViewModel", "   Cache: ${data.cacheTimeout}min, ${data.maxFiles} files, autoClear=${data.autoClear}")
+                }
+                
+            } catch (e: Exception) {
+                android.util.Log.e("SettingsViewModel", "❌ Failed to load settings", e)
+                _message.value = "⚠️ Failed to load settings: ${e.message}"
+            }
         }
     }
+
+    /**
+     * ✅ Data class для атомарной загрузки всех настроек
+     */
+    private data class SettingsData(
+        val owner: String,
+        val repo: String,
+        val branch: String,
+        val githubToken: String,
+        val anthropicKey: String,
+        val claudeModel: String,
+        val cacheTimeout: Int,
+        val maxFiles: Int,
+        val autoClear: Boolean
+    )
 
     // ═════════════════════════════════════════════════════════════════════════
     // UPDATE FUNCTIONS - GitHub
@@ -259,12 +274,15 @@ class SettingsViewModel @Inject constructor(
     fun saveGitHubSettings() {
         viewModelScope.launch {
             _isSaving.value = true
+            android.util.Log.d("SettingsViewModel", "💾 Saving GitHub settings...")
 
             try {
-                // Сохраняем токен (зашифрованно)
+                // ✅ Сохраняем токен (зашифрованно)
+                android.util.Log.d("SettingsViewModel", "   Encrypting GitHub token...")
                 secureSettings.setGitHubToken(_githubTokenInput.value)
                 
-                // Сохраняем owner/repo/branch (незашифрованно)
+                // ✅ Сохраняем owner/repo/branch (незашифрованно)
+                android.util.Log.d("SettingsViewModel", "   Saving config: ${_githubOwnerInput.value}/${_githubRepoInput.value}@${_githubBranchInput.value}")
                 secureSettings.setGitHubConfig(
                     owner = _githubOwnerInput.value,
                     repo = _githubRepoInput.value,
@@ -272,9 +290,11 @@ class SettingsViewModel @Inject constructor(
                 )
                 
                 _message.value = "✅ GitHub settings saved successfully"
+                android.util.Log.d("SettingsViewModel", "✅ GitHub settings saved successfully")
+                
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "Save failed", e)
+                android.util.Log.e("SettingsViewModel", "❌ Save failed", e)
             } finally {
                 _isSaving.value = false
             }
@@ -284,14 +304,16 @@ class SettingsViewModel @Inject constructor(
     fun saveAnthropicSettings(useBiometric: Boolean) {
         viewModelScope.launch {
             _isSaving.value = true
+            android.util.Log.d("SettingsViewModel", "💾 Saving Anthropic settings (biometric: $useBiometric)...")
 
             try {
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric)
                 appSettings.setClaudeModel(_claudeModelInput.value)
                 _message.value = "✅ Claude settings saved successfully"
+                android.util.Log.d("SettingsViewModel", "✅ Anthropic settings saved successfully")
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "Save failed", e)
+                android.util.Log.e("SettingsViewModel", "❌ Save failed", e)
             } finally {
                 _isSaving.value = false
             }
@@ -301,6 +323,7 @@ class SettingsViewModel @Inject constructor(
     fun saveCacheSettings() {
         viewModelScope.launch {
             _isSaving.value = true
+            android.util.Log.d("SettingsViewModel", "💾 Saving cache settings...")
 
             try {
                 appSettings.setCacheSettings(
@@ -309,9 +332,10 @@ class SettingsViewModel @Inject constructor(
                     autoClear = _autoClearCacheInput.value
                 )
                 _message.value = "✅ Cache settings saved successfully"
+                android.util.Log.d("SettingsViewModel", "✅ Cache settings saved successfully")
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "Save failed", e)
+                android.util.Log.e("SettingsViewModel", "❌ Save failed", e)
             } finally {
                 _isSaving.value = false
             }
@@ -320,16 +344,15 @@ class SettingsViewModel @Inject constructor(
 
     /**
      * ✅ ИСПРАВЛЕНО: Правильное сохранение всех настроек
-     * 
-     * ПРОБЛЕМА: suspend функции нельзя вызывать из non-suspend контекста
-     * РЕШЕНИЕ: Дублируем логику сохранения
      */
     fun saveAllSettings() {
         viewModelScope.launch {
             _isSaving.value = true
+            android.util.Log.d("SettingsViewModel", "💾 Saving ALL settings...")
 
             try {
                 // GitHub
+                android.util.Log.d("SettingsViewModel", "   Saving GitHub config...")
                 secureSettings.setGitHubToken(_githubTokenInput.value)
                 secureSettings.setGitHubConfig(
                     owner = _githubOwnerInput.value,
@@ -338,10 +361,12 @@ class SettingsViewModel @Inject constructor(
                 )
                 
                 // Anthropic
+                android.util.Log.d("SettingsViewModel", "   Saving Anthropic config...")
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, false)
                 appSettings.setClaudeModel(_claudeModelInput.value)
                 
                 // Cache
+                android.util.Log.d("SettingsViewModel", "   Saving cache config...")
                 appSettings.setCacheSettings(
                     timeoutMinutes = _cacheTimeoutInput.value,
                     maxFiles = _maxCacheFilesInput.value,
@@ -349,9 +374,11 @@ class SettingsViewModel @Inject constructor(
                 )
                 
                 _message.value = "✅ All settings saved successfully"
+                android.util.Log.d("SettingsViewModel", "✅ All settings saved successfully")
+                
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "Save all failed", e)
+                android.util.Log.e("SettingsViewModel", "❌ Save all failed", e)
             } finally {
                 _isSaving.value = false
             }
@@ -365,6 +392,7 @@ class SettingsViewModel @Inject constructor(
     fun testGitHubConnection() {
         viewModelScope.launch {
             _githubStatus.value = ConnectionStatus.Testing
+            android.util.Log.d("SettingsViewModel", "🔍 Testing GitHub connection...")
 
             try {
                 val result = gitHubClient.getRepository()
@@ -372,11 +400,14 @@ class SettingsViewModel @Inject constructor(
                 result.onSuccess { repo ->
                     _repoInfo.value = repo
                     _githubStatus.value = ConnectionStatus.Connected
+                    android.util.Log.d("SettingsViewModel", "✅ GitHub connected: ${repo.fullName}")
                 }.onFailure { e ->
                     _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
+                    android.util.Log.e("SettingsViewModel", "❌ GitHub connection failed", e)
                 }
             } catch (e: Exception) {
                 _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
+                android.util.Log.e("SettingsViewModel", "❌ GitHub connection exception", e)
             }
         }
     }
@@ -384,6 +415,7 @@ class SettingsViewModel @Inject constructor(
     fun testClaudeConnection() {
         viewModelScope.launch {
             _claudeStatus.value = ConnectionStatus.Testing
+            android.util.Log.d("SettingsViewModel", "🔍 Testing Claude connection...")
 
             try {
                 val result = claudeClient.sendMessage(
@@ -395,11 +427,14 @@ class SettingsViewModel @Inject constructor(
 
                 result.onSuccess {
                     _claudeStatus.value = ConnectionStatus.Connected
+                    android.util.Log.d("SettingsViewModel", "✅ Claude connected")
                 }.onFailure { e ->
                     _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
+                    android.util.Log.e("SettingsViewModel", "❌ Claude connection failed", e)
                 }
             } catch (e: Exception) {
                 _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
+                android.util.Log.e("SettingsViewModel", "❌ Claude connection exception", e)
             }
         }
     }
@@ -426,9 +461,9 @@ class SettingsViewModel @Inject constructor(
         _autoClearCacheInput.value = true
         _claudeModelInput.value = "claude-opus-4-5-20251101"
         _message.value = "⚠️ Settings reset to defaults (not saved)"
+        android.util.Log.d("SettingsViewModel", "♻️ Reset to defaults")
     }
 
     fun clearMessage() {
         _message.value = null
     }
-}
