@@ -10,16 +10,17 @@ import androidx.collection.LruCache
 
 object SyntaxHighlighter {
 
-    private val colorKeyword = Color(0xFF569CD6)
-    private val colorString = Color(0xFFCE9178)
-    private val colorNumber = Color(0xFFB5CEA8)
-    private val colorComment = Color(0xFF6A9955)
-    private val colorFunction = Color(0xFFDCDCAA)
-    private val colorType = Color(0xFF4EC9B0)
-    private val colorAnnotation = Color(0xFFD7BA7D)
-    private val colorTag = Color(0xFF569CD6)
-    private val colorAttribute = Color(0xFF9CDCFE)
-    private val colorDefault = Color(0xFFD4D4D4)
+    // ✅ ПРОБЛЕМА 9: Темные цвета для светлого фона
+    private val colorKeyword = Color(0xFF0000FF)          // Синий
+    private val colorString = Color(0xFF008000)           // Зеленый
+    private val colorNumber = Color(0xFFFF6600)           // Оранжевый
+    private val colorComment = Color(0xFF808080)          // Серый
+    private val colorFunction = Color(0xFF795E26)         // Коричневый
+    private val colorType = Color(0xFF267F99)             // Бирюзовый
+    private val colorAnnotation = Color(0xFFD7BA7D)       // Золотистый
+    private val colorTag = Color(0xFF0000FF)              // Синий (XML)
+    private val colorAttribute = Color(0xFF9C27B0)        // Фиолетовый (XML)
+    private val colorDefault = Color(0xFF000000)          // Черный
 
     private val kotlinKeywords = setOf(
         "fun", "val", "var", "class", "interface", "object", "enum", "sealed",
@@ -28,10 +29,14 @@ object SyntaxHighlighter {
         "by", "if", "else", "when", "while", "for", "do", "return", "break",
         "continue", "throw", "try", "catch", "finally", "import", "package",
         "as", "is", "in", "out", "true", "false", "null", "this", "super",
-        "suspend", "inline", "reified", "typealias", "constructor", "init"
+        "suspend", "inline", "reified", "typealias", "constructor", "init",
+        "where", "get", "set", "field", "it", "also", "apply", "let", "run",
+        "with", "takeIf", "takeUnless", "repeat", "TODO", "require", "check",
+        "error", "assert", "operator", "infix", "tailrec", "external", "actual",
+        "expect", "crossinline", "noinline", "vararg"
     )
 
-    private val cache = LruCache<Pair<String, String>, AnnotatedString>(100)
+    private val cache = LruCache<Pair<String, String>, AnnotatedString>(200)
 
     fun highlight(code: String, language: String): AnnotatedString {
         if (code.isEmpty()) return AnnotatedString("")
@@ -49,10 +54,12 @@ object SyntaxHighlighter {
         val result = try {
             when (language.lowercase()) {
                 "kotlin", "kt", "kts" -> highlightKotlin(code)
-                "java" -> highlightKotlin(code)
+                "java" -> highlightJava(code)
                 "xml" -> highlightXml(code)
                 "json" -> highlightJson(code)
                 "gradle" -> highlightKotlin(code)
+                "yaml", "yml" -> highlightYaml(code)
+                "properties" -> highlightProperties(code)
                 else -> buildAnnotatedString { 
                     append(code)
                     addStyle(SpanStyle(color = colorDefault), 0, code.length)
@@ -69,107 +76,236 @@ object SyntaxHighlighter {
         return result
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ ПРОБЛЕМА 5: УЛУЧШЕННАЯ ПОДСВЕТКА KOTLIN С КОНТЕКСТОМ
+    // ═══════════════════════════════════════════════════════════════════════════
+
     private fun highlightKotlin(code: String): AnnotatedString = buildAnnotatedString {
         append(code)
         addStyle(SpanStyle(color = colorDefault), 0, code.length)
         
+        val excludedRanges = ExcludedRanges()
+        
+        // ШАГ 1: Многострочные комментарии (высший приоритет)
         var i = 0
         while (i < code.length) {
-            when {
-                code.startsWith("/*", i) -> {
-                    val end = code.indexOf("*/", i + 2)
-                    val finalEnd = if (end == -1) code.length else end + 2
-                    addStyle(
-                        SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), 
-                        i, 
-                        finalEnd.coerceAtMost(code.length)
-                    )
-                    i = finalEnd
-                }
-                
-                code.startsWith("//", i) -> {
-                    val end = code.indexOf('\n', i)
-                    val finalEnd = if (end == -1) code.length else end
-                    addStyle(
-                        SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), 
-                        i, 
-                        finalEnd
-                    )
-                    i = finalEnd
-                }
-                
-                code.startsWith("\"\"\"", i) -> {
-                    val end = code.indexOf("\"\"\"", i + 3)
-                    val finalEnd = if (end == -1) code.length else end + 3
-                    addStyle(SpanStyle(color = colorString), i, finalEnd.coerceAtMost(code.length))
-                    i = finalEnd
-                }
-                
-                code[i] == '"' -> {
-                    var end = i + 1
-                    while (end < code.length && code[end] != '"') {
-                        if (code[end] == '\\' && end + 1 < code.length) end++
+            if (code.startsWith("/*", i)) {
+                val end = code.indexOf("*/", i + 2)
+                val finalEnd = if (end == -1) code.length else end + 2
+                addStyle(
+                    SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), 
+                    i, 
+                    finalEnd.coerceAtMost(code.length)
+                )
+                excludedRanges.add(i, finalEnd.coerceAtMost(code.length))
+                i = finalEnd
+            } else {
+                i++
+            }
+        }
+        
+        // ШАГ 2: Однострочные комментарии
+        i = 0
+        while (i < code.length) {
+            if (code.startsWith("//", i) && !excludedRanges.contains(i)) {
+                val end = code.indexOf('\n', i)
+                val finalEnd = if (end == -1) code.length else end
+                addStyle(
+                    SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), 
+                    i, 
+                    finalEnd
+                )
+                excludedRanges.add(i, finalEnd)
+                i = finalEnd
+            } else {
+                i++
+            }
+        }
+        
+        // ШАГ 3: Тройные кавычки (raw strings)
+        i = 0
+        while (i < code.length) {
+            if (code.startsWith("\"\"\"", i) && !excludedRanges.contains(i)) {
+                val end = code.indexOf("\"\"\"", i + 3)
+                val finalEnd = if (end == -1) code.length else end + 3
+                addStyle(SpanStyle(color = colorString), i, finalEnd.coerceAtMost(code.length))
+                excludedRanges.add(i, finalEnd.coerceAtMost(code.length))
+                i = finalEnd
+            } else {
+                i++
+            }
+        }
+        
+        // ШАГ 4: Обычные строки
+        i = 0
+        while (i < code.length) {
+            if (code[i] == '"' && !excludedRanges.contains(i)) {
+                var end = i + 1
+                while (end < code.length && !excludedRanges.contains(end)) {
+                    if (code[end] == '\\' && end + 1 < code.length) {
+                        end += 2
+                    } else if (code[end] == '"') {
+                        end++
+                        break
+                    } else {
                         end++
                     }
-                    if (end < code.length) end++
-                    addStyle(SpanStyle(color = colorString), i, end.coerceAtMost(code.length))
-                    i = end
                 }
-                
-                code[i] == '\'' -> {
-                    var end = i + 1
-                    while (end < code.length && code[end] != '\'') {
-                        if (code[end] == '\\' && end + 1 < code.length) end++
+                addStyle(SpanStyle(color = colorString), i, end.coerceAtMost(code.length))
+                excludedRanges.add(i, end.coerceAtMost(code.length))
+                i = end
+            } else {
+                i++
+            }
+        }
+        
+        // ШАГ 5: Символьные литералы
+        i = 0
+        while (i < code.length) {
+            if (code[i] == '\'' && !excludedRanges.contains(i)) {
+                var end = i + 1
+                while (end < code.length && !excludedRanges.contains(end)) {
+                    if (code[end] == '\\' && end + 1 < code.length) {
+                        end += 2
+                    } else if (code[end] == '\'') {
+                        end++
+                        break
+                    } else {
                         end++
                     }
-                    if (end < code.length) end++
-                    addStyle(SpanStyle(color = colorString), i, end.coerceAtMost(code.length))
-                    i = end
                 }
+                addStyle(SpanStyle(color = colorString), i, end.coerceAtMost(code.length))
+                excludedRanges.add(i, end.coerceAtMost(code.length))
+                i = end
+            } else {
+                i++
+            }
+        }
+        
+        // ШАГ 6: Аннотации (@Override, @Inject)
+        i = 0
+        while (i < code.length) {
+            if (code[i] == '@' && !excludedRanges.contains(i) && 
+                i + 1 < code.length && code[i + 1].isLetter()) {
+                val end = findWordEnd(code, i + 1)
+                addStyle(SpanStyle(color = colorAnnotation, fontWeight = FontWeight.Bold), i, end)
+                excludedRanges.add(i, end)
+                i = end
+            } else {
+                i++
+            }
+        }
+        
+        // ШАГ 7: Числа
+        i = 0
+        while (i < code.length) {
+            if (!excludedRanges.contains(i) && 
+                (code[i].isDigit() || (code[i] == '-' && i + 1 < code.length && code[i + 1].isDigit()))) {
+                val end = findNumberEnd(code, i)
+                addStyle(SpanStyle(color = colorNumber, fontWeight = FontWeight.Bold), i, end)
+                excludedRanges.add(i, end)
+                i = end
+            } else {
+                i++
+            }
+        }
+        
+        // ШАГ 8: Ключевые слова и идентификаторы
+        i = 0
+        while (i < code.length) {
+            if (!excludedRanges.contains(i) && (code[i].isLetter() || code[i] == '_')) {
+                val end = findWordEnd(code, i)
+                val word = code.substring(i, end)
                 
-                code[i] == '@' && (i + 1 < code.length && code[i + 1].isLetter()) -> {
-                    val end = findWordEnd(code, i + 1)
-                    addStyle(SpanStyle(color = colorAnnotation), i, end)
-                    i = end
-                }
-                
-                code[i].isDigit() || (code[i] == '-' && i + 1 < code.length && code[i + 1].isDigit()) -> {
-                    val end = findNumberEnd(code, i)
-                    addStyle(SpanStyle(color = colorNumber), i, end)
-                    i = end
-                }
-                
-                code[i].isLetter() || code[i] == '_' -> {
-                    val end = findWordEnd(code, i)
-                    val word = code.substring(i, end)
-                    
-                    when {
-                        word in kotlinKeywords -> {
-                            addStyle(
-                                SpanStyle(color = colorKeyword, fontWeight = FontWeight.Bold), 
-                                i, 
-                                end
-                            )
-                        }
-                        word.firstOrNull()?.isUpperCase() == true -> {
-                            addStyle(SpanStyle(color = colorType), i, end)
-                        }
-                        end < code.length && code[end] == '(' -> {
-                            addStyle(SpanStyle(color = colorFunction), i, end)
-                        }
+                when {
+                    // Ключевые слова
+                    word in kotlinKeywords -> {
+                        addStyle(
+                            SpanStyle(color = colorKeyword, fontWeight = FontWeight.Bold), 
+                            i, 
+                            end
+                        )
                     }
-                    i = end
+                    // Типы (CamelCase)
+                    word.firstOrNull()?.isUpperCase() == true -> {
+                        addStyle(SpanStyle(color = colorType, fontWeight = FontWeight.SemiBold), i, end)
+                    }
+                    // Функции (слово перед '(')
+                    end < code.length && code[end] == '(' -> {
+                        addStyle(SpanStyle(color = colorFunction), i, end)
+                    }
                 }
                 
-                else -> i++
+                i = end
+            } else {
+                i++
             }
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JAVA HIGHLIGHTING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun highlightJava(code: String): AnnotatedString = buildAnnotatedString {
+        append(code)
+        addStyle(SpanStyle(color = colorDefault), 0, code.length)
+        
+        val javaKeywords = setOf(
+            "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char",
+            "class", "const", "continue", "default", "do", "double", "else", "enum",
+            "extends", "final", "finally", "float", "for", "goto", "if", "implements",
+            "import", "instanceof", "int", "interface", "long", "native", "new", "package",
+            "private", "protected", "public", "return", "short", "static", "strictfp",
+            "super", "switch", "synchronized", "this", "throw", "throws", "transient",
+            "try", "void", "volatile", "while", "true", "false", "null"
+        )
+        
+        val excludedRanges = ExcludedRanges()
+        
+        // Комментарии и строки (аналогично Kotlin)
+        highlightCommentsAndStrings(code, excludedRanges)
+        
+        // Аннотации (@Override)
+        var i = 0
+        while (i < code.length) {
+            if (code[i] == '@' && !excludedRanges.contains(i)) {
+                val end = findWordEnd(code, i + 1)
+                addStyle(SpanStyle(color = colorAnnotation), i, end)
+                i = end
+            } else {
+                i++
+            }
+        }
+        
+        // Ключевые слова
+        i = 0
+        while (i < code.length) {
+            if (!excludedRanges.contains(i) && code[i].isLetter()) {
+                val end = findWordEnd(code, i)
+                val word = code.substring(i, end)
+                
+                if (word in javaKeywords) {
+                    addStyle(SpanStyle(color = colorKeyword, fontWeight = FontWeight.Bold), i, end)
+                }
+                i = end
+            } else {
+                i++
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // XML HIGHLIGHTING
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private fun highlightXml(code: String): AnnotatedString = buildAnnotatedString {
         append(code)
         addStyle(SpanStyle(color = colorDefault), 0, code.length)
         
+        val excludedRanges = ExcludedRanges()
+        
+        // Комментарии
         var idx = 0
         while (idx < code.length) {
             val commentStart = code.indexOf("<!--", idx)
@@ -183,15 +319,20 @@ object SyntaxHighlighter {
                 commentStart,
                 finalEnd.coerceAtMost(code.length)
             )
+            excludedRanges.add(commentStart, finalEnd.coerceAtMost(code.length))
             idx = finalEnd
         }
         
+        // Теги и атрибуты
         var i = 0
         while (i < code.length) {
-            if (code[i] == '<' && i + 1 < code.length && code[i + 1] != '!') {
+            if (code[i] == '<' && !excludedRanges.contains(i) && 
+                i + 1 < code.length && code[i + 1] != '!') {
+                
                 val tagEnd = code.indexOf('>', i)
                 if (tagEnd == -1) break
                 
+                // Имя тега
                 var nameStart = i + 1
                 if (code[nameStart] == '/') nameStart++
                 
@@ -209,6 +350,7 @@ object SyntaxHighlighter {
                     )
                 }
                 
+                // Атрибуты
                 var attrPos = nameEnd
                 while (attrPos < tagEnd) {
                     while (attrPos < tagEnd && code[attrPos].isWhitespace()) attrPos++
@@ -254,6 +396,10 @@ object SyntaxHighlighter {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // JSON HIGHLIGHTING
+    // ═══════════════════════════════════════════════════════════════════════════
+
     private fun highlightJson(code: String): AnnotatedString = buildAnnotatedString {
         append(code)
         addStyle(SpanStyle(color = colorDefault), 0, code.length)
@@ -261,6 +407,7 @@ object SyntaxHighlighter {
         var i = 0
         while (i < code.length) {
             when {
+                // Строки
                 code[i] == '"' -> {
                     val start = i
                     i++
@@ -276,6 +423,7 @@ object SyntaxHighlighter {
                         }
                     }
                     
+                    // Проверяем, это ключ или значение
                     var j = i
                     while (j < code.length && code[j].isWhitespace()) j++
                     val isKey = j < code.length && code[j] == ':'
@@ -287,6 +435,7 @@ object SyntaxHighlighter {
                     )
                 }
                 
+                // Числа
                 code[i] == '-' || code[i].isDigit() -> {
                     val start = i
                     if (code[i] == '-') i++
@@ -296,6 +445,7 @@ object SyntaxHighlighter {
                     addStyle(SpanStyle(color = colorNumber), start, i)
                 }
                 
+                // Булевы значения и null
                 code.startsWith("true", i) -> {
                     addStyle(SpanStyle(color = colorKeyword), i, i + 4)
                     i += 4
@@ -310,6 +460,125 @@ object SyntaxHighlighter {
                 }
                 
                 else -> i++
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // YAML HIGHLIGHTING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun highlightYaml(code: String): AnnotatedString = buildAnnotatedString {
+        append(code)
+        addStyle(SpanStyle(color = colorDefault), 0, code.length)
+        
+        code.lines().forEachIndexed { lineIndex, line ->
+            val lineStart = code.lines().take(lineIndex).sumOf { it.length + 1 }
+            
+            // Комментарии
+            val commentIndex = line.indexOf('#')
+            if (commentIndex != -1) {
+                addStyle(
+                    SpanStyle(color = colorComment, fontStyle = FontStyle.Italic),
+                    lineStart + commentIndex,
+                    lineStart + line.length
+                )
+            }
+            
+            // Ключи (до ':')
+            val colonIndex = line.indexOf(':')
+            if (colonIndex != -1 && (commentIndex == -1 || colonIndex < commentIndex)) {
+                addStyle(
+                    SpanStyle(color = colorAttribute, fontWeight = FontWeight.Bold),
+                    lineStart,
+                    lineStart + colonIndex
+                )
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PROPERTIES HIGHLIGHTING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun highlightProperties(code: String): AnnotatedString = buildAnnotatedString {
+        append(code)
+        addStyle(SpanStyle(color = colorDefault), 0, code.length)
+        
+        code.lines().forEachIndexed { lineIndex, line ->
+            val lineStart = code.lines().take(lineIndex).sumOf { it.length + 1 }
+            val trimmed = line.trim()
+            
+            when {
+                trimmed.startsWith('#') || trimmed.startsWith('!') -> {
+                    addStyle(
+                        SpanStyle(color = colorComment, fontStyle = FontStyle.Italic),
+                        lineStart,
+                        lineStart + line.length
+                    )
+                }
+                trimmed.contains('=') -> {
+                    val eqIndex = line.indexOf('=')
+                    addStyle(
+                        SpanStyle(color = colorAttribute, fontWeight = FontWeight.Bold),
+                        lineStart,
+                        lineStart + eqIndex
+                    )
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // HELPER FUNCTIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private fun AnnotatedString.Builder.highlightCommentsAndStrings(
+        code: String, 
+        excludedRanges: ExcludedRanges
+    ) {
+        // Многострочные комментарии
+        var i = 0
+        while (i < code.length) {
+            if (code.startsWith("/*", i)) {
+                val end = code.indexOf("*/", i + 2)
+                val finalEnd = if (end == -1) code.length else end + 2
+                addStyle(SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), i, finalEnd)
+                excludedRanges.add(i, finalEnd)
+                i = finalEnd
+            } else {
+                i++
+            }
+        }
+        
+        // Однострочные комментарии
+        i = 0
+        while (i < code.length) {
+            if (code.startsWith("//", i) && !excludedRanges.contains(i)) {
+                val end = code.indexOf('\n', i).let { if (it == -1) code.length else it }
+                addStyle(SpanStyle(color = colorComment, fontStyle = FontStyle.Italic), i, end)
+                excludedRanges.add(i, end)
+                i = end
+            } else {
+                i++
+            }
+        }
+        
+        // Строки
+        i = 0
+        while (i < code.length) {
+            if (code[i] == '"' && !excludedRanges.contains(i)) {
+                var end = i + 1
+                while (end < code.length) {
+                    if (code[end] == '\\' && end + 1 < code.length) end += 2
+                    else if (code[end] == '"') { end++; break }
+                    else end++
+                }
+                addStyle(SpanStyle(color = colorString), i, end)
+                excludedRanges.add(i, end)
+                i = end
+            } else {
+                i++
             }
         }
     }
@@ -340,11 +609,27 @@ object SyntaxHighlighter {
                     break 
                 }
                 code[end] in "xX" && end == start + 1 -> end++
-                code[end] in "abcdefABCDEF" -> end++
+                code[end] in "abcdefABCDEF" && start < end - 1 && code[start + 1] in "xX" -> end++
                 code[end] in "eE" -> end++
                 else -> break
             }
         }
         return end
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // EXCLUDED RANGES (для предотвращения двойной подсветки)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private class ExcludedRanges {
+        private val ranges = mutableListOf<IntRange>()
+        
+        fun add(start: Int, end: Int) {
+            ranges.add(start until end)
+        }
+        
+        fun contains(index: Int): Boolean {
+            return ranges.any { index in it }
+        }
     }
 }
