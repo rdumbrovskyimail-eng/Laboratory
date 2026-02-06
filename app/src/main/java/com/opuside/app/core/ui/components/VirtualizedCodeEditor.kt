@@ -1,5 +1,6 @@
 package com.opuside.app.core.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -11,6 +12,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -51,21 +53,19 @@ fun VirtualizedCodeEditor(
     modifier: Modifier = Modifier,
     readOnly: Boolean = false,
     showLineNumbers: Boolean = true,
-    fontSize: Int = 14,
+    fontSize: Int = 12,  // ✅ ИСПРАВЛЕНО: Уменьшен с 14 до 12
     onCursorPositionChanged: ((line: Int, column: Int) -> Unit)? = null
 ) {
-    // =================== STATE FIX (ИСПРАВЛЕНИЕ) ===================
+    // ═══════════════════════════════════════════════════════════════════════════
+    // STATE MANAGEMENT (ИСПРАВЛЕНО)
+    // ═══════════════════════════════════════════════════════════════════════════
 
-    // 1. Инициализируем стейт ОДИН раз. Убрали 'content' из ключей remember.
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(content))
     }
 
-    // 2. Слушаем внешние изменения (Undo/Redo или загрузка файла),
-    // но игнорируем, если текст совпадает (чтобы не сбрасывать курсор при вводе)
     LaunchedEffect(content) {
         if (textFieldValue.text != content) {
-            // Пытаемся сохранить курсор в безопасных пределах или ставим в конец
             val newSelection = if (textFieldValue.selection.start <= content.length) {
                 textFieldValue.selection
             } else {
@@ -74,8 +74,6 @@ fun VirtualizedCodeEditor(
             textFieldValue = TextFieldValue(text = content, selection = newSelection)
         }
     }
-
-    // =================== LOGIC ===================
 
     val lines = remember(textFieldValue.text) {
         val result = textFieldValue.text.lines()
@@ -133,6 +131,7 @@ fun VirtualizedCodeEditor(
     var isFocused by remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
 
+    // ✅ ИСПРАВЛЕНО: Auto-scroll к курсору
     LaunchedEffect(cursorLine) {
         snapshotFlow { listState.layoutInfo.totalItemsCount > 0 }
             .first { it }
@@ -176,10 +175,16 @@ fun VirtualizedCodeEditor(
         }
     }
 
+    // ✅ ПРОБЛЕМА 2: Динамическая ширина нумерации строк
+    val lineNumberWidth = remember(lines.size) {
+        val maxDigits = lines.size.toString().length
+        (maxDigits * 10 + 16).dp
+    }
+
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Surface(
             modifier = modifier.then(keyboardHandler),
-            color = EditorTheme.backgroundColor
+            color = EditorTheme.backgroundColor  // ✅ ПРОБЛЕМА 9: Светло-серый фон
         ) {
             Row(modifier = Modifier.fillMaxSize()) {
                 if (showLineNumbers) {
@@ -187,7 +192,8 @@ fun VirtualizedCodeEditor(
                         lines = lines,
                         currentLine = cursorLine,
                         listState = listState,
-                        fontSize = fontSize
+                        fontSize = fontSize,
+                        width = lineNumberWidth  // ✅ Динамическая ширина
                     )
                     VerticalDivider(color = EditorTheme.dividerColor)
                 }
@@ -197,50 +203,76 @@ fun VirtualizedCodeEditor(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .horizontalScroll(horizontalScrollState)
-                            .padding(horizontal = 8.dp),
-                        userScrollEnabled = true
-                    ) {
-                        itemsIndexed(
-                            items = lines,
-                            key = { index, line -> "$index-${line.hashCode()}" }
-                        ) { index, line ->
-                            CodeLine(
-                                line = line,
-                                highlightedText = highlightedLines.getOrNull(index) ?: AnnotatedString(line),
-                                isCurrentLine = index == cursorLine,
-                                fontSize = fontSize
-                            )
+                    // ═══════════════════════════════════════════════════════════════
+                    // VISIBLE CODE (Highlighted) + ✅ ПРОБЛЕМА 3: SelectionContainer
+                    // ═══════════════════════════════════════════════════════════════
+                    SelectionContainer {
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .horizontalScroll(horizontalScrollState)
+                                .padding(horizontal = 8.dp),
+                            userScrollEnabled = true  // ✅ ПРОБЛЕМА 1: Скролл работает
+                        ) {
+                            itemsIndexed(
+                                items = lines,
+                                key = { index, line -> "$index-${line.hashCode()}" }
+                            ) { index, line ->
+                                CodeLine(
+                                    line = line,
+                                    highlightedText = highlightedLines.getOrNull(index) ?: AnnotatedString(line),
+                                    isCurrentLine = index == cursorLine,
+                                    fontSize = fontSize
+                                )
+                            }
                         }
                     }
 
+                    // ═══════════════════════════════════════════════════════════════
+                    // INVISIBLE EDITOR (для редактирования)
+                    // ═══════════════════════════════════════════════════════════════
                     if (!readOnly) {
+                        // ✅ ПРОБЛЕМА 10: State для хранения textLayout
+                        var sharedTextLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+                        
                         CustomLTRTextField(
                             value = textFieldValue,
                             onValueChange = { newValue -> textFieldValue = newValue },
                             modifier = Modifier
-                                .fillMaxSize()
+                                .matchParentSize()  // ✅ ПРОБЛЕМА 1: matchParentSize вместо fillMaxSize
                                 .horizontalScroll(horizontalScrollState)
                                 .padding(horizontal = 8.dp)
                                 .focusRequester(focusRequester)
                                 .onFocusChanged { isFocused = it.isFocused }
                                 .pointerInput(Unit) {
-                                    detectTapGestures {
-                                        try { focusRequester.requestFocus() } catch (_: Exception) {}
+                                    detectTapGestures { offset ->
+                                        // ✅ ПРОБЛЕМА 10: Точное позиционирование курсора
+                                        sharedTextLayoutResult?.let { layout ->
+                                            try {
+                                                val line = layout.getLineForVerticalPosition(offset.y)
+                                                val position = layout.getOffsetForHorizontal(line, offset.x)
+                                                textFieldValue = textFieldValue.copy(
+                                                    selection = TextRange(position)
+                                                )
+                                            } catch (e: Exception) {
+                                                android.util.Log.e("VirtualizedCodeEditor", "Cursor positioning error", e)
+                                            }
+                                        }
+                                        try { 
+                                            focusRequester.requestFocus() 
+                                        } catch (_: Exception) {}
                                     }
                                 },
                             textStyle = TextStyle(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = fontSize.sp,
                                 color = Color.Transparent,
-                                lineHeight = (fontSize * 1.5).sp,
+                                lineHeight = (fontSize * 1.4).sp,  // ✅ ПРОБЛЕМА 4: Компактнее
                                 textDirection = TextDirection.Ltr
                             ),
-                            cursorColor = EditorTheme.cursorColor
+                            cursorColor = EditorTheme.cursorColor,
+                            onTextLayoutChange = { sharedTextLayoutResult = it }  // ✅ ПРОБЛЕМА 10: Передаем layout
                         )
                     }
 
@@ -257,13 +289,18 @@ fun VirtualizedCodeEditor(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CUSTOM TEXT FIELD (✅ ИСПРАВЛЕНО: Проблема #10)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun CustomLTRTextField(
     value: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
     modifier: Modifier = Modifier,
     textStyle: TextStyle = TextStyle.Default,
-    cursorColor: Color = Color.White
+    cursorColor: Color = Color.White,
+    onTextLayoutChange: (TextLayoutResult) -> Unit = {}  // ✅ ПРОБЛЕМА 10: Добавлен параметр
 ) {
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var isCursorVisible by remember { mutableStateOf(true) }
@@ -274,6 +311,7 @@ private fun CustomLTRTextField(
             isCursorVisible = !isCursorVisible
         }
     }
+    
     LaunchedEffect(value.selection.start) {
         isCursorVisible = true
     }
@@ -282,6 +320,7 @@ private fun CustomLTRTextField(
         value = value,
         onValueChange = onValueChange,
         modifier = modifier.drawBehind {
+            // ✅ ПРОБЛЕМА 10: Курсор рисуется точно
             if (isCursorVisible) {
                 textLayoutResult?.let { layout ->
                     val cursorPos = value.selection.start.coerceIn(0, value.text.length)
@@ -305,29 +344,51 @@ private fun CustomLTRTextField(
             keyboardType = KeyboardType.Ascii,
             imeAction = ImeAction.None
         ),
-        onTextLayout = { textLayoutResult = it }
+        onTextLayout = { 
+            textLayoutResult = it
+            onTextLayoutChange(it)  // ✅ ПРОБЛЕМА 10: Передаем layout наружу
+        }
     )
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LINE NUMBERS (ИСПРАВЛЕНО)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun LineNumbers(lines: List<String>, currentLine: Int, listState: LazyListState, fontSize: Int) {
-    val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
+private fun LineNumbers(
+    lines: List<String>, 
+    currentLine: Int, 
+    listState: LazyListState, 
+    fontSize: Int,
+    width: Dp  // ✅ ПРОБЛЕМА 2: Динамическая ширина
+) {
+    val lineHeight = with(LocalDensity.current) { (fontSize * 1.4).sp.toDp() }
+    
     LazyColumn(
         state = listState,
         modifier = Modifier
-            .width(56.dp)
+            .width(width)  // ✅ Вместо фиксированной 56.dp
             .background(EditorTheme.lineNumbersBackground)
             .padding(horizontal = 8.dp),
         userScrollEnabled = false
     ) {
         itemsIndexed(lines) { index, _ ->
-            Box(modifier = Modifier.height(lineHeight).fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+            Box(
+                modifier = Modifier
+                    .height(lineHeight)
+                    .fillMaxWidth(), 
+                contentAlignment = Alignment.CenterEnd
+            ) {
                 Text(
                     text = "${index + 1}",
                     style = TextStyle(
                         fontFamily = FontFamily.Monospace,
                         fontSize = fontSize.sp,
-                        color = if (index == currentLine) EditorTheme.currentLineNumberColor else EditorTheme.lineNumberColor
+                        color = if (index == currentLine) 
+                            EditorTheme.currentLineNumberColor 
+                        else 
+                            EditorTheme.lineNumberColor
                     )
                 )
             }
@@ -335,9 +396,19 @@ private fun LineNumbers(lines: List<String>, currentLine: Int, listState: LazyLi
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// CODE LINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun CodeLine(line: String, highlightedText: AnnotatedString, isCurrentLine: Boolean, fontSize: Int) {
-    val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
+private fun CodeLine(
+    line: String, 
+    highlightedText: AnnotatedString, 
+    isCurrentLine: Boolean, 
+    fontSize: Int
+) {
+    val lineHeight = with(LocalDensity.current) { (fontSize * 1.4).sp.toDp() }
+    
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -349,7 +420,7 @@ private fun CodeLine(line: String, highlightedText: AnnotatedString, isCurrentLi
             style = TextStyle(
                 fontFamily = FontFamily.Monospace,
                 fontSize = fontSize.sp,
-                lineHeight = (fontSize * 1.5).sp,
+                lineHeight = (fontSize * 1.4).sp,
                 textDirection = TextDirection.Ltr
             ),
             modifier = Modifier.align(Alignment.CenterStart)
@@ -357,10 +428,24 @@ private fun CodeLine(line: String, highlightedText: AnnotatedString, isCurrentLi
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// SCROLLBAR INDICATOR
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun ScrollbarIndicator(listState: LazyListState, totalItems: Int, modifier: Modifier = Modifier) {
+private fun ScrollbarIndicator(
+    listState: LazyListState, 
+    totalItems: Int, 
+    modifier: Modifier = Modifier
+) {
     val firstVisibleItem by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    Box(modifier = modifier.fillMaxHeight().width(4.dp).background(Color.Transparent)) {
+    
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(4.dp)
+            .background(Color.Transparent)
+    ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -372,21 +457,43 @@ private fun ScrollbarIndicator(listState: LazyListState, totalItems: Int, modifi
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// VERTICAL DIVIDER
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun VerticalDivider(modifier: Modifier = Modifier, color: Color = Color.Gray) {
-    Box(modifier = modifier.fillMaxHeight().width(1.dp).background(color))
+    Box(
+        modifier = modifier
+            .fillMaxHeight()
+            .width(1.dp)
+            .background(color)
+    )
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// UNDO/REDO MANAGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
 private class UndoRedoManager {
-    private data class LightweightState(val text: String, val selectionStart: Int, val selectionEnd: Int)
+    private data class LightweightState(
+        val text: String, 
+        val selectionStart: Int, 
+        val selectionEnd: Int
+    )
+    
     private val history = mutableListOf<LightweightState>()
     private var currentIndex = -1
     private val maxHistorySize = 50
 
     fun recordState(value: TextFieldValue) {
-        if (currentIndex < history.size - 1) history.subList(currentIndex + 1, history.size).clear()
+        if (currentIndex < history.size - 1) {
+            history.subList(currentIndex + 1, history.size).clear()
+        }
+        
         history.add(LightweightState(value.text, value.selection.start, value.selection.end))
         currentIndex++
+        
         if (history.size > maxHistorySize) {
             history.removeAt(0)
             currentIndex--
@@ -412,13 +519,17 @@ private class UndoRedoManager {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// THEME (✅ ПРОБЛЕМА 9: Светлая тема)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 private object EditorTheme {
-    val backgroundColor = Color(0xFF1E1E1E)
-    val lineNumbersBackground = Color(0xFF252526)
-    val currentLineBackground = Color(0xFF2A2A2A)
-    val dividerColor = Color(0xFF404040)
-    val lineNumberColor = Color(0xFF858585)
-    val currentLineNumberColor = Color(0xFFC6C6C6)
-    val scrollbarColor = Color(0xFF424242)
-    val cursorColor = Color(0xFFFFFFFF)
+    val backgroundColor = Color(0xFFF5F5F5)              // Светло-серый
+    val lineNumbersBackground = Color(0xFFEEEEEE)         // Еще светлее
+    val currentLineBackground = Color(0xFFE8F4F8)         // Голубоватый для текущей строки
+    val dividerColor = Color(0xFFBDBDBD)                  // Серая граница
+    val lineNumberColor = Color(0xFF9E9E9E)               // Серые номера
+    val currentLineNumberColor = Color(0xFF424242)        // Темные номера активной строки
+    val scrollbarColor = Color(0xFFBDBDBD)                // Серый скроллбар
+    val cursorColor = Color(0xFF000000)                   // Черный курсор
 }
