@@ -65,9 +65,34 @@ fun SettingsScreen(
     
     val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
     
-    // ✅ ИСПРАВЛЕНО: Биометрия из ViewModel
     val useBiometric by viewModel.useBiometricInput.collectAsState()
-    val activity = context as? FragmentActivity
+    
+    // ✅ ИСПРАВЛЕНО: Правильное получение FragmentActivity
+    val activity = remember {
+        try {
+            when (context) {
+                is FragmentActivity -> context
+                is androidx.activity.ComponentActivity -> {
+                    // Пытаемся получить FragmentActivity из ComponentActivity
+                    if (context is FragmentActivity) context else null
+                }
+                else -> {
+                    // Ищем FragmentActivity в дереве контекстов
+                    var ctx = context
+                    while (ctx is android.content.ContextWrapper) {
+                        if (ctx is FragmentActivity) {
+                            return@remember ctx
+                        }
+                        ctx = ctx.baseContext
+                    }
+                    null
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("SettingsScreen", "Failed to get FragmentActivity", e)
+            null
+        }
+    }
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -83,11 +108,11 @@ fun SettingsScreen(
             secureSettings.getAnthropicApiKeyWithBiometric(
                 activity = activity,
                 onSuccess = { key ->
-                    Toast.makeText(context, "Key retrieved: ${key.take(10)}...", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "✅ Key retrieved: ${key.take(10)}...", Toast.LENGTH_SHORT).show()
                     viewModel.clearBiometricRequest()
                 },
                 onError = { error ->
-                    Toast.makeText(context, "Auth failed: $error", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "❌ Auth failed: $error", Toast.LENGTH_SHORT).show()
                     viewModel.clearBiometricRequest()
                 }
             )
@@ -400,11 +425,52 @@ fun SettingsScreen(
                     else -> {}
                 }
                 
+                // ✅ ИСПРАВЛЕНО: Кнопка биометрии теперь ВСЕГДА активна если activity != null
                 if (useBiometric && !sensitiveFeatureDisabled) {
                     Spacer(Modifier.height(8.dp))
+                    
+                    // ✅ ДОБАВЛЕНО: Показываем статус биометрии
+                    if (activity == null) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "Biometric authentication unavailable in current context",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+                    
                     Button(
-                        onClick = { viewModel.requestBiometricAuth() },
+                        onClick = { 
+                            if (activity != null) {
+                                viewModel.requestBiometricAuth()
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "❌ FragmentActivity not available. Restart app.",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
+                        // ✅ ИСПРАВЛЕНО: Кнопка активна если activity доступен
                         enabled = activity != null
                     ) {
                         Icon(Icons.Default.Fingerprint, null, Modifier.size(18.dp))
