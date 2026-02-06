@@ -14,6 +14,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.git.ConflictResolverDialog
 import com.opuside.app.core.git.ConflictResult
@@ -106,30 +107,75 @@ fun CreatorScreen(
             when {
                 isLoading -> LoadingState()
                 currentOwner.isBlank() || currentRepo.isBlank() -> {
-                    // ✅ ДОБАВЛЕНО: Placeholder когда GitHub не настроен
+                    // ✅ УЛУЧШЕНО: Более информативный placeholder
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                            modifier = Modifier.padding(32.dp)
+                            verticalArrangement = Arrangement.spacedBy(24.dp),
+                            modifier = Modifier.padding(48.dp)
                         ) {
                             Icon(
                                 Icons.Default.Settings,
                                 null,
-                                Modifier.size(64.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                                Modifier.size(72.dp),
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
                             )
+                            
                             Text(
                                 "GitHub Not Configured",
                                 style = MaterialTheme.typography.headlineSmall,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Text(
-                                "Please go to Settings and configure your GitHub repository",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = MaterialTheme.colorScheme.onSurface,
                                 textAlign = TextAlign.Center
                             )
+                            
+                            Text(
+                                "To start working with your repository:\n\n" +
+                                "1. Go to Settings tab\n" +
+                                "2. Enter GitHub Owner\n" +
+                                "3. Enter Repository Name\n" +
+                                "4. Enter Personal Access Token\n" +
+                                "5. Click Save",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                lineHeight = 20.sp
+                            )
+                            
+                            Spacer(Modifier.height(8.dp))
+                            
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                                )
+                            ) {
+                                Column(Modifier.padding(16.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            Icons.Default.Info,
+                                            null,
+                                            Modifier.size(20.dp),
+                                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(
+                                            "Need a GitHub Token?",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                                        )
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        "1. Go to github.com → Settings\n" +
+                                        "2. Developer settings → Personal access tokens\n" +
+                                        "3. Generate new token (classic)\n" +
+                                        "4. Select 'repo' scope\n" +
+                                        "5. Copy token and paste in Settings",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -350,9 +396,6 @@ private fun EditorMode(
             onAddToCache = onAddToCache
         )
 
-        // ✅ ВАЖНОЕ ИСПРАВЛЕНИЕ: key(file.path)
-        // Заставляет редактор пересоздаваться при смене файла,
-        // чтобы текст нового файла загружался корректно.
         key(file.path) {
             VirtualizedCodeEditor(
                 content = content,
