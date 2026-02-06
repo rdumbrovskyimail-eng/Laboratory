@@ -12,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.git.ConflictResolverDialog
@@ -24,6 +25,8 @@ import com.opuside.app.core.util.detectLanguage
 fun CreatorScreen(
     viewModel: CreatorViewModel = hiltViewModel()
 ) {
+    val currentOwner by viewModel.currentOwner.collectAsState()
+    val currentRepo by viewModel.currentRepo.collectAsState()
     val currentPath by viewModel.currentPath.collectAsState()
     val contents by viewModel.contents.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -100,10 +103,37 @@ fun CreatorScreen(
                 modifier = Modifier.weight(1f)
             )
         } else {
-            if (isLoading) {
-                LoadingState()
-            } else {
-                FileBrowser(
+            when {
+                isLoading -> LoadingState()
+                currentOwner.isBlank() || currentRepo.isBlank() -> {
+                    // ✅ ДОБАВЛЕНО: Placeholder когда GitHub не настроен
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                            modifier = Modifier.padding(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Settings,
+                                null,
+                                Modifier.size(64.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                "GitHub Not Configured",
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                "Please go to Settings and configure your GitHub repository",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+                else -> FileBrowser(
                     contents = contents,
                     onFolderClick = viewModel::navigateToFolder,
                     onFileClick = viewModel::openFile,
