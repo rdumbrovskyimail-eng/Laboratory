@@ -1,16 +1,12 @@
 package com.opuside.app.core.ui.components
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -23,20 +19,21 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDirection
-import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,10 +41,13 @@ import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 
 /**
- * Профессиональный Code Editor на основе best practices:
- * - compose-code-editor (github.com/Qawaz/compose-code-editor)
- * - Android Compose Guidelines
- * - LazyColumn + BasicTextField синхронизация
+ * ПРОФЕССИОНАЛЬНЫЙ CODE EDITOR
+ * 
+ * Архитектура на основе Sora Editor и лучших практик:
+ * - Единый BasicTextField БЕЗ LazyColumn overlay (это источник конфликтов!)
+ * - Column с verticalScroll для простого скроллинга
+ * - Построчный TextLayoutResult для нумерации
+ * - Прямой ввод текста без прокси-слоёв
  */
 @Composable
 fun VirtualizedCodeEditor(
@@ -62,7 +62,6 @@ fun VirtualizedCodeEditor(
 ) {
     var textFieldValue by remember { mutableStateOf(TextFieldValue(content)) }
 
-    // Синхронизация внешнего content с внутренним state
     LaunchedEffect(content) {
         if (textFieldValue.text != content) {
             val newSelection = if (textFieldValue.selection.start <= content.length) {
@@ -74,30 +73,31 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    val lines = remember(textFieldValue.text) {
-        val result = textFieldValue.text.lines()
-        if (result.isEmpty() || (result.size == 1 && result[0].isEmpty())) {
-            listOf("")
-        } else {
-            result
-        }
-    }
-
-    // Асинхронная подсветка синтаксиса
-    val highlightedLines by produceState(
-        initialValue = lines.map { AnnotatedString(it) },
-        key1 = lines.hashCode(),
+    // Асинхронная подсветка синтаксиса ЦЕЛОГО текста
+    val highlightedText by produceState(
+        initialValue = AnnotatedString(textFieldValue.text),
+        key1 = textFieldValue.text,
         key2 = language
     ) {
         value = withContext(Dispatchers.Default) {
-            lines.map { line ->
-                try {
-                    SyntaxHighlighter.highlight(line, language)
-                } catch (e: Exception) {
-                    AnnotatedString(line)
+            try {
+                // Подсветка всего текста целиком
+                val lines = textFieldValue.text.lines()
+                buildAnnotatedString {
+                    lines.forEachIndexed { index, line ->
+                        append(SyntaxHighlighter.highlight(line, language))
+                        if (index < lines.size - 1) append("\n")
+                    }
                 }
+            } catch (e: Exception) {
+                AnnotatedString(textFieldValue.text)
             }
         }
+    }
+
+    val lines = remember(textFieldValue.text) {
+        val result = textFieldValue.text.lines()
+        if (result.isEmpty()) listOf("") else result
     }
 
     val cursorLine = remember(textFieldValue.selection.start, textFieldValue.text) {
@@ -124,32 +124,6 @@ fun VirtualizedCodeEditor(
     LaunchedEffect(textFieldValue.text) {
         delay(500)
         undoRedoManager.recordState(textFieldValue)
-    }
-
-    val listState = rememberLazyListState()
-    val focusRequester = remember { FocusRequester() }
-    var isFocused by remember { mutableStateOf(false) }
-    val horizontalScrollState = rememberScrollState()
-
-    // Auto-scroll к курсору (оптимизированный)
-    LaunchedEffect(cursorLine) {
-        if (cursorLine in 0 until lines.size) {
-            delay(50)
-            try {
-                val layoutInfo = listState.layoutInfo
-                val visibleItems = layoutInfo.visibleItemsInfo
-
-                if (visibleItems.isNotEmpty()) {
-                    val firstVisible = visibleItems.first().index
-                    val lastVisible = visibleItems.last().index
-
-                    if (cursorLine < firstVisible || cursorLine > lastVisible) {
-                        val targetIndex = (cursorLine - 3).coerceAtLeast(0)
-                        listState.animateScrollToItem(index = targetIndex)
-                    }
-                }
-            } catch (e: Exception) {}
-        }
     }
 
     val keyboardHandler = Modifier.onKeyEvent { event ->
@@ -185,78 +159,70 @@ fun VirtualizedCodeEditor(
         (maxDigits * 8 + 8).dp
     }
 
+    val focusRequester = remember { FocusRequester() }
+    var isFocused by remember { mutableStateOf(false) }
+    val verticalScrollState = rememberScrollState()
+    val horizontalScrollState = rememberScrollState()
+
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Surface(
             modifier = modifier.then(keyboardHandler),
             color = EditorTheme.backgroundColor
         ) {
             Row(modifier = Modifier.fillMaxSize()) {
+                // НУМЕРАЦИЯ СТРОК
                 if (showLineNumbers) {
-                    LineNumbers(
-                        lines = lines,
+                    LineNumbersColumn(
+                        lineCount = lines.size,
                         currentLine = cursorLine,
-                        listState = listState,
                         fontSize = fontSize,
-                        width = lineNumberWidth
+                        width = lineNumberWidth,
+                        scrollState = verticalScrollState
                     )
                     VerticalDivider(color = EditorTheme.dividerColor)
                 }
 
-                Box(
+                // ЕДИНСТВЕННОЕ РЕДАКТИРУЕМОЕ ПОЛЕ
+                SingleTextFieldEditor(
+                    value = textFieldValue,
+                    onValueChange = { textFieldValue = it },
+                    highlightedText = highlightedText,
+                    currentLine = cursorLine,
+                    fontSize = fontSize,
+                    readOnly = readOnly,
+                    focusRequester = focusRequester,
+                    verticalScrollState = verticalScrollState,
+                    horizontalScrollState = horizontalScrollState,
+                    onFocusChanged = { isFocused = it },
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                ) {
-                    // ПРОФЕССИОНАЛЬНОЕ РЕШЕНИЕ: единое скроллируемое поле
-                    SynchronizedCodeField(
-                        value = textFieldValue,
-                        onValueChange = { textFieldValue = it },
-                        lines = lines,
-                        highlightedLines = highlightedLines,
-                        currentLine = cursorLine,
-                        listState = listState,
-                        horizontalScrollState = horizontalScrollState,
-                        focusRequester = focusRequester,
-                        fontSize = fontSize,
-                        readOnly = readOnly,
-                        onFocusChanged = { isFocused = it }
-                    )
-
-                    if (lines.size > 100) {
-                        ScrollbarIndicator(
-                            listState = listState,
-                            totalItems = lines.size,
-                            modifier = Modifier.align(Alignment.CenterEnd)
-                        )
-                    }
-                }
+                )
             }
         }
     }
 }
 
 /**
- * Синхронизированное поле: LazyColumn (видимый код) + BasicTextField (невидимый редактор)
- * Best practice из compose-code-editor
+ * Единое поле с прямым скроллингом (БЕЗ LazyColumn конфликтов!)
  */
 @Composable
-private fun SynchronizedCodeField(
+private fun SingleTextFieldEditor(
     value: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
-    lines: List<String>,
-    highlightedLines: List<AnnotatedString>,
+    highlightedText: AnnotatedString,
     currentLine: Int,
-    listState: LazyListState,
-    horizontalScrollState: androidx.compose.foundation.ScrollState,
-    focusRequester: FocusRequester,
     fontSize: Int,
     readOnly: Boolean,
-    onFocusChanged: (Boolean) -> Unit
+    focusRequester: FocusRequester,
+    verticalScrollState: androidx.compose.foundation.ScrollState,
+    horizontalScrollState: androidx.compose.foundation.ScrollState,
+    onFocusChanged: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var isCursorVisible by remember { mutableStateOf(true) }
 
-    // Мигание курсора
     LaunchedEffect(Unit) {
         while (true) {
             delay(530)
@@ -268,123 +234,104 @@ private fun SynchronizedCodeField(
         isCursorVisible = true
     }
 
-    val lineHeight = with(LocalDensity.current) { (fontSize * 1.4).sp.toDp() }
-
-    Box(modifier = Modifier.fillMaxSize()) {
-        // СЛОЙ 1: Подсветка синтаксиса (видимый, скроллится встроенными жестами)
-        LazyColumn(
-            state = listState,
-            modifier = Modifier
-                .fillMaxSize()
-                .horizontalScroll(horizontalScrollState)
-                .padding(horizontal = 8.dp),
-            userScrollEnabled = true // ВКЛЮЧЕНО: встроенный скроллинг
-        ) {
-            itemsIndexed(
-                items = lines,
-                key = { index, _ -> index } // Стабильные ключи
-            ) { index, _ ->
-                CodeLine(
-                    line = lines[index],
-                    highlightedText = highlightedLines.getOrNull(index) ?: AnnotatedString(lines[index]),
-                    isCurrentLine = index == currentLine,
-                    fontSize = fontSize,
-                    lineHeight = lineHeight
-                )
+    // Подсветка текущей строки
+    val decoratedText = remember(highlightedText, currentLine) {
+        buildAnnotatedString {
+            val lines = highlightedText.text.lines()
+            lines.forEachIndexed { index, line ->
+                // Добавляем подсветку текущей строки
+                if (index == currentLine) {
+                    withStyle(SpanStyle(background = EditorTheme.currentLineBackground)) {
+                        append(highlightedText.subSequence(
+                            highlightedText.text.take(
+                                lines.take(index).sumOf { it.length + 1 }
+                            ).length,
+                            highlightedText.text.take(
+                                lines.take(index + 1).sumOf { it.length + 1 }
+                            ).length.coerceAtMost(highlightedText.length)
+                        ))
+                    }
+                } else {
+                    append(highlightedText.subSequence(
+                        highlightedText.text.take(
+                            lines.take(index).sumOf { it.length + 1 }
+                        ).length,
+                        highlightedText.text.take(
+                            lines.take(index + 1).sumOf { it.length + 1 }
+                        ).length.coerceAtMost(highlightedText.length)
+                    ))
+                }
+                if (index < lines.size - 1) append("\n")
             }
         }
-
-        // СЛОЙ 2: Невидимый редактор (только ввод + курсор + клики)
-        if (!readOnly) {
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .horizontalScroll(horizontalScrollState)
-                    .padding(horizontal = 8.dp)
-                    .focusRequester(focusRequester)
-                    .onFocusChanged { onFocusChanged(it.isFocused) }
-                    .pointerInput(Unit) {
-                        // ПРОФЕССИОНАЛЬНОЕ позиционирование курсора
-                        detectTapGestures { offset ->
-                            textLayoutResult?.let { layout ->
-                                try {
-                                    val position = layout.getOffsetForPosition(offset)
-                                    onValueChange(value.copy(selection = TextRange(position)))
-                                } catch (e: Exception) {
-                                    // Fallback: позиция в конец строки
-                                    val lineIndex = (offset.y / lineHeight.toPx()).toInt()
-                                        .coerceIn(0, lines.size - 1)
-                                    val lineStart = lines.take(lineIndex).sumOf { it.length + 1 }
-                                    val lineEnd = lineStart + lines[lineIndex].length
-                                    onValueChange(value.copy(selection = TextRange(lineEnd)))
-                                }
-                            }
-                            try {
-                                focusRequester.requestFocus()
-                            } catch (_: Exception) {}
-                        }
-                    }
-                    .drawBehind {
-                        // Рисуем кастомный курсор
-                        if (isCursorVisible) {
-                            textLayoutResult?.let { layout ->
-                                val cursorPos = value.selection.start.coerceIn(0, value.text.length)
-                                try {
-                                    val cursorRect = layout.getCursorRect(cursorPos)
-                                    drawLine(
-                                        color = EditorTheme.cursorColor,
-                                        start = Offset(cursorRect.left, cursorRect.top),
-                                        end = Offset(cursorRect.left, cursorRect.bottom),
-                                        strokeWidth = 2.dp.toPx()
-                                    )
-                                } catch (_: Exception) {}
-                            }
-                        }
-                    },
-                textStyle = TextStyle(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = fontSize.sp,
-                    color = Color.Transparent, // НЕВИДИМЫЙ текст
-                    lineHeight = (fontSize * 1.4).sp,
-                    textDirection = TextDirection.Ltr
-                ),
-                cursorBrush = SolidColor(Color.Transparent), // Скрываем стандартный курсор
-                keyboardOptions = KeyboardOptions(
-                    capitalization = KeyboardCapitalization.None,
-                    autoCorrect = false,
-                    keyboardType = KeyboardType.Ascii,
-                    imeAction = ImeAction.None
-                ),
-                onTextLayout = { textLayoutResult = it }
-            )
-        }
     }
+
+    BasicTextField(
+        value = value.copy(annotatedString = decoratedText),
+        onValueChange = onValueChange,
+        modifier = modifier
+            .verticalScroll(verticalScrollState)  // ПРЯМОЙ СКРОЛЛИНГ!
+            .horizontalScroll(horizontalScrollState)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { onFocusChanged(it.isFocused) }
+            .drawBehind {
+                // Кастомный курсор
+                if (isCursorVisible) {
+                    textLayoutResult?.let { layout ->
+                        val cursorPos = value.selection.start.coerceIn(0, value.text.length)
+                        try {
+                            val cursorRect = layout.getCursorRect(cursorPos)
+                            drawLine(
+                                color = EditorTheme.cursorColor,
+                                start = Offset(cursorRect.left, cursorRect.top),
+                                end = Offset(cursorRect.left, cursorRect.bottom),
+                                strokeWidth = 2.dp.toPx()
+                            )
+                        } catch (_: Exception) {}
+                    }
+                }
+            },
+        textStyle = TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = fontSize.sp,
+            lineHeight = (fontSize * 1.4).sp,
+            textDirection = TextDirection.Ltr,
+            color = Color.Transparent // Текст невидим, видна только подсветка
+        ),
+        cursorBrush = SolidColor(Color.Transparent),
+        keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.None,
+            autoCorrect = false,
+            keyboardType = KeyboardType.Ascii,
+            imeAction = ImeAction.None
+        ),
+        readOnly = readOnly,
+        onTextLayout = { textLayoutResult = it }
+    )
 }
 
+/**
+ * Нумерация строк с синхронизированным скроллингом
+ */
 @Composable
-private fun LineNumbers(
-    lines: List<String>,
+private fun LineNumbersColumn(
+    lineCount: Int,
     currentLine: Int,
-    listState: LazyListState,
     fontSize: Int,
-    width: Dp
+    width: androidx.compose.ui.unit.Dp,
+    scrollState: androidx.compose.foundation.ScrollState
 ) {
     val lineHeight = with(LocalDensity.current) { (fontSize * 1.4).sp.toDp() }
 
-    LazyColumn(
-        state = listState,
+    Column(
         modifier = Modifier
             .width(width)
+            .verticalScroll(scrollState, enabled = false)  // Синхронизация
             .background(EditorTheme.lineNumbersBackground)
-            .padding(horizontal = 4.dp),
-        userScrollEnabled = false // Синхронизация с основным listState
+            .padding(horizontal = 4.dp, vertical = 4.dp)
     ) {
-        itemsIndexed(
-            items = lines,
-            key = { index, _ -> index }
-        ) { index, _ ->
+        repeat(lineCount) { index ->
             Box(
                 modifier = Modifier
                     .height(lineHeight)
@@ -408,58 +355,6 @@ private fun LineNumbers(
 }
 
 @Composable
-private fun CodeLine(
-    line: String,
-    highlightedText: AnnotatedString,
-    isCurrentLine: Boolean,
-    fontSize: Int,
-    lineHeight: Dp
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(lineHeight)
-            .background(if (isCurrentLine) EditorTheme.currentLineBackground else Color.Transparent)
-    ) {
-        Text(
-            text = highlightedText,
-            style = TextStyle(
-                fontFamily = FontFamily.Monospace,
-                fontSize = fontSize.sp,
-                lineHeight = (fontSize * 1.4).sp,
-                textDirection = TextDirection.Ltr
-            ),
-            modifier = Modifier.align(Alignment.CenterStart)
-        )
-    }
-}
-
-@Composable
-private fun ScrollbarIndicator(
-    listState: LazyListState,
-    totalItems: Int,
-    modifier: Modifier = Modifier
-) {
-    val firstVisibleItem by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-
-    Box(
-        modifier = modifier
-            .fillMaxHeight()
-            .width(4.dp)
-            .background(Color.Transparent)
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .fillMaxHeight(0.1f)
-                .align(Alignment.TopEnd)
-                .offset(y = ((firstVisibleItem.toFloat() / totalItems) * 400).dp)
-                .background(EditorTheme.scrollbarColor, MaterialTheme.shapes.small)
-        )
-    }
-}
-
-@Composable
 private fun VerticalDivider(modifier: Modifier = Modifier, color: Color = Color.Gray) {
     Box(
         modifier = modifier
@@ -469,9 +364,6 @@ private fun VerticalDivider(modifier: Modifier = Modifier, color: Color = Color.
     )
 }
 
-/**
- * Undo/Redo Manager с оптимизированным хранением
- */
 private class UndoRedoManager {
     private data class LightweightState(
         val text: String,
