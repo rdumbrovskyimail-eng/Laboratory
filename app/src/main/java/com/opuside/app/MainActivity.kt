@@ -16,12 +16,18 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.lifecycle.lifecycleScope
+import com.opuside.app.core.data.AppSettings
+import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.ui.theme.OpusIDETheme
 import com.opuside.app.core.util.CrashLogger
 import com.opuside.app.navigation.OpusIDENavigation
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import javax.inject.Inject
 import kotlin.system.exitProcess
 
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_preferences")
@@ -29,17 +35,25 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ap
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    @Inject
+    lateinit var claudeApiClient: ClaudeApiClient
+    
+    @Inject
+    lateinit var appSettings: AppSettings
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
         // 🔥 Проверяем, есть ли свежие краш-логи
         checkForRecentCrashes()
         
+        // ✅ НОВОЕ: Автоматическая валидация API ключей при старте
+        performStartupValidation()
+        
         enableEdgeToEdge()
 
         setContent {
             OpusIDETheme {
-                // ✅ ИСПРАВЛЕНО: Используем LaunchedEffect вместо runBlocking
                 var showRootDialogSetting by remember { mutableStateOf(true) }
                 var isLoading by remember { mutableStateOf(true) }
                 
@@ -56,12 +70,10 @@ class MainActivity : ComponentActivity() {
                 var rootDialogDismissed by remember { mutableStateOf(false) }
                 var sensitiveFeatureDisabled by remember { mutableStateOf(false) }
                 
-                // ✅ ИСПРАВЛЕНО: Показываем диалог ВСЕГДА если настройка включена
                 if (!isLoading && showRootDialogSetting && !rootDialogDismissed) {
                     RootStatusDialog(
                         isRooted = isRooted,
                         onExitApp = {
-                            // ✅ ИСПРАВЛЕНО: Полное закрытие приложения
                             finishAndRemoveTask()
                             exitProcess(0)
                         },
@@ -75,7 +87,6 @@ class MainActivity : ComponentActivity() {
                         }
                     )
                 } else if (!isLoading) {
-                    // Основной UI приложения
                     Surface(
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.background
@@ -97,7 +108,6 @@ class MainActivity : ComponentActivity() {
             val crashLogger = CrashLogger.getInstance() ?: return
             val latestCrash = crashLogger.getLatestCrashLog() ?: return
             
-            // Проверяем, был ли краш в последние 5 минут
             val fiveMinutesAgo = System.currentTimeMillis() - (5 * 60 * 1000)
             if (latestCrash.lastModified() > fiveMinutesAgo) {
                 android.util.Log.w("MainActivity", "━".repeat(80))
@@ -108,7 +118,6 @@ class MainActivity : ComponentActivity() {
                 android.util.Log.w("MainActivity", "🕐 Time: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault()).format(latestCrash.lastModified())}")
                 android.util.Log.w("MainActivity", "━".repeat(80))
                 
-                // Выводим первые 50 строк лога в logcat для быстрой диагностики
                 android.util.Log.i("MainActivity", "📋 First 50 lines of crash log:")
                 latestCrash.readLines().take(50).forEach { line ->
                     android.util.Log.i("MainActivity", line)
@@ -118,22 +127,87 @@ class MainActivity : ComponentActivity() {
             android.util.Log.e("MainActivity", "Error checking for crashes", e)
         }
     }
+
+    /**
+     * ✅ НОВЫЙ МЕТОД: Валидация API ключей при старте приложения
+     * 
+     * Проверяет:
+     * - Наличие и корректность Anthropic API ключа
+     * - Настройки GitHub репозитория
+     * - Логирует результаты для диагностики
+     */
+    private fun performStartupValidation() {
+        lifecycleScope.launch {
+            android.util.Log.d("MainActivity", "━".repeat(80))
+            android.util.Log.d("MainActivity", "🔍 STARTUP VALIDATION")
+            android.util.Log.d("MainActivity", "━".repeat(80))
+            
+            // ═══════════════════════════════════════════════════════════
+            // ВАЛИДАЦИЯ CLAUDE API
+            // ═══════════════════════════════════════════════════════════
+            val isClaudeReady = try {
+                claudeApiClient.validateApiKey()
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Claude API validation error", e)
+                false
+            }
+            
+            if (isClaudeReady) {
+                android.util.Log.i("MainActivity", "✅ Claude API: Ready")
+                android.util.Log.i("MainActivity", "   • API key configured and valid")
+                android.util.Log.i("MainActivity", "   • Can send requests to Anthropic")
+            } else {
+                android.util.Log.w("MainActivity", "⚠️ Claude API: Not configured")
+                android.util.Log.w("MainActivity", "   • Please set API key in Settings")
+                android.util.Log.w("MainActivity", "   • Analyzer tab will show error until configured")
+            }
+            
+            // ═══════════════════════════════════════════════════════════
+            // ВАЛИДАЦИЯ GITHUB CONFIG
+            // ═══════════════════════════════════════════════════════════
+            val gitHubConfig = try {
+                appSettings.gitHubConfig.first()
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "GitHub config read error", e)
+                null
+            }
+            
+            val isGitHubReady = gitHubConfig?.isConfigured == true
+            
+            if (isGitHubReady && gitHubConfig != null) {
+                android.util.Log.i("MainActivity", "✅ GitHub: Ready")
+                android.util.Log.i("MainActivity", "   • Repository: ${gitHubConfig.fullName}")
+                android.util.Log.i("MainActivity", "   • Branch: ${gitHubConfig.branch}")
+                android.util.Log.i("MainActivity", "   • Token: ${if (gitHubConfig.token.isNotEmpty()) "Configured" else "Missing"}")
+            } else {
+                android.util.Log.w("MainActivity", "⚠️ GitHub: Not configured")
+                android.util.Log.w("MainActivity", "   • Please configure repository in Settings")
+                android.util.Log.w("MainActivity", "   • Creator tab will be limited until configured")
+            }
+            
+            // ═══════════════════════════════════════════════════════════
+            // ИТОГОВЫЙ СТАТУС
+            // ═══════════════════════════════════════════════════════════
+            android.util.Log.d("MainActivity", "━".repeat(80))
+            when {
+                isClaudeReady && isGitHubReady -> {
+                    android.util.Log.i("MainActivity", "🎉 ALL SYSTEMS GO - App fully functional")
+                }
+                isClaudeReady -> {
+                    android.util.Log.i("MainActivity", "⚡ PARTIAL - Analyzer ready, Creator limited")
+                }
+                isGitHubReady -> {
+                    android.util.Log.i("MainActivity", "⚡ PARTIAL - Creator ready, Analyzer limited")
+                }
+                else -> {
+                    android.util.Log.w("MainActivity", "⚠️ LIMITED MODE - Please configure Settings")
+                }
+            }
+            android.util.Log.d("MainActivity", "━".repeat(80))
+        }
+    }
 }
 
-/**
- * ✅ ПОЛНОСТЬЮ ПЕРЕРАБОТАННЫЙ: Root Status Dialog
- * 
- * ЛОГИКА:
- * - Показывается ВСЕГДА при старте (если настройка включена)
- * - Если НЕТ root:
- *   • Кнопка "Continue" активна (зелёная)
- *   • Кнопка "Disable Features" НЕАКТИВНА (серая)
- *   • Кнопка "Exit App" активна
- * - Если ЕСТЬ root:
- *   • Кнопка "Proceed Anyway" активна (красная, опасная)
- *   • Кнопка "Disable Features" активна (жёлтая)
- *   • Кнопка "Exit App" активна
- */
 @Composable
 fun RootStatusDialog(
     isRooted: Boolean,
@@ -162,9 +236,6 @@ fun RootStatusDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (isRooted) {
-                    // ═══════════════════════════════════════════════════════════
-                    // УСТРОЙСТВО С ROOT
-                    // ═══════════════════════════════════════════════════════════
                     Text(
                         text = "Your device has root access enabled. This significantly increases security risks:",
                         style = MaterialTheme.typography.bodyMedium
@@ -188,9 +259,6 @@ fun RootStatusDialog(
                         color = MaterialTheme.colorScheme.error
                     )
                 } else {
-                    // ═══════════════════════════════════════════════════════════
-                    // УСТРОЙСТВО БЕЗ ROOT
-                    // ═══════════════════════════════════════════════════════════
                     Text(
                         text = "Security check complete. No root access detected.",
                         style = MaterialTheme.typography.bodyMedium,
@@ -237,16 +305,13 @@ fun RootStatusDialog(
             }
         },
         confirmButton = {
-            // ═══════════════════════════════════════════════════════════
-            // ГЛАВНАЯ КНОПКА (справа)
-            // ═══════════════════════════════════════════════════════════
             Button(
                 onClick = onProceedAnyway,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isRooted) 
-                        MaterialTheme.colorScheme.error  // Красная если root
+                        MaterialTheme.colorScheme.error
                     else 
-                        MaterialTheme.colorScheme.primary, // Зелёная если нет root
+                        MaterialTheme.colorScheme.primary,
                     contentColor = if (isRooted)
                         MaterialTheme.colorScheme.onError
                     else
@@ -263,9 +328,6 @@ fun RootStatusDialog(
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // ═══════════════════════════════════════════════════════════
-                // КНОПКА "Exit App" - ВСЕГДА АКТИВНА
-                // ═══════════════════════════════════════════════════════════
                 OutlinedButton(
                     onClick = onExitApp,
                     colors = ButtonDefaults.outlinedButtonColors(
@@ -275,12 +337,9 @@ fun RootStatusDialog(
                     Text("Exit App")
                 }
                 
-                // ═══════════════════════════════════════════════════════════
-                // КНОПКА "Disable Features" - АКТИВНА ТОЛЬКО ПРИ ROOT
-                // ═══════════════════════════════════════════════════════════
                 OutlinedButton(
                     onClick = onDisableSensitiveFeatures,
-                    enabled = isRooted, // ✅ АКТИВНА только если есть root
+                    enabled = isRooted,
                     colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = if (isRooted)
                             MaterialTheme.colorScheme.tertiary
