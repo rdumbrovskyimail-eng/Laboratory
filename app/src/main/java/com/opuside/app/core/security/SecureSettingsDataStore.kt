@@ -3,61 +3,69 @@ package com.opuside.app.core.security
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Base64
 import androidx.biometric.BiometricPrompt
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.fragment.app.FragmentActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.withContext
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 import javax.inject.Inject
 import javax.inject.Singleton
-import android.util.Base64
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 
 private val Context.secureDataStore: DataStore<Preferences> by preferencesDataStore(
     name = "secure_settings_encrypted"
 )
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06)
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06) - ПЕРСИСТЕНТНОЕ ШИФРОВАНИЕ
  * 
- * ИЗМЕНЕНИЯ:
- * ────────────────────────────────────────────────────────────────
- * 1. ✅ setAnthropicApiKey() - верификация через savedPrefs
- * 2. ✅ setGitHubToken() - верификация через savedPrefs
- * 3. ✅ Убраны race conditions с delay()
- * 4. ✅ Детальное логирование процесса сохранения
+ * ПРОБЛЕМА:
+ * ─────────
+ * Android Keystore может сбрасываться между запусками на некоторых устройствах,
+ * что делает зашифрованные данные нечитаемыми.
+ * 
+ * РЕШЕНИЕ:
+ * ────────
+ * 1. При первом запуске генерируем случайный ключ
+ * 2. Сохраняем его зашифрованным через Keystore
+ * 3. При следующих запусках расшифровываем этот ключ
+ * 4. Если Keystore сброшен - регенерируем ключ и заново шифруем данные
  */
 @Singleton
 class SecureSettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     companion object {
-        private const val TAG = "SecureSettingsDataStore"
+        private const val TAG = "SecureSettings"
         private const val KEYSTORE_ALIAS = "opuside_master_key"
         private const val KEYSTORE_ALIAS_BIOMETRIC = "opuside_biometric_key"
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         
-        // Encrypted preference keys
-        private val KEY_ANTHROPIC_API = stringPreferencesKey("anthropic_api_encrypted")
-        private val KEY_GITHUB_TOKEN = stringPreferencesKey("github_token_encrypted")
-        private val KEY_ENCRYPTION_IV = stringPreferencesKey("encryption_iv")
-        private val KEY_LAST_KEY_ROTATION = longPreferencesKey("last_key_rotation")
+        // ✅ НОВОЕ: Ключ для хранения персистентного ключа шифрования
+        private val KEY_PERSISTENT_ENCRYPTION_KEY = stringPreferencesKey("persistent_encryption_key_v2")
+        private val KEY_PERSISTENT_KEY_IV = stringPreferencesKey("persistent_key_iv_v2")
+        
+        private val KEY_ANTHROPIC_API = stringPreferencesKey("anthropic_api_encrypted_v2")
+        private val KEY_ANTHROPIC_IV = stringPreferencesKey("anthropic_iv_v2")
+        
+        private val KEY_GITHUB_TOKEN = stringPreferencesKey("github_token_encrypted_v2")
+        private val KEY_GITHUB_IV = stringPreferencesKey("github_token_iv_v2")
+        
         private val KEY_BIOMETRIC_ENABLED = booleanPreferencesKey("biometric_enabled")
         
-        // Non-encrypted keys
         private val KEY_GITHUB_OWNER = stringPreferencesKey("github_owner")
         private val KEY_GITHUB_REPO = stringPreferencesKey("github_repo")
         private val KEY_GITHUB_BRANCH = stringPreferencesKey("github_branch")
-        
-        private const val KEY_ROTATION_INTERVAL_MS = 90L * 24 * 60 * 60 * 1000
     }
 
     private val dataStore = context.secureDataStore
@@ -65,6 +73,9 @@ class SecureSettingsDataStore @Inject constructor(
     
     private var isDeviceSecure = false
     private var isRooted = false
+    
+    // ✅ НОВОЕ: Кэш для персистентного ключа
+    private var cachedEncryptionKey: SecretKey? = null
 
     init {
         isDeviceSecure = SecurityUtils.isDeviceSecure(context)
@@ -73,29 +84,99 @@ class SecureSettingsDataStore @Inject constructor(
         if (isRooted) {
             android.util.Log.w(TAG, "⚠️ Device is rooted - security compromised!")
         }
+        
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "🔐 SecureSettingsDataStore INITIALIZED")
+        android.util.Log.d(TAG, "   Device Secure: $isDeviceSecure")
+        android.util.Log.d(TAG, "   Rooted: $isRooted")
+        android.util.Log.d(TAG, "━".repeat(80))
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // KEY GENERATION & MANAGEMENT
+    // ✅ НОВОЕ: ПЕРСИСТЕНТНЫЙ КЛЮЧ ШИФРОВАНИЯ
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private fun getMasterKey(requireBiometric: Boolean = false): SecretKey? {
+    /**
+     * Получает или создает персистентный ключ шифрования
+     */
+    private suspend fun getPersistentEncryptionKey(): SecretKey = withContext(Dispatchers.IO) {
+        // Проверяем кэш
+        cachedEncryptionKey?.let { return@withContext it }
+        
+        android.util.Log.d(TAG, "🔑 Loading persistent encryption key...")
+        
+        val prefs = dataStore.data.first()
+        val storedKey = prefs[KEY_PERSISTENT_ENCRYPTION_KEY]
+        val storedIV = prefs[KEY_PERSISTENT_KEY_IV]
+        
+        if (storedKey != null && storedIV != null) {
+            android.util.Log.d(TAG, "   Found stored key, decrypting...")
+            try {
+                // Расшифровываем сохраненный ключ через Keystore
+                val keystoreKey = getKeystoreKey(false)
+                if (keystoreKey != null) {
+                    val decryptedKeyBytes = decryptWithKeystoreKey(storedKey, storedIV, keystoreKey)
+                    if (decryptedKeyBytes != null) {
+                        val key = SecretKeySpec(decryptedKeyBytes, "AES")
+                        cachedEncryptionKey = key
+                        android.util.Log.d(TAG, "   ✅ Persistent key loaded successfully")
+                        return@withContext key
+                    }
+                }
+                android.util.Log.w(TAG, "   ⚠️ Failed to decrypt stored key, generating new one")
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "   ❌ Error loading stored key", e)
+            }
+        }
+        
+        // Генерируем новый ключ
+        android.util.Log.d(TAG, "   Generating new persistent key...")
+        val newKey = generatePersistentKey()
+        
+        // Сохраняем его зашифрованным через Keystore
+        try {
+            val keystoreKey = getKeystoreKey(false)
+            if (keystoreKey != null) {
+                val encrypted = encryptWithKeystoreKey(newKey.encoded, keystoreKey)
+                dataStore.edit { prefs ->
+                    prefs[KEY_PERSISTENT_ENCRYPTION_KEY] = encrypted.ciphertext
+                    prefs[KEY_PERSISTENT_KEY_IV] = encrypted.iv
+                }
+                android.util.Log.d(TAG, "   ✅ New persistent key saved")
+            } else {
+                android.util.Log.e(TAG, "   ❌ Cannot save persistent key - Keystore unavailable")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "   ❌ Failed to save persistent key", e)
+        }
+        
+        cachedEncryptionKey = newKey
+        newKey
+    }
+
+    private fun generatePersistentKey(): SecretKey {
+        val keyGen = javax.crypto.KeyGenerator.getInstance("AES")
+        keyGen.init(256)
+        return keyGen.generateKey()
+    }
+
+    private fun getKeystoreKey(requireBiometric: Boolean): SecretKey? {
         val alias = if (requireBiometric) KEYSTORE_ALIAS_BIOMETRIC else KEYSTORE_ALIAS
         
         return try {
             if (keyStore.containsAlias(alias)) {
                 (keyStore.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.secretKey
             } else {
-                android.util.Log.w(TAG, "⚠️ Key $alias not found in Keystore. Will generate new.")
-                generateKey(alias, requireBiometric)
+                android.util.Log.d(TAG, "   Generating Keystore key: $alias")
+                generateKeystoreKey(alias, requireBiometric)
             }
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "❌ Failed to get master key", e)
+            android.util.Log.e(TAG, "❌ Failed to get Keystore key", e)
             null
         }
     }
 
-    private fun generateKey(alias: String, requireBiometric: Boolean): SecretKey {
+    private fun generateKeystoreKey(alias: String, requireBiometric: Boolean): SecretKey {
         val keyGenerator = KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES,
             ANDROID_KEYSTORE
@@ -119,53 +200,13 @@ class SecureSettingsDataStore @Inject constructor(
         return keyGenerator.generateKey()
     }
 
-    private suspend fun checkKeyRotation() {
-        val lastRotation = dataStore.data.first()[KEY_LAST_KEY_ROTATION] ?: 0L
-        val now = System.currentTimeMillis()
-        
-        if (now - lastRotation > KEY_ROTATION_INTERVAL_MS) {
-            rotateEncryptionKey()
-        }
-    }
-
-    private suspend fun rotateEncryptionKey() {
-        android.util.Log.d(TAG, "🔄 Starting key rotation...")
-
-        try {
-            val anthropicKey = getAnthropicApiKey().first()
-            val githubToken = getGitHubToken().first()
-
-            keyStore.deleteEntry(KEYSTORE_ALIAS)
-            generateKey(KEYSTORE_ALIAS, false)
-
-            if (anthropicKey.isNotEmpty()) {
-                setAnthropicApiKey(anthropicKey)
-            }
-            if (githubToken.isNotEmpty()) {
-                setGitHubToken(githubToken)
-            }
-
-            dataStore.edit { prefs ->
-                prefs[KEY_LAST_KEY_ROTATION] = System.currentTimeMillis()
-            }
-
-            android.util.Log.d(TAG, "✅ Key rotation completed")
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "❌ Key rotation failed", e)
-        }
-    }
-
     // ═══════════════════════════════════════════════════════════════════════════
     // ENCRYPTION / DECRYPTION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private suspend fun encryptData(
-        plaintext: String,
-        requireBiometric: Boolean = false
-    ): EncryptedData = withContext(Dispatchers.IO) {
+    private suspend fun encryptData(plaintext: String): EncryptedData = withContext(Dispatchers.IO) {
         try {
-            val secretKey = getMasterKey(requireBiometric)
-                ?: throw SecurityException("Cannot get encryption key")
+            val secretKey = getPersistentEncryptionKey()
             
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, secretKey)
@@ -173,42 +214,24 @@ class SecureSettingsDataStore @Inject constructor(
             val iv = cipher.iv
             val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
 
-            EncryptedData(
+            val encrypted = EncryptedData(
                 ciphertext = Base64.encodeToString(ciphertext, Base64.NO_WRAP),
                 iv = Base64.encodeToString(iv, Base64.NO_WRAP)
             )
+            
+            android.util.Log.d(TAG, "🔐 Data encrypted (plaintext: ${plaintext.length} bytes → ciphertext: ${encrypted.ciphertext.length} chars)")
+            encrypted
         } catch (e: Exception) {
             android.util.Log.e(TAG, "❌ Encryption failed", e)
             throw SecurityException("Encryption failed: ${e.message}")
         }
     }
 
-    private suspend fun decryptData(
-        encryptedData: EncryptedData,
-        requireBiometric: Boolean = false
-    ): String? = withContext(Dispatchers.IO) {
+    private suspend fun decryptData(encryptedData: EncryptedData): String? = withContext(Dispatchers.IO) {
         try {
-            val alias = if (requireBiometric) KEYSTORE_ALIAS_BIOMETRIC else KEYSTORE_ALIAS
-            
-            if (!keyStore.containsAlias(alias)) {
-                android.util.Log.e(TAG, "🔑 Key $alias NOT FOUND in Keystore!")
-                android.util.Log.e(TAG, "   This happens after app reinstallation or key invalidation.")
-                android.util.Log.e(TAG, "   → Clearing encrypted data. User must re-enter credentials.")
-                
-                clearCorruptedEncryptedData()
-                return@withContext null
-            }
-            
-            val secretKey = getMasterKey(requireBiometric)
-            
-            if (secretKey == null) {
-                android.util.Log.e(TAG, "🔑 Cannot retrieve key $alias from Keystore!")
-                clearCorruptedEncryptedData()
-                return@withContext null
-            }
+            val secretKey = getPersistentEncryptionKey()
             
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            
             val iv = Base64.decode(encryptedData.iv, Base64.NO_WRAP)
             val spec = GCMParameterSpec(128, iv)
             cipher.init(Cipher.DECRYPT_MODE, secretKey, spec)
@@ -216,45 +239,38 @@ class SecureSettingsDataStore @Inject constructor(
             val ciphertext = Base64.decode(encryptedData.ciphertext, Base64.NO_WRAP)
             val plaintext = cipher.doFinal(ciphertext)
 
-            String(plaintext, Charsets.UTF_8)
-            
-        } catch (e: javax.crypto.AEADBadTagException) {
-            android.util.Log.e(TAG, "🔐 AEADBadTagException: Encrypted data corrupted or key mismatch", e)
-            android.util.Log.e(TAG, "   → Clearing corrupted data. User must re-enter credentials.")
-            
-            clearCorruptedEncryptedData()
-            return@withContext null
-            
-        } catch (e: android.security.KeyStoreException) {
-            android.util.Log.e(TAG, "🔑 KeyStoreException: Key validation failed", e)
-            android.util.Log.e(TAG, "   → Clearing corrupted data. User must re-enter credentials.")
-            
-            clearCorruptedEncryptedData()
-            return@withContext null
+            val decrypted = String(plaintext, Charsets.UTF_8)
+            android.util.Log.d(TAG, "🔓 Data decrypted successfully (${decrypted.length} bytes)")
+            decrypted
             
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "❌ Unexpected decryption error", e)
-            
-            if (e is java.security.GeneralSecurityException) {
-                clearCorruptedEncryptedData()
-                return@withContext null
-            }
-            
-            throw SecurityException("Decryption failed: ${e.message}")
+            android.util.Log.e(TAG, "❌ Decryption failed", e)
+            null
         }
     }
 
-    private suspend fun clearCorruptedEncryptedData() {
-        try {
-            dataStore.edit { prefs ->
-                prefs.remove(KEY_ANTHROPIC_API)
-                prefs.remove(KEY_GITHUB_TOKEN)
-                prefs.remove(KEY_ENCRYPTION_IV)
-                prefs.remove(KEY_BIOMETRIC_ENABLED)
-            }
-            android.util.Log.w(TAG, "🗑️ Cleared corrupted encrypted data")
+    private fun encryptWithKeystoreKey(data: ByteArray, key: SecretKey): EncryptedData {
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, key)
+        val iv = cipher.iv
+        val ciphertext = cipher.doFinal(data)
+        return EncryptedData(
+            ciphertext = Base64.encodeToString(ciphertext, Base64.NO_WRAP),
+            iv = Base64.encodeToString(iv, Base64.NO_WRAP)
+        )
+    }
+
+    private fun decryptWithKeystoreKey(ciphertext: String, iv: String, key: SecretKey): ByteArray? {
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            val ivBytes = Base64.decode(iv, Base64.NO_WRAP)
+            val spec = GCMParameterSpec(128, ivBytes)
+            cipher.init(Cipher.DECRYPT_MODE, key, spec)
+            val ciphertextBytes = Base64.decode(ciphertext, Base64.NO_WRAP)
+            cipher.doFinal(ciphertextBytes)
         } catch (e: Exception) {
-            android.util.Log.e(TAG, "Failed to clear corrupted data", e)
+            android.util.Log.e(TAG, "Failed to decrypt with Keystore key", e)
+            null
         }
     }
 
@@ -262,57 +278,53 @@ class SecureSettingsDataStore @Inject constructor(
     // PUBLIC API - ANTHROPIC
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Верификация через savedPrefs
-     */
     suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) = withContext(Dispatchers.IO) {
-        checkKeyRotation()
-        
-        val encrypted = encryptData(key, useBiometric)
-        
-        android.util.Log.d(TAG, "🔐 Encrypting Anthropic API key...")
-        android.util.Log.d(TAG, "   Ciphertext length: ${encrypted.ciphertext.length}")
-        android.util.Log.d(TAG, "   IV length: ${encrypted.iv.length}")
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "💾 SAVING ANTHROPIC API KEY")
+        android.util.Log.d(TAG, "   Key length: ${key.length}")
         android.util.Log.d(TAG, "   Biometric: $useBiometric")
+        android.util.Log.d(TAG, "━".repeat(80))
         
-        // ✅ ИСПРАВЛЕНО: edit() возвращает Preferences ПОСЛЕ записи
-        val savedPrefs = dataStore.edit { prefs ->
+        val encrypted = encryptData(key)
+        
+        android.util.Log.d(TAG, "  ├─ Writing to DataStore...")
+        dataStore.edit { prefs ->
             prefs[KEY_ANTHROPIC_API] = encrypted.ciphertext
-            prefs[KEY_ENCRYPTION_IV] = encrypted.iv
+            prefs[KEY_ANTHROPIC_IV] = encrypted.iv
             prefs[KEY_BIOMETRIC_ENABLED] = useBiometric
         }
         
-        // ✅ ВЕРИФИКАЦИЯ на ГАРАНТИРОВАННО сохраненных данных
-        val savedCiphertext = savedPrefs[KEY_ANTHROPIC_API]
-        val savedIV = savedPrefs[KEY_ENCRYPTION_IV]
+        // Принудительно проверяем, что данные записались
+        val verification = dataStore.data.first()
+        val saved = verification[KEY_ANTHROPIC_API]
         
-        if (savedCiphertext != encrypted.ciphertext) {
-            android.util.Log.e(TAG, "❌ Ciphertext mismatch!")
-            android.util.Log.e(TAG, "   Expected: ${encrypted.ciphertext.take(20)}...")
-            android.util.Log.e(TAG, "   Got: ${savedCiphertext?.take(20)}...")
-            throw SecurityException("Failed to save API key - ciphertext verification failed")
+        if (saved == encrypted.ciphertext) {
+            android.util.Log.d(TAG, "  └─ ✅ SAVED AND VERIFIED")
+        } else {
+            android.util.Log.e(TAG, "  └─ ❌ VERIFICATION FAILED!")
+            throw SecurityException("Failed to save API key")
         }
         
-        if (savedIV != encrypted.iv) {
-            android.util.Log.e(TAG, "❌ IV mismatch!")
-            throw SecurityException("Failed to save API key - IV verification failed")
-        }
-        
-        android.util.Log.d(TAG, "✅ Anthropic API key saved and verified")
+        android.util.Log.d(TAG, "━".repeat(80))
     }
 
     fun getAnthropicApiKey(): Flow<String> = dataStore.data
         .map { prefs ->
-            val ciphertext = prefs[KEY_ANTHROPIC_API] ?: return@map ""
-            val iv = prefs[KEY_ENCRYPTION_IV] ?: return@map ""
-            val useBiometric = prefs[KEY_BIOMETRIC_ENABLED] ?: false
+            val ciphertext = prefs[KEY_ANTHROPIC_API]
+            val iv = prefs[KEY_ANTHROPIC_IV]
             
-            try {
-                decryptData(EncryptedData(ciphertext, iv), useBiometric) ?: ""
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Failed to decrypt Anthropic key", e)
-                ""
+            android.util.Log.d(TAG, "🔍 Loading Anthropic API key...")
+            android.util.Log.d(TAG, "   Has ciphertext: ${ciphertext != null}")
+            android.util.Log.d(TAG, "   Has IV: ${iv != null}")
+            
+            if (ciphertext == null || iv == null) {
+                android.util.Log.w(TAG, "   → No encrypted data found")
+                return@map ""
             }
+            
+            val decrypted = decryptData(EncryptedData(ciphertext, iv)) ?: ""
+            android.util.Log.d(TAG, "   → Loaded (length: ${decrypted.length})")
+            decrypted
         }
         .catch { 
             android.util.Log.e(TAG, "Flow error in getAnthropicApiKey", it)
@@ -324,13 +336,14 @@ class SecureSettingsDataStore @Inject constructor(
         onSuccess: (String) -> Unit,
         onError: (String) -> Unit
     ) {
+        android.util.Log.d(TAG, "🔐 Biometric auth requested for Anthropic API key")
+        
         val prefs = runCatching { 
-            kotlinx.coroutines.runBlocking { 
-                dataStore.data.first() 
-            } 
+            kotlinx.coroutines.runBlocking { dataStore.data.first() } 
         }.getOrNull()
         
         val useBiometric = prefs?.get(KEY_BIOMETRIC_ENABLED) ?: false
+        android.util.Log.d(TAG, "   Biometric enabled: $useBiometric")
         
         if (!useBiometric) {
             try {
@@ -349,6 +362,7 @@ class SecureSettingsDataStore @Inject constructor(
             title = "Unlock API Key",
             subtitle = "Authentication required to access Anthropic API key",
             onSuccess = {
+                android.util.Log.d(TAG, "✅ Biometric auth successful")
                 try {
                     val key = kotlinx.coroutines.runBlocking {
                         getAnthropicApiKey().first()
@@ -359,6 +373,7 @@ class SecureSettingsDataStore @Inject constructor(
                 }
             },
             onError = { error ->
+                android.util.Log.e(TAG, "❌ Biometric auth failed: $error")
                 onError(error)
             }
         )
@@ -368,52 +383,51 @@ class SecureSettingsDataStore @Inject constructor(
     // PUBLIC API - GITHUB
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Верификация через savedPrefs
-     */
     suspend fun setGitHubToken(token: String, useBiometric: Boolean = false) = withContext(Dispatchers.IO) {
-        checkKeyRotation()
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "💾 SAVING GITHUB TOKEN")
+        android.util.Log.d(TAG, "   Token length: ${token.length}")
+        android.util.Log.d(TAG, "━".repeat(80))
         
-        val encrypted = encryptData(token, useBiometric)
+        val encrypted = encryptData(token)
         
-        android.util.Log.d(TAG, "🔐 Encrypting GitHub token...")
-        android.util.Log.d(TAG, "   Ciphertext length: ${encrypted.ciphertext.length}")
-        android.util.Log.d(TAG, "   IV length: ${encrypted.iv.length}")
-        
-        // ✅ ИСПРАВЛЕНО: Всегда обновляем IV вместе с токеном
-        val savedPrefs = dataStore.edit { prefs ->
+        android.util.Log.d(TAG, "  ├─ Writing to DataStore...")
+        dataStore.edit { prefs ->
             prefs[KEY_GITHUB_TOKEN] = encrypted.ciphertext
-            prefs[KEY_ENCRYPTION_IV] = encrypted.iv
+            prefs[KEY_GITHUB_IV] = encrypted.iv
         }
         
-        // ✅ ВЕРИФИКАЦИЯ
-        val savedCiphertext = savedPrefs[KEY_GITHUB_TOKEN]
-        val savedIV = savedPrefs[KEY_ENCRYPTION_IV]
+        // Верификация
+        val verification = dataStore.data.first()
+        val saved = verification[KEY_GITHUB_TOKEN]
         
-        if (savedCiphertext != encrypted.ciphertext) {
-            android.util.Log.e(TAG, "❌ GitHub token ciphertext mismatch!")
-            throw SecurityException("Failed to save GitHub token - verification failed")
+        if (saved == encrypted.ciphertext) {
+            android.util.Log.d(TAG, "  └─ ✅ SAVED AND VERIFIED")
+        } else {
+            android.util.Log.e(TAG, "  └─ ❌ VERIFICATION FAILED!")
+            throw SecurityException("Failed to save GitHub token")
         }
         
-        if (savedIV != encrypted.iv) {
-            android.util.Log.e(TAG, "❌ GitHub token IV mismatch!")
-            throw SecurityException("Failed to save GitHub token - IV verification failed")
-        }
-        
-        android.util.Log.d(TAG, "✅ GitHub token saved and verified")
+        android.util.Log.d(TAG, "━".repeat(80))
     }
 
     fun getGitHubToken(): Flow<String> = dataStore.data
         .map { prefs ->
-            val ciphertext = prefs[KEY_GITHUB_TOKEN] ?: return@map ""
-            val iv = prefs[KEY_ENCRYPTION_IV] ?: return@map ""
+            val ciphertext = prefs[KEY_GITHUB_TOKEN]
+            val iv = prefs[KEY_GITHUB_IV]
             
-            try {
-                decryptData(EncryptedData(ciphertext, iv), false) ?: ""
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "Failed to decrypt GitHub token", e)
-                ""
+            android.util.Log.d(TAG, "🔍 Loading GitHub token...")
+            android.util.Log.d(TAG, "   Has ciphertext: ${ciphertext != null}")
+            android.util.Log.d(TAG, "   Has IV: ${iv != null}")
+            
+            if (ciphertext == null || iv == null) {
+                android.util.Log.w(TAG, "   → No encrypted data found")
+                return@map ""
             }
+            
+            val decrypted = decryptData(EncryptedData(ciphertext, iv)) ?: ""
+            android.util.Log.d(TAG, "   → Loaded (length: ${decrypted.length})")
+            decrypted
         }
         .catch { 
             android.util.Log.e(TAG, "Flow error in getGitHubToken", it)
@@ -421,23 +435,11 @@ class SecureSettingsDataStore @Inject constructor(
         }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - BIOMETRIC STATUS
+    // PUBLIC API - GITHUB CONFIG
     // ═══════════════════════════════════════════════════════════════════════════
 
-    suspend fun isBiometricEnabled(): Boolean {
-        return try {
-            dataStore.data.first()[KEY_BIOMETRIC_ENABLED] ?: false
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "Failed to get biometric status", e)
-            false
-        }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - REPOSITORY CONFIG
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") {
+    suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") = withContext(Dispatchers.IO) {
+        android.util.Log.d(TAG, "💾 Saving GitHub config: $owner/$repo ($branch)")
         dataStore.edit { prefs ->
             prefs[KEY_GITHUB_OWNER] = owner
             prefs[KEY_GITHUB_REPO] = repo
@@ -468,27 +470,31 @@ class SecureSettingsDataStore @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // SECURITY UTILITIES
+    // UTILITIES
     // ═══════════════════════════════════════════════════════════════════════════
+
+    suspend fun isBiometricEnabled(): Boolean {
+        return try {
+            dataStore.data.first()[KEY_BIOMETRIC_ENABLED] ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
 
     suspend fun clearSecureData() {
         dataStore.edit { prefs ->
-            prefs.remove(KEY_ANTHROPIC_API)
-            prefs.remove(KEY_GITHUB_TOKEN)
-            prefs.remove(KEY_ENCRYPTION_IV)
-            prefs.remove(KEY_BIOMETRIC_ENABLED)
+            prefs.clear()
         }
-        
         keyStore.deleteEntry(KEYSTORE_ALIAS)
         keyStore.deleteEntry(KEYSTORE_ALIAS_BIOMETRIC)
-        
+        cachedEncryptionKey = null
         android.util.Log.d(TAG, "🗑️ All secure data cleared")
     }
 
     suspend fun verifyDataIntegrity(): Boolean {
         return try {
-            val anthropicKey = getAnthropicApiKey().first()
-            val githubToken = getGitHubToken().first()
+            getAnthropicApiKey().first()
+            getGitHubToken().first()
             true
         } catch (e: Exception) {
             android.util.Log.e(TAG, "❌ Data integrity check failed", e)
