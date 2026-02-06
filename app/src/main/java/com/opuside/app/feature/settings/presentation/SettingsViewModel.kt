@@ -1,5 +1,7 @@
 package com.opuside.app.feature.settings.presentation
 
+import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.BuildConfig
@@ -8,7 +10,9 @@ import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.GitHubRepository
 import com.opuside.app.core.security.SecureSettingsDataStore
+import com.opuside.app.core.util.ConfigImporter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -24,6 +28,7 @@ sealed class ConnectionStatus {
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val appSettings: AppSettings,
     private val secureSettings: SecureSettingsDataStore,
     private val gitHubClient: GitHubApiClient,
@@ -65,9 +70,6 @@ class SettingsViewModel @Inject constructor(
     private val _claudeStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
     val claudeStatus: StateFlow<ConnectionStatus> = _claudeStatus.asStateFlow()
 
-    private val _useBiometricInput = MutableStateFlow(false)
-    val useBiometricInput: StateFlow<Boolean> = _useBiometricInput.asStateFlow()
-
     // ═════════════════════════════════════════════════════════════════════════
     // STATE - Cache Settings
     // ═════════════════════════════════════════════════════════════════════════
@@ -95,7 +97,7 @@ class SettingsViewModel @Inject constructor(
     val biometricAuthRequest: StateFlow<Boolean> = _biometricAuthRequest.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // 🔐 НОВОЕ: STATE - Biometric Lock
+    // 🔐 STATE - Biometric Lock
     // ═════════════════════════════════════════════════════════════════════════
     
     private val _isUnlocked = MutableStateFlow(false)
@@ -104,7 +106,12 @@ class SettingsViewModel @Inject constructor(
     private val _unlockExpiration = MutableStateFlow<Long?>(null)
     val unlockExpiration: StateFlow<Long?> = _unlockExpiration.asStateFlow()
     
+    // ✅ ИСПРАВЛЕНО: Таймер для обновления UI каждую секунду
+    private val _timerTick = MutableStateFlow(0L)
+    val timerTick: StateFlow<Long> = _timerTick.asStateFlow()
+    
     private var unlockJob: Job? = null
+    private var timerJob: Job? = null
     
     // ═════════════════════════════════════════════════════════════════════════
     // PUBLIC PROPERTIES
@@ -161,16 +168,6 @@ class SettingsViewModel @Inject constructor(
                     ""
                 }
 
-                android.util.Log.d(TAG, "  ├─ Loading biometric status...")
-                val biometricEnabled = try {
-                    val enabled = secureSettings.isBiometricEnabled()
-                    android.util.Log.d(TAG, "  │  └─ Biometric: ${if (enabled) "ENABLED" else "DISABLED"}")
-                    enabled
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to load biometric status", e)
-                    false
-                }
-
                 android.util.Log.d(TAG, "  ├─ Loading Claude model...")
                 val claudeModel = try {
                     appSettings.claudeModel.first()
@@ -197,19 +194,11 @@ class SettingsViewModel @Inject constructor(
                 _githubTokenInput.value = githubToken
                 _anthropicKeyInput.value = anthropicKey
                 _claudeModelInput.value = claudeModel
-                _useBiometricInput.value = biometricEnabled
                 _cacheTimeoutInput.value = cacheConfig.timeoutMinutes
                 _maxCacheFilesInput.value = cacheConfig.maxFiles
                 _autoClearCacheInput.value = cacheConfig.autoClear
                 
                 android.util.Log.d(TAG, "")
-                android.util.Log.d(TAG, "🔍 VERIFICATION - Loaded values:")
-                android.util.Log.d(TAG, "   GitHub Owner: ${_githubOwnerInput.value.ifEmpty { "[EMPTY]" }}")
-                android.util.Log.d(TAG, "   GitHub Repo: ${_githubRepoInput.value.ifEmpty { "[EMPTY]" }}")
-                android.util.Log.d(TAG, "   GitHub Token: ${if (_githubTokenInput.value.isNotEmpty()) "[${_githubTokenInput.value.take(10)}...]" else "[EMPTY]"}")
-                android.util.Log.d(TAG, "   Anthropic Key: ${if (_anthropicKeyInput.value.isNotEmpty()) "[${_anthropicKeyInput.value.take(10)}...]" else "[EMPTY]"}")
-                android.util.Log.d(TAG, "   Biometric: ${_useBiometricInput.value}")
-                
                 android.util.Log.d(TAG, "━".repeat(80))
                 android.util.Log.d(TAG, "✅ Settings loaded successfully")
                 android.util.Log.d(TAG, "━".repeat(80))
@@ -224,11 +213,11 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // 🔐 НОВОЕ: BIOMETRIC LOCK MANAGEMENT
+    // 🔐 BIOMETRIC LOCK MANAGEMENT
     // ═════════════════════════════════════════════════════════════════════════
 
     /**
-     * Разблокировка Settings на 5 минут
+     * ✅ ИСПРАВЛЕНО: Разблокировка Settings на 5 минут с работающим таймером
      */
     fun unlock() {
         android.util.Log.d(TAG, "🔓 Settings UNLOCKED")
@@ -237,13 +226,29 @@ class SettingsViewModel @Inject constructor(
         val expirationTime = System.currentTimeMillis() + UNLOCK_TIMEOUT_MS
         _unlockExpiration.value = expirationTime
         
-        // Отменяем предыдущий таймер
+        // Отменяем предыдущие таймеры
         unlockJob?.cancel()
+        timerJob?.cancel()
         
-        // Запускаем новый таймер автоблокировки
+        // ✅ ИСПРАВЛЕНО: Таймер автоблокировки
         unlockJob = viewModelScope.launch {
             delay(UNLOCK_TIMEOUT_MS)
             lock()
+        }
+        
+        // ✅ НОВОЕ: Таймер для обновления UI каждую секунду
+        timerJob = viewModelScope.launch {
+            while (_isUnlocked.value) {
+                delay(1000) // Обновляем каждую секунду
+                _timerTick.value = System.currentTimeMillis()
+                
+                // Проверяем, не истек ли таймер
+                val expiration = _unlockExpiration.value
+                if (expiration != null && System.currentTimeMillis() >= expiration) {
+                    lock()
+                    break
+                }
+            }
         }
     }
 
@@ -256,6 +261,8 @@ class SettingsViewModel @Inject constructor(
         _unlockExpiration.value = null
         unlockJob?.cancel()
         unlockJob = null
+        timerJob?.cancel()
+        timerJob = null
     }
 
     /**
@@ -282,6 +289,86 @@ class SettingsViewModel @Inject constructor(
         android.util.Log.e(TAG, "❌ Biometric authentication failed: $error")
         _message.value = "❌ Authentication failed: $error"
         clearBiometricRequest()
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // ✅ НОВОЕ: CONFIG IMPORT/EXPORT
+    // ═════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Импортирует конфигурацию из файла
+     */
+    fun importConfigFromFile(fileUri: Uri) {
+        if (!_isUnlocked.value) {
+            _message.value = "🔒 Unlock Settings to import configuration"
+            return
+        }
+        
+        viewModelScope.launch {
+            _isSaving.value = true
+            
+            android.util.Log.d(TAG, "━".repeat(80))
+            android.util.Log.d(TAG, "📥 IMPORTING CONFIGURATION")
+            android.util.Log.d(TAG, "━".repeat(80))
+            
+            try {
+                val result = ConfigImporter.importConfig(context, fileUri)
+                
+                result.onSuccess { config ->
+                    android.util.Log.d(TAG, "  ├─ Applying configuration...")
+                    
+                    // GitHub settings
+                    config.githubOwner?.let { _githubOwnerInput.value = it }
+                    config.githubRepo?.let { _githubRepoInput.value = it }
+                    config.githubBranch?.let { _githubBranchInput.value = it }
+                    config.githubToken?.let { _githubTokenInput.value = it }
+                    
+                    // Claude settings
+                    config.claudeApiKey?.let { _anthropicKeyInput.value = it }
+                    config.claudeModel?.let { _claudeModelInput.value = it }
+                    
+                    // Cache settings
+                    config.cacheTimeout?.let { _cacheTimeoutInput.value = it }
+                    config.maxCacheFiles?.let { _maxCacheFilesInput.value = it }
+                    config.autoClearCache?.let { _autoClearCacheInput.value = it }
+                    
+                    android.util.Log.d(TAG, "  └─ ✅ Configuration applied")
+                    android.util.Log.d(TAG, "")
+                    android.util.Log.d(TAG, "📊 SUMMARY:")
+                    android.util.Log.d(TAG, config.toSummary())
+                    android.util.Log.d(TAG, "━".repeat(80))
+                    
+                    _message.value = "✅ Configuration imported!\n\n${config.toSummary()}\n\n⚠️ Don't forget to click Save!"
+                    
+                }.onFailure { error ->
+                    android.util.Log.e(TAG, "❌ Import failed", error)
+                    _message.value = "❌ Import failed: ${error.message}"
+                }
+                
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "❌ Import error", e)
+                _message.value = "❌ Import error: ${e.message}"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    /**
+     * Экспортирует текущую конфигурацию в строку
+     */
+    fun exportCurrentConfig(): String {
+        return ConfigImporter.exportConfig(
+            githubOwner = _githubOwnerInput.value,
+            githubRepo = _githubRepoInput.value,
+            githubBranch = _githubBranchInput.value,
+            githubToken = _githubTokenInput.value,
+            claudeApiKey = _anthropicKeyInput.value,
+            claudeModel = _claudeModelInput.value,
+            cacheTimeout = _cacheTimeoutInput.value,
+            maxFiles = _maxCacheFilesInput.value,
+            autoClear = _autoClearCacheInput.value
+        )
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -336,52 +423,6 @@ class SettingsViewModel @Inject constructor(
     fun updateClaudeModel(model: String) {
         _claudeModelInput.value = model
         android.util.Log.d(TAG, "🔄 Claude Model updated: $model")
-    }
-
-    fun updateUseBiometric(enabled: Boolean) {
-        // Биометрию можно включить/выключить ТОЛЬКО при разблокированных Settings
-        if (!_isUnlocked.value) {
-            _message.value = "🔒 Unlock Settings to change biometric protection"
-            return
-        }
-        
-        android.util.Log.d(TAG, "🔄 Biometric Protection change requested: $enabled")
-        
-        // Если включаем биометрию - требуем подтверждение пальцем
-        if (enabled) {
-            android.util.Log.d(TAG, "   → Requesting biometric confirmation to ENABLE")
-            _biometricAuthRequest.value = true
-            // После успешной биометрии будет вызван onBiometricSuccessForToggle(true)
-        } else {
-            // Если выключаем - тоже требуем палец (уже разблокировано, но дополнительная защита)
-            android.util.Log.d(TAG, "   → Requesting biometric confirmation to DISABLE")
-            _biometricAuthRequest.value = true
-            // После успешной биометрии будет вызван onBiometricSuccessForToggle(false)
-        }
-        
-        // Временно сохраняем желаемое состояние
-        _pendingBiometricState.value = enabled
-    }
-    
-    private val _pendingBiometricState = MutableStateFlow<Boolean?>(null)
-    
-    /**
-     * Вызывается после успешной биометрии при переключении тумблера
-     */
-    fun onBiometricSuccessForToggle() {
-        val newState = _pendingBiometricState.value ?: return
-        
-        _useBiometricInput.value = newState
-        _pendingBiometricState.value = null
-        
-        android.util.Log.d(TAG, "✅ Biometric protection ${if (newState) "ENABLED" else "DISABLED"}")
-        _message.value = if (newState) {
-            "✅ Biometric protection enabled"
-        } else {
-            "⚠️ Biometric protection disabled"
-        }
-        
-        clearBiometricRequest()
     }
 
     fun updateCacheTimeout(minutes: Int) {
@@ -444,7 +485,7 @@ class SettingsViewModel @Inject constructor(
                 android.util.Log.d(TAG, "  ├─ Saving GitHub token...")
                 try {
                     secureSettings.setGitHubToken(_githubTokenInput.value)
-                    android.util.Log.d(TAG, "  │  └─ ✅ Token saved (verified by SecureSettings)")
+                    android.util.Log.d(TAG, "  │  └─ ✅ Token saved")
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "  │  └─ ❌ Failed to save token", e)
                     _message.value = "❌ Failed to save token: ${e.message}"
@@ -467,19 +508,6 @@ class SettingsViewModel @Inject constructor(
                     return@launch
                 }
 
-                android.util.Log.d(TAG, "  └─ Verifying save...")
-                try {
-                    val savedToken = secureSettings.getGitHubToken().first()
-                    val savedConfig = appSettings.gitHubConfig.first()
-                    
-                    android.util.Log.d(TAG, "     ├─ Verified token: ${savedToken.take(10)}...")
-                    android.util.Log.d(TAG, "     ├─ Verified owner: ${savedConfig.owner}")
-                    android.util.Log.d(TAG, "     ├─ Verified repo: ${savedConfig.repo}")
-                    android.util.Log.d(TAG, "     └─ Verified branch: ${savedConfig.branch}")
-                } catch (e: Exception) {
-                    android.util.Log.w(TAG, "     └─ ⚠️ Verification failed (non-critical)", e)
-                }
-
                 _message.value = "✅ GitHub settings saved successfully"
                 android.util.Log.d(TAG, "━".repeat(80))
                 android.util.Log.d(TAG, "✅ GITHUB SETTINGS SAVED SUCCESSFULLY")
@@ -496,7 +524,7 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun saveAnthropicSettings(useBiometric: Boolean = _useBiometricInput.value) {
+    fun saveAnthropicSettings() {
         if (!_isUnlocked.value) {
             _message.value = "🔒 Unlock Settings to save"
             return
@@ -507,7 +535,6 @@ class SettingsViewModel @Inject constructor(
             
             android.util.Log.d(TAG, "━".repeat(80))
             android.util.Log.d(TAG, "💾 SAVING ANTHROPIC SETTINGS")
-            android.util.Log.d(TAG, "   Biometric: $useBiometric")
             android.util.Log.d(TAG, "━".repeat(80))
 
             try {
@@ -520,13 +547,13 @@ class SettingsViewModel @Inject constructor(
                     return@launch
                 }
                 android.util.Log.d(TAG, "  │  ├─ Key: ${_anthropicKeyInput.value.take(10)}...")
-                android.util.Log.d(TAG, "  │  ├─ Model: ${_claudeModelInput.value}")
-                android.util.Log.d(TAG, "  │  └─ Biometric: $useBiometric")
+                android.util.Log.d(TAG, "  │  └─ Model: ${_claudeModelInput.value}")
 
                 android.util.Log.d(TAG, "  ├─ Saving Anthropic API key...")
                 try {
-                    secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric)
-                    android.util.Log.d(TAG, "  │  └─ ✅ Key saved (verified by SecureSettings)")
+                    // ✅ ИЗМЕНЕНО: Биометрия всегда включена по умолчанию
+                    secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
+                    android.util.Log.d(TAG, "  │  └─ ✅ Key saved with biometric protection")
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "  │  └─ ❌ Failed to save key", e)
                     _message.value = "❌ Failed to save key: ${e.message}"
@@ -543,21 +570,6 @@ class SettingsViewModel @Inject constructor(
                     _message.value = "❌ Failed to save model: ${e.message}"
                     _isSaving.value = false
                     return@launch
-                }
-
-                _useBiometricInput.value = useBiometric
-
-                android.util.Log.d(TAG, "  └─ Verifying save...")
-                try {
-                    val savedKey = secureSettings.getAnthropicApiKey().first()
-                    val savedModel = appSettings.claudeModel.first()
-                    val savedBiometric = secureSettings.isBiometricEnabled()
-                    
-                    android.util.Log.d(TAG, "     ├─ Verified key: ${savedKey.take(10)}...")
-                    android.util.Log.d(TAG, "     ├─ Verified model: $savedModel")
-                    android.util.Log.d(TAG, "     └─ Verified biometric: $savedBiometric")
-                } catch (e: Exception) {
-                    android.util.Log.w(TAG, "     └─ ⚠️ Verification failed (non-critical)", e)
                 }
 
                 _message.value = "✅ Claude settings saved successfully"
@@ -619,7 +631,8 @@ class SettingsViewModel @Inject constructor(
                     branch = _githubBranchInput.value
                 )
                 
-                secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, _useBiometricInput.value)
+                // ✅ ИЗМЕНЕНО: Биометрия всегда включена
+                secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
                 appSettings.setClaudeModel(_claudeModelInput.value)
                 
                 appSettings.setCacheSettings(
@@ -692,13 +705,8 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // BIOMETRIC & UTILITIES
+    // UTILITIES
     // ═════════════════════════════════════════════════════════════════════════
-
-    fun requestBiometricAuth() {
-        android.util.Log.d(TAG, "🔐 Requesting biometric authentication...")
-        _biometricAuthRequest.value = true
-    }
 
     fun clearBiometricRequest() {
         _biometricAuthRequest.value = false
