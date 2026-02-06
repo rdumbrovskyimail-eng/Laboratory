@@ -2,7 +2,9 @@ package com.opuside.app.core.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -43,7 +45,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
-import kotlin.math.absoluteValue
 
 @Composable
 fun VirtualizedCodeEditor(
@@ -236,6 +237,7 @@ fun VirtualizedCodeEditor(
                     if (!readOnly) {
                         var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
                         val coroutineScope = rememberCoroutineScope()
+                        val velocityTracker = remember { VelocityTracker() }
                         
                         CustomLTRTextField(
                             value = textFieldValue,
@@ -247,8 +249,6 @@ fun VirtualizedCodeEditor(
                                 .focusRequester(focusRequester)
                                 .onFocusChanged { isFocused = it.isFocused }
                                 .pointerInput(Unit) {
-                                    var scrollJob: Job? = null
-                                    
                                     detectTapGestures(
                                         onPress = { offset ->
                                             // КЛИК: точное позиционирование
@@ -277,25 +277,45 @@ fun VirtualizedCodeEditor(
                                     )
                                 }
                                 .pointerInput(Unit) {
-                                    // ВЕРТИКАЛЬНЫЙ СКРОЛЛИНГ (DRAG)
-                                    awaitPointerEventScope {
-                                        while (true) {
-                                            val event = awaitPointerEvent()
-                                            val change = event.changes.firstOrNull() ?: continue
+                                    // ДИНАМИЧНЫЙ ВЕРТИКАЛЬНЫЙ СКРОЛЛИНГ С ИНЕРЦИЕЙ
+                                    detectDragGestures(
+                                        onDragStart = { 
+                                            velocityTracker.resetTracking()
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
                                             
-                                            if (change.pressed && change.previousPressed) {
-                                                val delta = change.position.y - change.previousPosition.y
-                                                
-                                                // Скроллим, если есть движение
-                                                if (delta.absoluteValue > 5f) {
-                                                    coroutineScope.launch {
-                                                        listState.scrollBy(-delta)
-                                                    }
-                                                    change.consume()
+                                            // Отслеживаем скорость для fling
+                                            velocityTracker.addPosition(
+                                                change.uptimeMillis,
+                                                change.position
+                                            )
+                                            
+                                            // Мгновенный скроллинг при драге
+                                            coroutineScope.launch {
+                                                listState.scrollBy(-dragAmount.y)
+                                            }
+                                        },
+                                        onDragEnd = {
+                                            // FLING: инерционный скроллинг после отпускания
+                                            val velocity = velocityTracker.calculateVelocity()
+                                            val velocityY = -velocity.y
+                                            
+                                            coroutineScope.launch {
+                                                // Используем встроенный animateScrollBy с decay animation
+                                                try {
+                                                    listState.animateScrollBy(
+                                                        value = velocityY * 0.5f, // Коэффициент инерции
+                                                    )
+                                                } catch (e: Exception) {
+                                                    // Игнорируем ошибки анимации
                                                 }
                                             }
+                                        },
+                                        onDragCancel = {
+                                            velocityTracker.resetTracking()
                                         }
-                                    }
+                                    )
                                 },
                             textStyle = TextStyle(
                                 fontFamily = FontFamily.Monospace,
