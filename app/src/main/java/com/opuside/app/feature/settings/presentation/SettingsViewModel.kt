@@ -27,9 +27,9 @@ sealed class ConnectionStatus {
  * ────────────────────────────────────────────────────────────
  * 1. ✅ Anthropic API ключ теперь правильно загружается из SecureSettingsDataStore
  * 2. ✅ Биометрия восстанавливается из DataStore при старте
- * 3. ✅ Test кнопки теперь сохраняют настройки перед тестированием
+ * 3. ✅ ИСПРАВЛЕНА БЕСКОНЕЧНАЯ РЕКУРСИЯ: Test НЕ вызывает Save автоматически
  * 4. ✅ Добавлено логирование для диагностики проблем с ключами
- * 5. ✅ ИСПРАВЛЕН доступ к приватному dataStore через публичный метод
+ * 5. ✅ Удалено дублирование операций шифрования
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -74,7 +74,6 @@ class SettingsViewModel @Inject constructor(
     private val _claudeStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
     val claudeStatus: StateFlow<ConnectionStatus> = _claudeStatus.asStateFlow()
 
-    // ✅ ДОБАВЛЕНО: State для биометрии
     private val _useBiometricInput = MutableStateFlow(false)
     val useBiometricInput: StateFlow<Boolean> = _useBiometricInput.asStateFlow()
 
@@ -121,22 +120,11 @@ class SettingsViewModel @Inject constructor(
         loadSettings()
     }
 
-    /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Правильная загрузка ВСЕХ настроек включая биометрию
-     * 
-     * ИЗМЕНЕНИЯ:
-     * ─────────────────────────────────────────────────────────────
-     * 1. ✅ Anthropic ключ загружается через try-catch с fallback
-     * 2. ✅ Биометрия загружается через публичный метод SecureSettingsDataStore
-     * 3. ✅ Детальное логирование для диагностики
-     * 4. ✅ Обработка ошибок расшифровки ключей
-     */
     private fun loadSettings() {
         viewModelScope.launch {
             android.util.Log.d("SettingsViewModel", "📥 Loading settings from DataStore...")
             
             try {
-                // ✅ Загружаем GitHub настройки
                 val githubConfig = appSettings.gitHubConfig.first()
                 val githubToken = try {
                     secureSettings.getGitHubToken().first()
@@ -145,7 +133,6 @@ class SettingsViewModel @Inject constructor(
                     ""
                 }
 
-                // ✅ ИСПРАВЛЕНО: Загружаем Anthropic ключ с обработкой ошибок
                 val anthropicKey = try {
                     val key = secureSettings.getAnthropicApiKey().first()
                     android.util.Log.d("SettingsViewModel", "✅ Anthropic key loaded: ${if (key.isNotEmpty()) "[${key.take(10)}...]" else "[EMPTY]"}")
@@ -155,7 +142,6 @@ class SettingsViewModel @Inject constructor(
                     ""
                 }
 
-                // ✅ ИСПРАВЛЕНО: Загружаем статус биометрии через публичный метод
                 val biometricEnabled = try {
                     secureSettings.isBiometricEnabled()
                 } catch (e: Exception) {
@@ -163,11 +149,9 @@ class SettingsViewModel @Inject constructor(
                     false
                 }
 
-                // ✅ Загружаем остальные настройки
                 val claudeModel = appSettings.claudeModel.first()
                 val cacheConfig = appSettings.cacheConfig.first()
 
-                // ✅ Обновляем UI состояние
                 _githubOwnerInput.value = githubConfig.owner
                 _githubRepoInput.value = githubConfig.repo
                 _githubBranchInput.value = githubConfig.branch
@@ -179,16 +163,7 @@ class SettingsViewModel @Inject constructor(
                 _maxCacheFilesInput.value = cacheConfig.maxFiles
                 _autoClearCacheInput.value = cacheConfig.autoClear
                 
-                // ✅ Диагностическое логирование
-                android.util.Log.d("SettingsViewModel", "✅ Settings loaded successfully:")
-                android.util.Log.d("SettingsViewModel", "   GitHub Owner: ${githubConfig.owner}")
-                android.util.Log.d("SettingsViewModel", "   GitHub Repo: ${githubConfig.repo}")
-                android.util.Log.d("SettingsViewModel", "   GitHub Branch: ${githubConfig.branch}")
-                android.util.Log.d("SettingsViewModel", "   GitHub Token: ${if (githubToken.isNotEmpty()) "[SET (${githubToken.take(10)}...)]" else "[EMPTY]"}")
-                android.util.Log.d("SettingsViewModel", "   Anthropic Key: ${if (anthropicKey.isNotEmpty()) "[SET (${anthropicKey.take(10)}...)]" else "[EMPTY]"}")
-                android.util.Log.d("SettingsViewModel", "   Biometric: $biometricEnabled")
-                android.util.Log.d("SettingsViewModel", "   Model: $claudeModel")
-                android.util.Log.d("SettingsViewModel", "   Cache: ${cacheConfig.timeoutMinutes}min, ${cacheConfig.maxFiles} files, autoClear=${cacheConfig.autoClear}")
+                android.util.Log.d("SettingsViewModel", "✅ Settings loaded successfully")
                 
             } catch (e: Exception) {
                 android.util.Log.e("SettingsViewModel", "❌ Failed to load settings", e)
@@ -198,7 +173,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // UPDATE FUNCTIONS - GitHub
+    // UPDATE FUNCTIONS
     // ═════════════════════════════════════════════════════════════════════════
 
     fun updateGitHubOwner(owner: String) {
@@ -217,10 +192,6 @@ class SettingsViewModel @Inject constructor(
         _githubBranchInput.value = branch
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // UPDATE FUNCTIONS - Anthropic
-    // ═════════════════════════════════════════════════════════════════════════
-
     fun updateAnthropicKey(key: String) {
         _anthropicKeyInput.value = key
     }
@@ -229,14 +200,9 @@ class SettingsViewModel @Inject constructor(
         _claudeModelInput.value = model
     }
 
-    // ✅ ДОБАВЛЕНО: Функция для изменения биометрии
     fun updateUseBiometric(enabled: Boolean) {
         _useBiometricInput.value = enabled
     }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // UPDATE FUNCTIONS - Cache
-    // ═════════════════════════════════════════════════════════════════════════
 
     fun updateCacheTimeout(minutes: Int) {
         _cacheTimeoutInput.value = minutes
@@ -251,12 +217,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // SAVE OPERATIONS
+    // SAVE OPERATIONS - ✅ ИСПРАВЛЕНО: Убрана автоматическая рекурсия
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ БЕЗ ИЗМЕНЕНИЙ: Сохранение GitHub настроек
-     */
     fun saveGitHubSettings() {
         viewModelScope.launch {
             _isSaving.value = true
@@ -265,27 +228,21 @@ class SettingsViewModel @Inject constructor(
             try {
                 if (_githubOwnerInput.value.isBlank()) {
                     _message.value = "❌ Owner cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Owner is blank")
                     _isSaving.value = false
                     return@launch
                 }
                 if (_githubRepoInput.value.isBlank()) {
                     _message.value = "❌ Repository cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Repo is blank")
                     _isSaving.value = false
                     return@launch
                 }
                 if (_githubTokenInput.value.isBlank()) {
                     _message.value = "❌ Token cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Token is blank")
                     _isSaving.value = false
                     return@launch
                 }
                 
-                android.util.Log.d("SettingsViewModel", "   Encrypting GitHub token...")
                 secureSettings.setGitHubToken(_githubTokenInput.value)
-                
-                android.util.Log.d("SettingsViewModel", "   Saving config: ${_githubOwnerInput.value}/${_githubRepoInput.value}@${_githubBranchInput.value}")
                 secureSettings.setGitHubConfig(
                     owner = _githubOwnerInput.value,
                     repo = _githubRepoInput.value,
@@ -305,7 +262,12 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Сохранение Anthropic с биометрией и автотестом
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Убран автоматический тест после сохранения
+     * 
+     * БЫЛО: saveAnthropicSettings() → автоматически вызывает testClaudeConnection()
+     * СТАЛО: saveAnthropicSettings() → просто сохраняет, без автотеста
+     * 
+     * Теперь пользователь явно нажимает кнопку "Test" для проверки соединения.
      */
     fun saveAnthropicSettings(useBiometric: Boolean = _useBiometricInput.value) {
         viewModelScope.launch {
@@ -315,24 +277,20 @@ class SettingsViewModel @Inject constructor(
             try {
                 if (_anthropicKeyInput.value.isBlank()) {
                     _message.value = "❌ API Key cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: API Key is blank")
                     _isSaving.value = false
                     return@launch
                 }
                 
-                // ✅ Сохраняем ключ с биометрией
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric)
                 appSettings.setClaudeModel(_claudeModelInput.value)
                 
-                // ✅ Обновляем локальный state биометрии
                 _useBiometricInput.value = useBiometric
                 
                 _message.value = "✅ Claude settings saved successfully"
                 android.util.Log.d("SettingsViewModel", "✅ Anthropic settings saved successfully (biometric: $useBiometric)")
                 
-                // ✅ Автоматически тестируем соединение после сохранения
-                android.util.Log.d("SettingsViewModel", "🧪 Auto-testing Claude connection...")
-                testClaudeConnection()
+                // ❌ УБРАНО: Автоматический тест после сохранения
+                // testClaudeConnection()
                 
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
@@ -343,13 +301,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ✅ БЕЗ ИЗМЕНЕНИЙ: Сохранение настроек кэша
-     */
     fun saveCacheSettings() {
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d("SettingsViewModel", "💾 Saving cache settings...")
 
             try {
                 appSettings.setCacheSettings(
@@ -358,53 +312,26 @@ class SettingsViewModel @Inject constructor(
                     autoClear = _autoClearCacheInput.value
                 )
                 _message.value = "✅ Cache settings saved successfully"
-                android.util.Log.d("SettingsViewModel", "✅ Cache settings saved successfully")
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "❌ Save failed", e)
             } finally {
                 _isSaving.value = false
             }
         }
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Сохранение ВСЕХ настроек с биометрией
-     */
     fun saveAllSettings() {
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d("SettingsViewModel", "💾 Saving ALL settings...")
 
             try {
-                if (_githubOwnerInput.value.isBlank()) {
-                    _message.value = "❌ GitHub Owner cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Owner is blank")
-                    _isSaving.value = false
-                    return@launch
-                }
-                if (_githubRepoInput.value.isBlank()) {
-                    _message.value = "❌ GitHub Repository cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Repo is blank")
-                    _isSaving.value = false
-                    return@launch
-                }
-                if (_githubTokenInput.value.isBlank()) {
-                    _message.value = "❌ GitHub Token cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Token is blank")
+                if (_githubOwnerInput.value.isBlank() || _githubRepoInput.value.isBlank() || 
+                    _githubTokenInput.value.isBlank() || _anthropicKeyInput.value.isBlank()) {
+                    _message.value = "❌ All fields are required"
                     _isSaving.value = false
                     return@launch
                 }
                 
-                if (_anthropicKeyInput.value.isBlank()) {
-                    _message.value = "❌ Anthropic API Key cannot be empty"
-                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: API Key is blank")
-                    _isSaving.value = false
-                    return@launch
-                }
-                
-                // GitHub
-                android.util.Log.d("SettingsViewModel", "   Saving GitHub config...")
                 secureSettings.setGitHubToken(_githubTokenInput.value)
                 secureSettings.setGitHubConfig(
                     owner = _githubOwnerInput.value,
@@ -412,13 +339,9 @@ class SettingsViewModel @Inject constructor(
                     branch = _githubBranchInput.value
                 )
                 
-                // Anthropic
-                android.util.Log.d("SettingsViewModel", "   Saving Anthropic config...")
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, _useBiometricInput.value)
                 appSettings.setClaudeModel(_claudeModelInput.value)
                 
-                // Cache
-                android.util.Log.d("SettingsViewModel", "   Saving cache config...")
                 appSettings.setCacheSettings(
                     timeoutMinutes = _cacheTimeoutInput.value,
                     maxFiles = _maxCacheFilesInput.value,
@@ -426,16 +349,11 @@ class SettingsViewModel @Inject constructor(
                 )
                 
                 _message.value = "✅ All settings saved successfully"
-                android.util.Log.d("SettingsViewModel", "✅ All settings saved successfully")
                 
-                // ✅ Автоматически тестируем соединения
-                android.util.Log.d("SettingsViewModel", "🧪 Auto-testing connections...")
-                testClaudeConnection()
-                testGitHubConnection()
+                // ❌ УБРАНО: Автоматические тесты после сохранения
                 
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "❌ Save all failed", e)
             } finally {
                 _isSaving.value = false
             }
@@ -443,21 +361,19 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // TEST CONNECTIONS - ✅ ИСПРАВЛЕНО: Сохранение перед тестом
+    // TEST CONNECTIONS - ✅ ИСПРАВЛЕНО: НЕ сохраняют перед тестом
     // ═════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ ИСПРАВЛЕНО: Test GitHub теперь сохраняет настройки перед тестом
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Убрано сохранение перед тестом
+     * 
+     * БЫЛО: testGitHubConnection() → saveGitHubSettings() → delay → test
+     * СТАЛО: testGitHubConnection() → просто тестирует текущие настройки из полей ввода
+     * 
+     * Теперь Test использует данные напрямую из input полей, без сохранения в DataStore.
      */
     fun testGitHubConnection() {
         viewModelScope.launch {
-            // ✅ ДОБАВЛЕНО: Сохраняем настройки перед тестом
-            android.util.Log.d("SettingsViewModel", "💾 Saving GitHub settings before test...")
-            saveGitHubSettings()
-            
-            // ✅ Ждем завершения сохранения
-            kotlinx.coroutines.delay(500)
-            
             _githubStatus.value = ConnectionStatus.Testing
             android.util.Log.d("SettingsViewModel", "🔍 Testing GitHub connection...")
 
@@ -467,33 +383,23 @@ class SettingsViewModel @Inject constructor(
                 result.onSuccess { repo ->
                     _repoInfo.value = repo
                     _githubStatus.value = ConnectionStatus.Connected
-                    android.util.Log.d("SettingsViewModel", "✅ GitHub connected: ${repo.fullName}")
                     _message.value = "✅ GitHub connected: ${repo.fullName}"
                 }.onFailure { e ->
                     _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                    android.util.Log.e("SettingsViewModel", "❌ GitHub connection failed", e)
                     _message.value = "❌ GitHub test failed: ${e.message}"
                 }
             } catch (e: Exception) {
                 _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                android.util.Log.e("SettingsViewModel", "❌ GitHub connection exception", e)
                 _message.value = "❌ GitHub test error: ${e.message}"
             }
         }
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Test Claude теперь сохраняет настройки перед тестом
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Убрано сохранение перед тестом
      */
     fun testClaudeConnection() {
         viewModelScope.launch {
-            // ✅ ДОБАВЛЕНО: Сохраняем настройки перед тестом
-            android.util.Log.d("SettingsViewModel", "💾 Saving Anthropic settings before test...")
-            saveAnthropicSettings(_useBiometricInput.value)
-            
-            // ✅ Ждем завершения сохранения
-            kotlinx.coroutines.delay(500)
-            
             _claudeStatus.value = ConnectionStatus.Testing
             android.util.Log.d("SettingsViewModel", "🔍 Testing Claude connection...")
 
@@ -502,27 +408,24 @@ class SettingsViewModel @Inject constructor(
 
                 result.onSuccess { message ->
                     _claudeStatus.value = ConnectionStatus.Connected
-                    android.util.Log.d("SettingsViewModel", "✅ Claude connected: $message")
                     _message.value = "✅ $message"
                     
                 }.onFailure { e ->
                     val errorMessage = e.message ?: "Unknown error"
                     _claudeStatus.value = ConnectionStatus.Error(errorMessage)
-                    android.util.Log.e("SettingsViewModel", "❌ Claude connection failed: $errorMessage")
                     _message.value = "❌ $errorMessage"
                 }
                 
             } catch (e: Exception) {
                 val errorMessage = e.message ?: "Unknown error"
                 _claudeStatus.value = ConnectionStatus.Error(errorMessage)
-                android.util.Log.e("SettingsViewModel", "❌ Claude connection exception", e)
                 _message.value = "❌ Connection error: $errorMessage"
             }
         }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // BIOMETRIC
+    // BIOMETRIC & UTILITIES
     // ═════════════════════════════════════════════════════════════════════════
 
     fun requestBiometricAuth() {
@@ -533,17 +436,12 @@ class SettingsViewModel @Inject constructor(
         _biometricAuthRequest.value = false
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // UTILITIES
-    // ═════════════════════════════════════════════════════════════════════════
-
     fun resetToDefaults() {
         _cacheTimeoutInput.value = 5
         _maxCacheFilesInput.value = 20
         _autoClearCacheInput.value = true
         _claudeModelInput.value = "claude-opus-4-5-20251101"
         _message.value = "⚠️ Settings reset to defaults (not saved)"
-        android.util.Log.d("SettingsViewModel", "♻️ Reset to defaults")
     }
 
     fun clearMessage() {
