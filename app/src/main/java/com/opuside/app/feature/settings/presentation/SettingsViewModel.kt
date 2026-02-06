@@ -269,7 +269,7 @@ class SettingsViewModel @Inject constructor(
     // ═════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ ИСПРАВЛЕНО: Правильное сохранение GitHub настроек
+     * ✅ ИСПРАВЛЕНО: Правильное сохранение GitHub настроек с валидацией
      */
     fun saveGitHubSettings() {
         viewModelScope.launch {
@@ -277,11 +277,31 @@ class SettingsViewModel @Inject constructor(
             android.util.Log.d("SettingsViewModel", "💾 Saving GitHub settings...")
 
             try {
-                // ✅ Сохраняем токен (зашифрованно)
+                // ✅ ДОБАВЛЕНО: Валидация перед сохранением
+                if (_githubOwnerInput.value.isBlank()) {
+                    _message.value = "❌ Owner cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Owner is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                if (_githubRepoInput.value.isBlank()) {
+                    _message.value = "❌ Repository cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Repo is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                if (_githubTokenInput.value.isBlank()) {
+                    _message.value = "❌ Token cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Token is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                
+                // ✅ Сохраняем токен (зашифрованно) СНАЧАЛА
                 android.util.Log.d("SettingsViewModel", "   Encrypting GitHub token...")
                 secureSettings.setGitHubToken(_githubTokenInput.value)
                 
-                // ✅ Сохраняем owner/repo/branch (незашифрованно)
+                // ✅ Затем сохраняем owner/repo/branch
                 android.util.Log.d("SettingsViewModel", "   Saving config: ${_githubOwnerInput.value}/${_githubRepoInput.value}@${_githubBranchInput.value}")
                 secureSettings.setGitHubConfig(
                     owner = _githubOwnerInput.value,
@@ -307,6 +327,14 @@ class SettingsViewModel @Inject constructor(
             android.util.Log.d("SettingsViewModel", "💾 Saving Anthropic settings (biometric: $useBiometric)...")
 
             try {
+                // ✅ ДОБАВЛЕНО: Валидация
+                if (_anthropicKeyInput.value.isBlank()) {
+                    _message.value = "❌ API Key cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: API Key is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric)
                 appSettings.setClaudeModel(_claudeModelInput.value)
                 _message.value = "✅ Claude settings saved successfully"
@@ -343,7 +371,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Правильное сохранение всех настроек
+     * ✅ ИСПРАВЛЕНО: Правильное сохранение всех настроек с валидацией
      */
     fun saveAllSettings() {
         viewModelScope.launch {
@@ -351,6 +379,34 @@ class SettingsViewModel @Inject constructor(
             android.util.Log.d("SettingsViewModel", "💾 Saving ALL settings...")
 
             try {
+                // ✅ ДОБАВЛЕНО: Валидация GitHub
+                if (_githubOwnerInput.value.isBlank()) {
+                    _message.value = "❌ GitHub Owner cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Owner is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                if (_githubRepoInput.value.isBlank()) {
+                    _message.value = "❌ GitHub Repository cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Repo is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                if (_githubTokenInput.value.isBlank()) {
+                    _message.value = "❌ GitHub Token cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: Token is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                
+                // ✅ ДОБАВЛЕНО: Валидация Anthropic
+                if (_anthropicKeyInput.value.isBlank()) {
+                    _message.value = "❌ Anthropic API Key cannot be empty"
+                    android.util.Log.w("SettingsViewModel", "⚠️ Validation failed: API Key is blank")
+                    _isSaving.value = false
+                    return@launch
+                }
+                
                 // GitHub
                 android.util.Log.d("SettingsViewModel", "   Saving GitHub config...")
                 secureSettings.setGitHubToken(_githubTokenInput.value)
