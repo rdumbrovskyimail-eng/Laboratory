@@ -65,7 +65,8 @@ fun SettingsScreen(
     
     val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
     
-    var useBiometric by remember { mutableStateOf(false) }
+    // ✅ ИСПРАВЛЕНО: Биометрия из ViewModel
+    val useBiometric by viewModel.useBiometricInput.collectAsState()
     val activity = context as? FragmentActivity
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -304,7 +305,7 @@ fun SettingsScreen(
                     }
                     Switch(
                         checked = useBiometric,
-                        onCheckedChange = { useBiometric = it },
+                        onCheckedChange = viewModel::updateUseBiometric,
                         enabled = !sensitiveFeatureDisabled
                     )
                 }
@@ -314,11 +315,8 @@ fun SettingsScreen(
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
                     Row {
-                        // ✅ ИЗМЕНЕНО: Кнопка Test теперь вызывает testClaudeConnection()
                         TextButton(
-                            onClick = {
-                                viewModel.testClaudeConnection()
-                            },
+                            onClick = viewModel::testClaudeConnection,
                             enabled = !sensitiveFeatureDisabled && claudeStatus !is ConnectionStatus.Testing
                         ) { 
                             if (claudeStatus is ConnectionStatus.Testing) {
@@ -339,7 +337,6 @@ fun SettingsScreen(
                     }
                 }
                 
-                // ✅ НОВОЕ: Показываем детали результата теста
                 when (val status = claudeStatus) {
                     is ConnectionStatus.Connected -> {
                         Spacer(Modifier.height(8.dp))
@@ -462,7 +459,6 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
                 
-                // Root Dialog Setting
                 var showRootDialogOnStartup by remember { 
                     mutableStateOf(
                         runBlocking {
@@ -518,7 +514,6 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                // Current Root Status
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -568,7 +563,6 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(16.dp))
                 
-                // Logger Statistics
                 var crashStats by remember { mutableStateOf<com.opuside.app.core.util.LogStats?>(null) }
                 
                 LaunchedEffect(Unit) {
@@ -606,7 +600,6 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
 
-                // Notification Tests
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
@@ -670,7 +663,6 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(16.dp))
                 
-                // Logger Controls with Dialog Integration
                 var showLogViewer by remember { mutableStateOf(false) }
                 var selectedLogForViewing by remember { mutableStateOf<LogFile?>(null) }
                 
@@ -699,7 +691,6 @@ fun SettingsScreen(
                                     "✅ LogCat errors saved!\n${file.name}",
                                     Toast.LENGTH_LONG
                                 ).show()
-                                // Update statistics
                                 crashStats = CrashTestUtil.getLogStats()
                             } else {
                                 Toast.makeText(
@@ -745,7 +736,6 @@ fun SettingsScreen(
                     }
                 }
                 
-                // Log Viewer Dialog
                 if (showLogViewer) {
                     LogViewerDialog(
                         onDismiss = { 
@@ -758,7 +748,6 @@ fun SettingsScreen(
                     )
                 }
                 
-                // Log Content Viewer Dialog
                 selectedLogForViewing?.let { logFile ->
                     LogContentDialog(
                         logFile = logFile,
@@ -768,7 +757,6 @@ fun SettingsScreen(
                 
                 Spacer(Modifier.height(12.dp))
                 
-                // Warning Card
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
