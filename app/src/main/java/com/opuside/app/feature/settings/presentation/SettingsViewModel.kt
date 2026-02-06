@@ -29,6 +29,7 @@ sealed class ConnectionStatus {
  * 2. ✅ Биометрия восстанавливается из DataStore при старте
  * 3. ✅ Test кнопки теперь сохраняют настройки перед тестированием
  * 4. ✅ Добавлено логирование для диагностики проблем с ключами
+ * 5. ✅ ИСПРАВЛЕН доступ к приватному dataStore через публичный метод
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -126,7 +127,7 @@ class SettingsViewModel @Inject constructor(
      * ИЗМЕНЕНИЯ:
      * ─────────────────────────────────────────────────────────────
      * 1. ✅ Anthropic ключ загружается через try-catch с fallback
-     * 2. ✅ Биометрия загружается из DataStore
+     * 2. ✅ Биометрия загружается через публичный метод SecureSettingsDataStore
      * 3. ✅ Детальное логирование для диагностики
      * 4. ✅ Обработка ошибок расшифровки ключей
      */
@@ -154,10 +155,9 @@ class SettingsViewModel @Inject constructor(
                     ""
                 }
 
-                // ✅ ДОБАВЛЕНО: Загружаем статус биометрии
+                // ✅ ИСПРАВЛЕНО: Загружаем статус биометрии через публичный метод
                 val biometricEnabled = try {
-                    val prefs = secureSettings.dataStore.data.first()
-                    prefs[androidx.datastore.preferences.core.booleanPreferencesKey("biometric_enabled")] ?: false
+                    secureSettings.isBiometricEnabled()
                 } catch (e: Exception) {
                     android.util.Log.e("SettingsViewModel", "❌ Failed to load biometric status", e)
                     false
