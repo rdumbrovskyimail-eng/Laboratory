@@ -33,6 +33,7 @@ data class CacheContext(
 
 /**
  * ✅ ОБНОВЛЕНО (Проблема #16 - God Object Refactoring)
+ * ✅ ОБНОВЛЕНО (Проблема #8 - Детальное логирование)
  * 
  * Менеджер персистентного кеша с фоновым таймером.
  * 
@@ -44,6 +45,8 @@ data class CacheContext(
  *    - CacheWorkScheduler: WorkManager для фоновых задач
  *    - CacheNotificationManager: Уведомления
  *    - PersistentCacheManager: Координатор всех компонентов
+ * 
+ * ✅ Добавлено детальное логирование для диагностики кеширования
  * 
  * ОТВЕТСТВЕННОСТЬ (Single Responsibility Principle):
  * ────────────────────────────────────────────────────────────────
@@ -206,34 +209,92 @@ class PersistentCacheManager @Inject constructor(
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE OPERATIONS
+    // CACHE OPERATIONS (✅ ПРОБЛЕМА 8: ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ)
     // ═══════════════════════════════════════════════════════════════════════════
     
     /**
      * Добавляет файл в кеш и запускает/сбрасывает таймер.
+     * 
+     * ✅ ПРОБЛЕМА 8: Добавлено детальное логирование для диагностики кеширования
      */
-    suspend fun addFile(file: CachedFileEntity) {
-        cacheRepository.addFile(file)
+    suspend fun addFile(file: CachedFileEntity): Result<Unit> {
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "📦 ADDING FILE TO CACHE DATABASE")
+        android.util.Log.d(TAG, "   Path: ${file.filePath}")
+        android.util.Log.d(TAG, "   Name: ${file.fileName}")
+        android.util.Log.d(TAG, "   Size: ${file.sizeBytes} bytes (${file.content.length} chars)")
+        android.util.Log.d(TAG, "   Language: ${file.language}")
+        android.util.Log.d(TAG, "   Repo: ${file.repoOwner}/${file.repoName}")
+        android.util.Log.d(TAG, "   Branch: ${file.branch}")
+        android.util.Log.d(TAG, "   SHA: ${file.sha ?: "N/A"}")
+        android.util.Log.d(TAG, "   Encrypted: ${file.isEncrypted}")
+        android.util.Log.d(TAG, "   AddedAt: ${file.addedAt}")
+        
+        return cacheRepository.addFile(file)
             .onSuccess {
+                android.util.Log.d(TAG, "✅ FILE SUCCESSFULLY ADDED TO DATABASE")
+                
+                // ✅ Верификация: проверяем что файл действительно сохранился
+                val verified = cacheRepository.getByPath(file.filePath)
+                if (verified != null) {
+                    android.util.Log.d(TAG, "✅ VERIFICATION PASSED - File found in database")
+                    android.util.Log.d(TAG, "   Verified path: ${verified.filePath}")
+                    android.util.Log.d(TAG, "   Verified size: ${verified.sizeBytes} bytes")
+                } else {
+                    android.util.Log.e(TAG, "❌ VERIFICATION FAILED - File NOT found in database after insert!")
+                }
+                
                 resetTimer()
+                android.util.Log.d(TAG, "⏰ Timer has been reset/started")
             }
             .onFailure { e ->
-                android.util.Log.e(TAG, "Failed to add file to cache", e)
+                android.util.Log.e(TAG, "❌ DATABASE INSERT FAILED", e)
+                android.util.Log.e(TAG, "   Error type: ${e.javaClass.simpleName}")
+                android.util.Log.e(TAG, "   Error message: ${e.message}")
+                android.util.Log.e(TAG, "   File path: ${file.filePath}")
+            }
+            .also {
+                android.util.Log.d(TAG, "━".repeat(80))
             }
     }
     
     /**
      * Добавляет несколько файлов в кеш и запускает/сбрасывает таймер.
+     * 
+     * ✅ ПРОБЛЕМА 8: Добавлено детальное логирование для диагностики кеширования
      */
-    suspend fun addFiles(files: List<CachedFileEntity>) {
-        cacheRepository.addFiles(files)
+    suspend fun addFiles(files: List<CachedFileEntity>): Result<Int> {
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "📦 ADDING MULTIPLE FILES TO CACHE DATABASE")
+        android.util.Log.d(TAG, "   Total files: ${files.size}")
+        
+        files.forEachIndexed { index, file ->
+            android.util.Log.d(TAG, "   [$index] ${file.filePath} (${file.sizeBytes} bytes, ${file.language})")
+        }
+        
+        return cacheRepository.addFiles(files)
             .onSuccess { count ->
+                android.util.Log.d(TAG, "✅ FILES SUCCESSFULLY ADDED: $count/${files.size}")
+                
+                // ✅ Верификация: проверяем общее количество файлов в БД
+                val totalCount = cacheRepository.getCount()
+                android.util.Log.d(TAG, "✅ TOTAL FILES IN DATABASE: $totalCount")
+                
                 if (count > 0) {
                     resetTimer()
+                    android.util.Log.d(TAG, "⏰ Timer has been reset/started")
+                } else {
+                    android.util.Log.w(TAG, "⚠️ WARNING: No files were added (count=0)")
                 }
             }
             .onFailure { e ->
-                android.util.Log.e(TAG, "Failed to add files to cache", e)
+                android.util.Log.e(TAG, "❌ DATABASE BATCH INSERT FAILED", e)
+                android.util.Log.e(TAG, "   Error type: ${e.javaClass.simpleName}")
+                android.util.Log.e(TAG, "   Error message: ${e.message}")
+                android.util.Log.e(TAG, "   Attempted to insert: ${files.size} files")
+            }
+            .also {
+                android.util.Log.d(TAG, "━".repeat(80))
             }
     }
     
@@ -241,38 +302,95 @@ class PersistentCacheManager @Inject constructor(
      * Удаляет файл из кеша.
      */
     suspend fun removeFile(filePath: String) {
+        android.util.Log.d(TAG, "🗑️ Removing file from cache: $filePath")
         cacheRepository.removeFile(filePath)
+            .onSuccess {
+                android.util.Log.d(TAG, "✅ File removed successfully")
+            }
+            .onFailure { e ->
+                android.util.Log.e(TAG, "❌ Failed to remove file", e)
+            }
     }
     
     /**
      * Очищает весь кеш и останавливает таймер.
      */
     suspend fun clearCache() {
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "🗑️ CLEARING ENTIRE CACHE")
+        
+        val countBefore = cacheRepository.getCount()
+        android.util.Log.d(TAG, "   Files before clear: $countBefore")
+        
         cacheRepository.clearAll()
+            .onSuccess {
+                android.util.Log.d(TAG, "✅ Cache cleared successfully")
+                
+                val countAfter = cacheRepository.getCount()
+                android.util.Log.d(TAG, "   Files after clear: $countAfter")
+            }
+            .onFailure { e ->
+                android.util.Log.e(TAG, "❌ Failed to clear cache", e)
+            }
+        
         stopTimer()
+        android.util.Log.d(TAG, "⏹️ Timer stopped")
+        android.util.Log.d(TAG, "━".repeat(80))
     }
     
     /**
      * Проверяет наличие файла в кеше.
      */
     suspend fun hasFile(filePath: String): Boolean {
-        return cacheRepository.hasFile(filePath)
+        val exists = cacheRepository.hasFile(filePath)
+        android.util.Log.d(TAG, "🔍 Checking file existence: $filePath → $exists")
+        return exists
     }
     
     /**
      * Обновляет содержимое файла в кеше.
      */
     suspend fun updateFileContent(filePath: String, newContent: String) {
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "✏️ UPDATING FILE CONTENT")
+        android.util.Log.d(TAG, "   Path: $filePath")
+        android.util.Log.d(TAG, "   New content length: ${newContent.length} chars")
+        
         cacheRepository.updateFileContent(filePath, newContent)
+            .onSuccess {
+                android.util.Log.d(TAG, "✅ File content updated successfully")
+                
+                // Верификация
+                val updated = cacheRepository.getByPath(filePath)
+                if (updated != null) {
+                    android.util.Log.d(TAG, "✅ VERIFICATION PASSED")
+                    android.util.Log.d(TAG, "   Updated size: ${updated.sizeBytes} bytes")
+                    android.util.Log.d(TAG, "   Content matches: ${updated.content == newContent}")
+                }
+            }
+            .onFailure { e ->
+                android.util.Log.e(TAG, "❌ Failed to update file content", e)
+            }
+        
+        android.util.Log.d(TAG, "━".repeat(80))
     }
     
     /**
      * Получить контекст для Claude API.
      */
     suspend fun getContextForClaude(): CacheContext {
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "🤖 GENERATING CONTEXT FOR CLAUDE API")
+        
         val files = cacheRepository.getAll()
         
+        android.util.Log.d(TAG, "   Files in cache: ${files.size}")
+        android.util.Log.d(TAG, "   Timer state: ${timerState.value}")
+        
         if (files.isEmpty() || timerState.value != TimerState.RUNNING) {
+            android.util.Log.w(TAG, "⚠️ Context is INACTIVE (empty or timer not running)")
+            android.util.Log.d(TAG, "━".repeat(80))
+            
             return CacheContext(
                 fileCount = 0,
                 filePaths = emptyList(),
@@ -304,6 +422,11 @@ class PersistentCacheManager @Inject constructor(
         
         // Грубая оценка токенов (1 токен ≈ 4 символа)
         val totalTokens = formattedContext.length / 4
+        
+        android.util.Log.d(TAG, "✅ Context generated successfully")
+        android.util.Log.d(TAG, "   Total characters: ${formattedContext.length}")
+        android.util.Log.d(TAG, "   Estimated tokens: $totalTokens")
+        android.util.Log.d(TAG, "━".repeat(80))
         
         return CacheContext(
             fileCount = files.size,
