@@ -23,6 +23,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
+import com.opuside.app.core.security.BiometricAuthHelper  // ✅ ДОБАВЛЕНО
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.util.CacheNotificationHelper
@@ -98,14 +99,15 @@ fun SettingsScreen(
 
     // 🔐 НОВОЕ: Обработка биометрии для разблокировки Settings
     if (biometricAuthRequest && activity != null) {
-        val pendingBiometricState = remember { mutableStateOf<Boolean?>(null) }
+        // ✅ ИСПРАВЛЕНО: Явно указываем тип для activity
+        val currentActivity: FragmentActivity = activity
         
         // Определяем, это для разблокировки Settings или для переключения тумблера
         val isForToggle = useBiometric != viewModel.useBiometricInput.value
         
         LaunchedEffect(Unit) {
             BiometricAuthHelper.authenticate(
-                activity = activity,
+                activity = currentActivity,  // ✅ ИСПРАВЛЕНО: используем typed variable
                 title = if (isForToggle) {
                     if (viewModel.useBiometricInput.value) "Enable Biometric Protection" else "Disable Biometric Protection"
                 } else {
