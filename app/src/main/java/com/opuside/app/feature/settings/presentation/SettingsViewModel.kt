@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import com.opuside.app.BuildConfig
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
-import com.opuside.app.core.network.anthropic.model.ClaudeMessage
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.GitHubRepository
 import com.opuside.app.core.security.SecureSettingsDataStore
@@ -22,29 +21,25 @@ sealed class ConnectionStatus {
 }
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-05):
+ * ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО (2026-02-06):
  * 
- * ПРОБЛЕМА #1: GitHub Token пропадает после перезапуска
- * ────────────────────────────────────────────────────────
- * ПРИЧИНА: 
- * - loadSettings() загружал токен из config.token
- * - Но config.token содержит зашифрованный токен, который расшифровывается асинхронно
- * - При первой загрузке расшифровка не успевает → токен пустой
+ * НОВЫЕ ФИЧИ:
+ * ─────────────────────────────────────────────────────────────
+ * 1. ✅ testClaudeConnection() теперь использует claudeClient.testConnection()
+ *    вместо sendMessage() - профессиональная реализация с детальными ошибками
  * 
- * РЕШЕНИЕ:
- * - Загружаем токен НАПРЯМУЮ из secureSettings.getGitHubToken().first()
- * - Используем combine() для синхронной загрузки всех настроек
- * - Добавлено логирование для диагностики
+ * 2. ✅ Автоматическое тестирование после сохранения API ключа
+ *    (saveAnthropicSettings → testClaudeConnection)
  * 
- * ПРОБЛЕМА #2: Настройки не загружаются автоматически
- * ────────────────────────────────────────────────────────
- * ПРИЧИНА:
- * - loadSettings() вызывается в init {}, но UI не обновляется
- * - StateFlow не триггерится если значение то же самое
+ * 3. ✅ Правильная загрузка GitHub Token из SecureSettingsDataStore
+ *    (исправлена проблема с пропаданием токена после перезапуска)
  * 
- * РЕШЕНИЕ:
- * - Используем SharingStarted.Eagerly для немедленной подписки
- * - Добавлена явная загрузка в init {} с логированием
+ * 4. ✅ Валидация ВСЕХ полей перед сохранением (предотвращение пустых значений)
+ * 
+ * 5. ✅ Детальное логирование для диагностики (все операции логируются)
+ * 
+ * 6. ✅ ИСПРАВЛЕНО: testClaudeConnection() правильно обновляет _message.value
+ *    для отображения результатов в UI
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -270,6 +265,12 @@ class SettingsViewModel @Inject constructor(
 
     /**
      * ✅ ИСПРАВЛЕНО: Правильное сохранение GitHub настроек с валидацией
+     * 
+     * ФИЧИ:
+     * - Валидация owner/repo/token перед сохранением
+     * - Сначала сохраняется token (зашифровано), затем config
+     * - Детальное логирование каждого шага
+     * - Обработка ошибок с информативными сообщениями
      */
     fun saveGitHubSettings() {
         viewModelScope.launch {
@@ -321,6 +322,15 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * ✅ ИСПРАВЛЕНО: Автоматическое тестирование после сохранения
+     * 
+     * НОВОЕ ПОВЕДЕНИЕ:
+     * 1. Сохранить API ключ
+     * 2. Сохранить модель
+     * 3. Автоматически вызвать testClaudeConnection()
+     * 4. Показать результат теста в UI
+     */
     fun saveAnthropicSettings(useBiometric: Boolean) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -337,8 +347,14 @@ class SettingsViewModel @Inject constructor(
                 
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric)
                 appSettings.setClaudeModel(_claudeModelInput.value)
+                
                 _message.value = "✅ Claude settings saved successfully"
                 android.util.Log.d("SettingsViewModel", "✅ Anthropic settings saved successfully")
+                
+                // ✅ НОВОЕ: Автоматически тестируем соединение после сохранения
+                android.util.Log.d("SettingsViewModel", "🧪 Auto-testing Claude connection...")
+                testClaudeConnection()
+                
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
                 android.util.Log.e("SettingsViewModel", "❌ Save failed", e)
@@ -348,6 +364,9 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Сохранение настроек кэша
+     */
     fun saveCacheSettings() {
         viewModelScope.launch {
             _isSaving.value = true
@@ -372,6 +391,12 @@ class SettingsViewModel @Inject constructor(
 
     /**
      * ✅ ИСПРАВЛЕНО: Правильное сохранение всех настроек с валидацией
+     * 
+     * ПОВЕДЕНИЕ:
+     * 1. Валидация ВСЕХ полей (GitHub + Anthropic)
+     * 2. Атомарное сохранение всех настроек
+     * 3. Автоматическое тестирование соединений
+     * 4. Детальное логирование каждого шага
      */
     fun saveAllSettings() {
         viewModelScope.launch {
@@ -432,6 +457,11 @@ class SettingsViewModel @Inject constructor(
                 _message.value = "✅ All settings saved successfully"
                 android.util.Log.d("SettingsViewModel", "✅ All settings saved successfully")
                 
+                // ✅ НОВОЕ: Автоматически тестируем соединения
+                android.util.Log.d("SettingsViewModel", "🧪 Auto-testing connections...")
+                testClaudeConnection()
+                testGitHubConnection()
+                
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
                 android.util.Log.e("SettingsViewModel", "❌ Save all failed", e)
@@ -445,6 +475,9 @@ class SettingsViewModel @Inject constructor(
     // TEST CONNECTIONS
     // ═════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Тестирование GitHub соединения
+     */
     fun testGitHubConnection() {
         viewModelScope.launch {
             _githubStatus.value = ConnectionStatus.Testing
@@ -468,29 +501,60 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Использует профессиональный testConnection()
+     * 
+     * СТАРАЯ ВЕРСИЯ (работала, но не профессионально):
+     * ```kotlin
+     * val result = claudeClient.sendMessage(
+     *     messages = listOf(ClaudeMessage(role = "user", content = "Hello")),
+     *     maxTokens = 10
+     * )
+     * ```
+     * 
+     * НОВАЯ ВЕРСИЯ (2026 Professional):
+     * ```kotlin
+     * val result = claudeClient.testConnection()
+     * // Возвращает детальные ошибки:
+     * // - "Invalid API key. Please check..."
+     * // - "Rate limit exceeded. Retry in X seconds"
+     * // - "✅ Connected successfully! Model: claude-sonnet-4-5-20250929"
+     * ```
+     * 
+     * ✅ ИСПРАВЛЕНО (2026-02-06): Правильное отображение message в UI
+     * - При успехе: _message.value = "✅ $message"
+     * - При ошибке: _message.value = "❌ $errorMessage"
+     */
     fun testClaudeConnection() {
         viewModelScope.launch {
             _claudeStatus.value = ConnectionStatus.Testing
             android.util.Log.d("SettingsViewModel", "🔍 Testing Claude connection...")
 
             try {
-                val result = claudeClient.sendMessage(
-                    messages = listOf(
-                        ClaudeMessage(role = "user", content = "Hello")
-                    ),
-                    maxTokens = 10
-                )
+                // ✅ НОВОЕ: Используем профессиональный метод testConnection()
+                val result = claudeClient.testConnection()
 
-                result.onSuccess {
+                result.onSuccess { message ->
                     _claudeStatus.value = ConnectionStatus.Connected
-                    android.util.Log.d("SettingsViewModel", "✅ Claude connected")
+                    android.util.Log.d("SettingsViewModel", "✅ Claude connected: $message")
+                    
+                    // ✅ ИСПРАВЛЕНО: Обновляем UI сообщение с деталями
+                    _message.value = "✅ $message"
+                    
                 }.onFailure { e ->
-                    _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                    android.util.Log.e("SettingsViewModel", "❌ Claude connection failed", e)
+                    val errorMessage = e.message ?: "Unknown error"
+                    _claudeStatus.value = ConnectionStatus.Error(errorMessage)
+                    android.util.Log.e("SettingsViewModel", "❌ Claude connection failed: $errorMessage")
+                    
+                    // ✅ ИСПРАВЛЕНО: Обновляем UI сообщение с деталями ошибки
+                    _message.value = "❌ $errorMessage"
                 }
+                
             } catch (e: Exception) {
-                _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
+                val errorMessage = e.message ?: "Unknown error"
+                _claudeStatus.value = ConnectionStatus.Error(errorMessage)
                 android.util.Log.e("SettingsViewModel", "❌ Claude connection exception", e)
+                _message.value = "❌ Connection error: $errorMessage"
             }
         }
     }
