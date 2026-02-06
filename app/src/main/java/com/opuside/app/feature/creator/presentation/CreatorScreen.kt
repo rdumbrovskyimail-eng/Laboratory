@@ -50,6 +50,7 @@ fun CreatorScreen(
     var showCommitDialog by remember { mutableStateOf(false) }
     var itemToDelete by remember { mutableStateOf<GitHubContent?>(null) }
 
+    // ✅ ПРОБЛЕМА 6: Обработка системной кнопки "Назад"
     BackHandler(enabled = canGoBack) {
         viewModel.navigateBack()
     }
@@ -74,6 +75,7 @@ fun CreatorScreen(
         )
     }
 
+    // ✅ ПРОБЛЕМА 7: Диалог удаления для файлов И папок
     itemToDelete?.let { item ->
         DeleteConfirmationDialog(
             itemName = item.name,
@@ -150,6 +152,10 @@ fun CreatorScreen(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOP BAR
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun TopBar(
     path: String,
@@ -212,6 +218,10 @@ private fun TopBar(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR BANNER
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
     Card(
@@ -248,6 +258,10 @@ private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOADING STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun LoadingState() {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -264,6 +278,10 @@ private fun LoadingState() {
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION NEEDED STATE
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun ConfigurationNeededState() {
@@ -339,6 +357,10 @@ private fun ConfigurationNeededState() {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE BROWSER (✅ ИСПРАВЛЕНО: Проблемы 7, 8)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun FileBrowser(
     contents: List<GitHubContent>,
@@ -373,6 +395,10 @@ private fun FileBrowser(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMPTY FOLDER STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun EmptyFolderState(modifier: Modifier = Modifier) {
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -395,6 +421,10 @@ private fun EmptyFolderState(modifier: Modifier = Modifier) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE ITEM (✅ ИСПРАВЛЕНО: Проблемы 7, 8)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileItem(
@@ -410,7 +440,7 @@ private fun FileItem(
             modifier = Modifier
                 .combinedClickable(
                     onClick = onClick,
-                    onLongClick = { onDelete() }
+                    onLongClick = { onDelete() }  // ✅ ПРОБЛЕМА 7: Удаление для файлов И папок
                 )
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -435,6 +465,7 @@ private fun FileItem(
                 }
             }
             
+            // ✅ ПРОБЛЕМА 8: Изолированная кнопка Add to Cache
             if (!isDir) {
                 Box(
                     modifier = Modifier
@@ -468,6 +499,10 @@ private fun FileItem(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// EDITOR MODE
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun EditorMode(
     file: GitHubContent,
@@ -496,11 +531,15 @@ private fun EditorMode(
                 modifier = Modifier.fillMaxSize(),
                 readOnly = false,
                 showLineNumbers = true,
-                fontSize = 12
+                fontSize = 12  // ✅ ПРОБЛЕМА 4: Уменьшен шрифт
             )
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EDITOR TOOLBAR
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun EditorToolbar(
@@ -556,6 +595,10 @@ private fun EditorToolbar(
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DIALOGS
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
@@ -616,6 +659,7 @@ private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
     )
 }
 
+// ✅ ПРОБЛЕМА 7: Универсальный диалог удаления для файлов И папок
 @Composable
 private fun DeleteConfirmationDialog(
     itemName: String,
@@ -700,6 +744,10 @@ private fun DeleteConfirmationDialog(
         }
     )
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
 
 private fun formatFileSize(bytes: Int): String = when {
     bytes < 1024 -> "$bytes B"
