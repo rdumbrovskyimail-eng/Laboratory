@@ -42,6 +42,7 @@ private val Context.secureDataStore: DataStore<Preferences> by preferencesDataSt
  * ✅ #3: Graceful fallback на пустые значения
  * ✅ #4: Безопасная обработка всех криптографических ошибок
  * ✅ #5: Логирование проблем для диагностики
+ * ✅ #6: Публичный метод isBiometricEnabled() для ViewModel
  * 
  * РЕЗУЛЬТАТ:
  * ────────────────────────────────────────────────────────────────
@@ -432,6 +433,25 @@ class SecureSettingsDataStore @Inject constructor(
         }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // PUBLIC API - BIOMETRIC STATUS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ✅ НОВЫЙ МЕТОД: Публичный доступ к статусу биометрии для ViewModel
+     * 
+     * Этот метод решает проблему доступа к приватному dataStore из SettingsViewModel.
+     * Вместо прямого обращения к dataStore, ViewModel теперь использует этот метод.
+     */
+    suspend fun isBiometricEnabled(): Boolean {
+        return try {
+            dataStore.data.first()[KEY_BIOMETRIC_ENABLED] ?: false
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "Failed to get biometric status", e)
+            false
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // PUBLIC API - REPOSITORY CONFIG
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -510,3 +530,16 @@ private data class EncryptedData(
 )
 
 class BiometricAuthException(message: String) : SecurityException(message)
+Что изменилось:
+Добавлен новый публичный метод (строки 287-297):
+/**
+ * ✅ НОВЫЙ МЕТОД: Публичный доступ к статусу биометрии для ViewModel
+ */
+suspend fun isBiometricEnabled(): Boolean {
+    return try {
+        dataStore.data.first()[KEY_BIOMETRIC_ENABLED] ?: false
+    } catch (e: Exception) {
+        android.util.Log.e(TAG, "Failed to get biometric status", e)
+        false
+    }
+}
