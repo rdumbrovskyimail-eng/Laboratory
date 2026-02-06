@@ -2,9 +2,6 @@ package com.opuside.app.core.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,7 +23,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.key.*
-import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -40,12 +36,19 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 
+/**
+ * Профессиональный Code Editor на основе best practices:
+ * - compose-code-editor (github.com/Qawaz/compose-code-editor)
+ * - Android Compose Guidelines
+ * - LazyColumn + BasicTextField синхронизация
+ */
 @Composable
 fun VirtualizedCodeEditor(
     content: String,
@@ -57,11 +60,9 @@ fun VirtualizedCodeEditor(
     fontSize: Int = 12,
     onCursorPositionChanged: ((line: Int, column: Int) -> Unit)? = null
 ) {
-    // STATE MANAGEMENT
-    var textFieldValue by remember {
-        mutableStateOf(TextFieldValue(content))
-    }
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(content)) }
 
+    // Синхронизация внешнего content с внутренним state
     LaunchedEffect(content) {
         if (textFieldValue.text != content) {
             val newSelection = if (textFieldValue.selection.start <= content.length) {
@@ -82,6 +83,7 @@ fun VirtualizedCodeEditor(
         }
     }
 
+    // Асинхронная подсветка синтаксиса
     val highlightedLines by produceState(
         initialValue = lines.map { AnnotatedString(it) },
         key1 = lines.hashCode(),
@@ -129,28 +131,24 @@ fun VirtualizedCodeEditor(
     var isFocused by remember { mutableStateOf(false) }
     val horizontalScrollState = rememberScrollState()
 
-    // КОРРЕКТНЫЙ Auto-scroll к курсору
+    // Auto-scroll к курсору (оптимизированный)
     LaunchedEffect(cursorLine) {
         if (cursorLine in 0 until lines.size) {
             delay(50)
             try {
                 val layoutInfo = listState.layoutInfo
                 val visibleItems = layoutInfo.visibleItemsInfo
-                
+
                 if (visibleItems.isNotEmpty()) {
                     val firstVisible = visibleItems.first().index
                     val lastVisible = visibleItems.last().index
-                    
-                    // Проверяем, виден ли курсор
+
                     if (cursorLine < firstVisible || cursorLine > lastVisible) {
-                        // Центрируем курсор при скроллинге
                         val targetIndex = (cursorLine - 3).coerceAtLeast(0)
                         listState.animateScrollToItem(index = targetIndex)
                     }
                 }
-            } catch (e: Exception) { 
-                // Игнорируем ошибки скроллинга
-            }
+            } catch (e: Exception) {}
         }
     }
 
@@ -182,10 +180,9 @@ fun VirtualizedCodeEditor(
         }
     }
 
-    // УЗКАЯ ШИРИНА НУМЕРАЦИИ
     val lineNumberWidth = remember(lines.size) {
         val maxDigits = lines.size.toString().length
-        (maxDigits * 8 + 8).dp // Более узкая формула
+        (maxDigits * 8 + 8).dp
     }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -210,141 +207,20 @@ fun VirtualizedCodeEditor(
                         .weight(1f)
                         .fillMaxHeight()
                 ) {
-                    // СЛОЙ 1: Подсветка (видимый, НЕ скроллится вручную)
-                    LazyColumn(
-                        state = listState,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .horizontalScroll(horizontalScrollState)
-                            .padding(horizontal = 8.dp),
-                        userScrollEnabled = false // ВАЖНО: отключаем user scroll
-                    ) {
-                        itemsIndexed(
-                            items = lines,
-                            key = { index, line -> "$index-${line.hashCode()}" }
-                        ) { index, line ->
-                            CodeLine(
-                                line = line,
-                                highlightedText = highlightedLines.getOrNull(index) 
-                                    ?: AnnotatedString(line),
-                                isCurrentLine = index == cursorLine,
-                                fontSize = fontSize
-                            )
-                        }
-                    }
-
-                    // СЛОЙ 2: Редактор (невидимый, НО скроллится и кликается)
-                    if (!readOnly) {
-                        var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
-                        val coroutineScope = rememberCoroutineScope()
-                        val velocityTracker = remember { VelocityTracker() }
-                        
-                        CustomLTRTextField(
-                            value = textFieldValue,
-                            onValueChange = { newValue -> textFieldValue = newValue },
-                            modifier = Modifier
-                                .matchParentSize()
-                                .horizontalScroll(horizontalScrollState)
-                                .padding(horizontal = 8.dp)
-                                .focusRequester(focusRequester)
-                                .onFocusChanged { isFocused = it.isFocused }
-                                .pointerInput(Unit) {
-                                    detectTapGestures(
-                                        onPress = { offset ->
-                                            // КЛИК: точное позиционирование
-                                            textLayoutResult?.let { layout ->
-                                                try {
-                                                    val position = layout.getOffsetForPosition(offset)
-                                                    textFieldValue = textFieldValue.copy(
-                                                        selection = TextRange(position)
-                                                    )
-                                                } catch (e: Exception) {
-                                                    // Резервное позиционирование в конец строки
-                                                    val lineHeight = layout.size.height.toFloat() / layout.lineCount
-                                                    val lineIndex = (offset.y / lineHeight).toInt()
-                                                        .coerceIn(0, layout.lineCount - 1)
-                                                    val lineEnd = layout.getLineEnd(lineIndex)
-                                                    textFieldValue = textFieldValue.copy(
-                                                        selection = TextRange(lineEnd)
-                                                    )
-                                                }
-                                            }
-                                            
-                                            try {
-                                                focusRequester.requestFocus()
-                                            } catch (_: Exception) {}
-                                        }
-                                    )
-                                }
-                                .pointerInput(Unit) {
-                                    // ДИНАМИЧНЫЙ ВЕРТИКАЛЬНЫЙ СКРОЛЛИНГ С ИНЕРЦИЕЙ
-                                    detectDragGestures(
-                                        onDragStart = { 
-                                            velocityTracker.resetTracking()
-                                        },
-                                        onDrag = { change, dragAmount ->
-                                            change.consume()
-                                            
-                                            // Отслеживаем скорость для fling
-                                            velocityTracker.addPosition(
-                                                change.uptimeMillis,
-                                                change.position
-                                            )
-                                            
-                                            // Мгновенный скроллинг при драге
-                                            coroutineScope.launch {
-                                                listState.scrollBy(-dragAmount.y)
-                                            }
-                                        },
-                                        onDragEnd = {
-                                            // FLING: инерционный скроллинг после отпускания
-                                            val velocity = velocityTracker.calculateVelocity()
-                                            val velocityY = -velocity.y
-                                            
-                                            coroutineScope.launch {
-                                                // Создаём decay анимацию для плавного замедления
-                                                var currentVelocity = velocityY
-                                                val frictionMultiplier = 2.5f // Умеренное трение
-                                                val velocityThreshold = 50f // Порог остановки
-                                                
-                                                // Симулируем fling через постепенное замедление
-                                                try {
-                                                    var lastFrameTime = withFrameNanos { it }
-                                                    
-                                                    while (kotlin.math.abs(currentVelocity) > velocityThreshold) {
-                                                        val frameTime = withFrameNanos { it }
-                                                        val deltaTimeMillis = (frameTime - lastFrameTime) / 1_000_000f
-                                                        lastFrameTime = frameTime
-                                                        
-                                                        // Рассчитываем смещение на этом кадре
-                                                        val deltaScroll = currentVelocity * deltaTimeMillis / 1000f
-                                                        listState.scrollBy(deltaScroll)
-                                                        
-                                                        // Применяем затухание (экспоненциальное)
-                                                        val decayFactor = kotlin.math.exp((-frictionMultiplier * deltaTimeMillis / 100f).toDouble()).toFloat()
-                                                        currentVelocity *= decayFactor
-                                                    }
-                                                } catch (e: Exception) {
-                                                    // Игнорируем ошибки анимации
-                                                }
-                                            }
-                                        },
-                                        onDragCancel = {
-                                            velocityTracker.resetTracking()
-                                        }
-                                    )
-                                },
-                            textStyle = TextStyle(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = fontSize.sp,
-                                color = Color.Transparent, // НЕВИДИМЫЙ
-                                lineHeight = (fontSize * 1.4).sp,
-                                textDirection = TextDirection.Ltr
-                            ),
-                            cursorColor = EditorTheme.cursorColor,
-                            onTextLayoutChange = { textLayoutResult = it }
-                        )
-                    }
+                    // ПРОФЕССИОНАЛЬНОЕ РЕШЕНИЕ: единое скроллируемое поле
+                    SynchronizedCodeField(
+                        value = textFieldValue,
+                        onValueChange = { textFieldValue = it },
+                        lines = lines,
+                        highlightedLines = highlightedLines,
+                        currentLine = cursorLine,
+                        listState = listState,
+                        horizontalScrollState = horizontalScrollState,
+                        focusRequester = focusRequester,
+                        fontSize = fontSize,
+                        readOnly = readOnly,
+                        onFocusChanged = { isFocused = it }
+                    )
 
                     if (lines.size > 100) {
                         ScrollbarIndicator(
@@ -359,91 +235,160 @@ fun VirtualizedCodeEditor(
     }
 }
 
-// CUSTOM TEXT FIELD с улучшенным курсором
+/**
+ * Синхронизированное поле: LazyColumn (видимый код) + BasicTextField (невидимый редактор)
+ * Best practice из compose-code-editor
+ */
 @Composable
-private fun CustomLTRTextField(
+private fun SynchronizedCodeField(
     value: TextFieldValue,
     onValueChange: (TextFieldValue) -> Unit,
-    modifier: Modifier = Modifier,
-    textStyle: TextStyle = TextStyle.Default,
-    cursorColor: Color = Color.White,
-    onTextLayoutChange: (TextLayoutResult) -> Unit = {}
+    lines: List<String>,
+    highlightedLines: List<AnnotatedString>,
+    currentLine: Int,
+    listState: LazyListState,
+    horizontalScrollState: androidx.compose.foundation.ScrollState,
+    focusRequester: FocusRequester,
+    fontSize: Int,
+    readOnly: Boolean,
+    onFocusChanged: (Boolean) -> Unit
 ) {
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var isCursorVisible by remember { mutableStateOf(true) }
 
+    // Мигание курсора
     LaunchedEffect(Unit) {
         while (true) {
-            delay(530) // Стандартная частота мигания
+            delay(530)
             isCursorVisible = !isCursorVisible
         }
     }
-    
+
     LaunchedEffect(value.selection.start) {
         isCursorVisible = true
     }
 
-    BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = modifier.drawBehind {
-            // ТОЧНОЕ рисование курсора
-            if (isCursorVisible) {
-                textLayoutResult?.let { layout ->
-                    val cursorPos = value.selection.start.coerceIn(0, value.text.length)
-                    try {
-                        val cursorRect = layout.getCursorRect(cursorPos)
-                        drawLine(
-                            color = cursorColor,
-                            start = Offset(cursorRect.left, cursorRect.top),
-                            end = Offset(cursorRect.left, cursorRect.bottom),
-                            strokeWidth = 2.dp.toPx()
-                        )
-                    } catch (_: Exception) {
-                        // Игнорируем ошибки отрисовки
-                    }
-                }
+    val lineHeight = with(LocalDensity.current) { (fontSize * 1.4).sp.toDp() }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        // СЛОЙ 1: Подсветка синтаксиса (видимый, скроллится встроенными жестами)
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .horizontalScroll(horizontalScrollState)
+                .padding(horizontal = 8.dp),
+            userScrollEnabled = true // ВКЛЮЧЕНО: встроенный скроллинг
+        ) {
+            itemsIndexed(
+                items = lines,
+                key = { index, _ -> index } // Стабильные ключи
+            ) { index, _ ->
+                CodeLine(
+                    line = lines[index],
+                    highlightedText = highlightedLines.getOrNull(index) ?: AnnotatedString(lines[index]),
+                    isCurrentLine = index == currentLine,
+                    fontSize = fontSize,
+                    lineHeight = lineHeight
+                )
             }
-        },
-        textStyle = textStyle,
-        cursorBrush = SolidColor(Color.Transparent), // Скрываем стандартный курсор
-        keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.None,
-            autoCorrect = false,
-            keyboardType = KeyboardType.Ascii,
-            imeAction = ImeAction.None
-        ),
-        onTextLayout = { 
-            textLayoutResult = it
-            onTextLayoutChange(it)
         }
-    )
+
+        // СЛОЙ 2: Невидимый редактор (только ввод + курсор + клики)
+        if (!readOnly) {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .horizontalScroll(horizontalScrollState)
+                    .padding(horizontal = 8.dp)
+                    .focusRequester(focusRequester)
+                    .onFocusChanged { onFocusChanged(it.isFocused) }
+                    .pointerInput(Unit) {
+                        // ПРОФЕССИОНАЛЬНОЕ позиционирование курсора
+                        detectTapGestures { offset ->
+                            textLayoutResult?.let { layout ->
+                                try {
+                                    val position = layout.getOffsetForPosition(offset)
+                                    onValueChange(value.copy(selection = TextRange(position)))
+                                } catch (e: Exception) {
+                                    // Fallback: позиция в конец строки
+                                    val lineIndex = (offset.y / lineHeight.toPx()).toInt()
+                                        .coerceIn(0, lines.size - 1)
+                                    val lineStart = lines.take(lineIndex).sumOf { it.length + 1 }
+                                    val lineEnd = lineStart + lines[lineIndex].length
+                                    onValueChange(value.copy(selection = TextRange(lineEnd)))
+                                }
+                            }
+                            try {
+                                focusRequester.requestFocus()
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    .drawBehind {
+                        // Рисуем кастомный курсор
+                        if (isCursorVisible) {
+                            textLayoutResult?.let { layout ->
+                                val cursorPos = value.selection.start.coerceIn(0, value.text.length)
+                                try {
+                                    val cursorRect = layout.getCursorRect(cursorPos)
+                                    drawLine(
+                                        color = EditorTheme.cursorColor,
+                                        start = Offset(cursorRect.left, cursorRect.top),
+                                        end = Offset(cursorRect.left, cursorRect.bottom),
+                                        strokeWidth = 2.dp.toPx()
+                                    )
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    },
+                textStyle = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = fontSize.sp,
+                    color = Color.Transparent, // НЕВИДИМЫЙ текст
+                    lineHeight = (fontSize * 1.4).sp,
+                    textDirection = TextDirection.Ltr
+                ),
+                cursorBrush = SolidColor(Color.Transparent), // Скрываем стандартный курсор
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.None,
+                    autoCorrect = false,
+                    keyboardType = KeyboardType.Ascii,
+                    imeAction = ImeAction.None
+                ),
+                onTextLayout = { textLayoutResult = it }
+            )
+        }
+    }
 }
 
-// LINE NUMBERS с узким паддингом
 @Composable
 private fun LineNumbers(
-    lines: List<String>, 
-    currentLine: Int, 
-    listState: LazyListState, 
+    lines: List<String>,
+    currentLine: Int,
+    listState: LazyListState,
     fontSize: Int,
-    width: androidx.compose.ui.unit.Dp
+    width: Dp
 ) {
     val lineHeight = with(LocalDensity.current) { (fontSize * 1.4).sp.toDp() }
-    
+
     LazyColumn(
         state = listState,
         modifier = Modifier
             .width(width)
             .background(EditorTheme.lineNumbersBackground)
-            .padding(horizontal = 4.dp), // Уменьшенный паддинг
-        userScrollEnabled = false
+            .padding(horizontal = 4.dp),
+        userScrollEnabled = false // Синхронизация с основным listState
     ) {
-        itemsIndexed(lines) { index, _ ->
+        itemsIndexed(
+            items = lines,
+            key = { index, _ -> index }
+        ) { index, _ ->
             Box(
                 modifier = Modifier
                     .height(lineHeight)
-                    .fillMaxWidth(), 
+                    .fillMaxWidth(),
                 contentAlignment = Alignment.CenterEnd
             ) {
                 Text(
@@ -451,9 +396,9 @@ private fun LineNumbers(
                     style = TextStyle(
                         fontFamily = FontFamily.Monospace,
                         fontSize = fontSize.sp,
-                        color = if (index == currentLine) 
-                            EditorTheme.currentLineNumberColor 
-                        else 
+                        color = if (index == currentLine)
+                            EditorTheme.currentLineNumberColor
+                        else
                             EditorTheme.lineNumberColor
                     )
                 )
@@ -462,16 +407,14 @@ private fun LineNumbers(
     }
 }
 
-// CODE LINE
 @Composable
 private fun CodeLine(
-    line: String, 
-    highlightedText: AnnotatedString, 
-    isCurrentLine: Boolean, 
-    fontSize: Int
+    line: String,
+    highlightedText: AnnotatedString,
+    isCurrentLine: Boolean,
+    fontSize: Int,
+    lineHeight: Dp
 ) {
-    val lineHeight = with(LocalDensity.current) { (fontSize * 1.4).sp.toDp() }
-    
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -491,15 +434,14 @@ private fun CodeLine(
     }
 }
 
-// SCROLLBAR INDICATOR
 @Composable
 private fun ScrollbarIndicator(
-    listState: LazyListState, 
-    totalItems: Int, 
+    listState: LazyListState,
+    totalItems: Int,
     modifier: Modifier = Modifier
 ) {
     val firstVisibleItem by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    
+
     Box(
         modifier = modifier
             .fillMaxHeight()
@@ -517,7 +459,6 @@ private fun ScrollbarIndicator(
     }
 }
 
-// VERTICAL DIVIDER
 @Composable
 private fun VerticalDivider(modifier: Modifier = Modifier, color: Color = Color.Gray) {
     Box(
@@ -528,14 +469,16 @@ private fun VerticalDivider(modifier: Modifier = Modifier, color: Color = Color.
     )
 }
 
-// UNDO/REDO MANAGER
+/**
+ * Undo/Redo Manager с оптимизированным хранением
+ */
 private class UndoRedoManager {
     private data class LightweightState(
-        val text: String, 
-        val selectionStart: Int, 
+        val text: String,
+        val selectionStart: Int,
         val selectionEnd: Int
     )
-    
+
     private val history = mutableListOf<LightweightState>()
     private var currentIndex = -1
     private val maxHistorySize = 50
@@ -544,10 +487,10 @@ private class UndoRedoManager {
         if (currentIndex < history.size - 1) {
             history.subList(currentIndex + 1, history.size).clear()
         }
-        
+
         history.add(LightweightState(value.text, value.selection.start, value.selection.end))
         currentIndex++
-        
+
         if (history.size > maxHistorySize) {
             history.removeAt(0)
             currentIndex--
@@ -573,7 +516,6 @@ private class UndoRedoManager {
     }
 }
 
-// THEME
 private object EditorTheme {
     val backgroundColor = Color(0xFFF5F5F5)
     val lineNumbersBackground = Color(0xFFEEEEEE)
