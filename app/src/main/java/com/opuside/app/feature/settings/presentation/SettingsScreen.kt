@@ -140,7 +140,9 @@ fun SettingsScreen(
                 }
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
             // GITHUB SETTINGS
+            // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "GitHub Repository", icon = Icons.Default.Code) {
                 OutlinedTextField(
                     value = githubOwnerInput,
@@ -230,7 +232,9 @@ fun SettingsScreen(
                 }
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
             // ANTHROPIC SETTINGS
+            // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Claude API", icon = Icons.Default.Psychology) {
                 var showApiKey by remember { mutableStateOf(false) }
                 OutlinedTextField(
@@ -310,10 +314,20 @@ fun SettingsScreen(
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
                     Row {
+                        // ✅ ИЗМЕНЕНО: Кнопка Test теперь вызывает testClaudeConnection()
                         TextButton(
-                            onClick = viewModel::testClaudeConnection,
-                            enabled = !sensitiveFeatureDisabled
+                            onClick = {
+                                viewModel.testClaudeConnection()
+                            },
+                            enabled = !sensitiveFeatureDisabled && claudeStatus !is ConnectionStatus.Testing
                         ) { 
+                            if (claudeStatus is ConnectionStatus.Testing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(Modifier.width(4.dp))
+                            }
                             Text("Test") 
                         }
                         Button(
@@ -323,6 +337,70 @@ fun SettingsScreen(
                             Text("Save") 
                         }
                     }
+                }
+                
+                // ✅ НОВОЕ: Показываем детали результата теста
+                when (val status = claudeStatus) {
+                    is ConnectionStatus.Connected -> {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "Connection successful!",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
+                    is ConnectionStatus.Error -> {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        Icons.Default.Error,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                    Spacer(Modifier.width(8.dp))
+                                    Text(
+                                        "Test Failed",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    status.message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                        }
+                    }
+                    else -> {}
                 }
                 
                 if (useBiometric && !sensitiveFeatureDisabled) {
@@ -339,7 +417,9 @@ fun SettingsScreen(
                 }
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
             // CACHE SETTINGS
+            // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Cache & Timer", icon = Icons.Default.Timer) {
                 Text("Cache keeps files for Claude analysis. Timer resets when adding files.",
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -370,7 +450,9 @@ fun SettingsScreen(
                 }
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
             // DEVELOPER TOOLS
+            // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Developer Tools", icon = Icons.Default.BugReport) {
                 Text(
                     "Debug and testing tools for development",
@@ -720,7 +802,9 @@ fun SettingsScreen(
                 }
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
             // APP INFO
+            // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "About", icon = Icons.Default.Info) {
                 SettingsRow("Version", viewModel.appVersion)
                 SettingsRow("Build", viewModel.buildType)
@@ -730,7 +814,9 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
             // ACTIONS
+            // ═══════════════════════════════════════════════════════════════════════════
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = viewModel::resetToDefaults, modifier = Modifier.weight(1f)) {
                     Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
@@ -749,7 +835,9 @@ fun SettingsScreen(
                 }
             }
 
+            // ═══════════════════════════════════════════════════════════════════════════
             // HINT
+            // ═══════════════════════════════════════════════════════════════════════════
             Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(MaterialTheme.colorScheme.tertiaryContainer)) {
                 Column(Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -758,7 +846,7 @@ fun SettingsScreen(
                         Text("How it works", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again\n7. Enable biometric protection for extra security\n8. Use Developer Tools to test crash logger\n9. Toggle Root Dialog in Developer Tools to control startup behavior",
+                    Text("1. Set your GitHub repo and API keys above\n2. In Creator tab: browse files, edit, commit\n3. Select files and add to Cache for analysis\n4. In Analyzer tab: chat with Claude about cached files\n5. Timer shows cache validity (5 min default)\n6. When timer expires, add files again\n7. Enable biometric protection for extra security\n8. Use Developer Tools to test crash logger\n9. Toggle Root Dialog in Developer Tools to control startup behavior\n\n✅ NEW: Click \"Test\" to verify Claude API connection before using Analyzer",
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                 }
             }
@@ -803,8 +891,5 @@ private fun ConnectionStatusBadge(status: ConnectionStatus) {
         Icon(icon, null, Modifier.size(16.dp), tint = animatedColor)
         Spacer(Modifier.width(4.dp))
         Text(text, style = MaterialTheme.typography.bodySmall, color = animatedColor)
-    }
-    if (status is ConnectionStatus.Error) {
-        Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 20.dp))
     }
 }
