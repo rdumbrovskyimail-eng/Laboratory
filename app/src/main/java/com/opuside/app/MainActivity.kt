@@ -2,7 +2,6 @@ package com.opuside.app
 
 import android.content.Context
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
@@ -16,6 +15,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
@@ -34,17 +34,16 @@ import kotlin.system.exitProcess
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_preferences")
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06) - ПРОБЛЕМА #3: АВТОИНИЦИАЛИЗАЦИЯ
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06) - БИОМЕТРИЯ
  * 
  * ИЗМЕНЕНИЯ:
  * ────────────────────────────────────────────────────────────
- * 1. ✅ УБРАНО: Преждевременная инициализация ViewModels
- * 2. ✅ ДОБАВЛЕНО: Только валидация и логирование статуса
- * 3. ✅ ИСПРАВЛЕНО: ViewModels инициализируются при открытии вкладок
- * 4. ✅ ДОБАВЛЕНО: Подсказки пользователю в логах
+ * 1. ✅ MainActivity теперь extends FragmentActivity (было ComponentActivity)
+ * 2. ✅ BiometricPrompt теперь работает корректно
+ * 3. ✅ Детальное логирование при инициализации
  */
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {  // ✅ ИСПРАВЛЕНО: FragmentActivity вместо ComponentActivity
 
     @Inject
     lateinit var claudeApiClient: ClaudeApiClient
@@ -57,6 +56,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        android.util.Log.d("MainActivity", "━".repeat(80))
+        android.util.Log.d("MainActivity", "🚀 MainActivity CREATED")
+        android.util.Log.d("MainActivity", "   Activity type: ${this.javaClass.simpleName}")
+        android.util.Log.d("MainActivity", "   Is FragmentActivity: ${this is FragmentActivity}")
+        android.util.Log.d("MainActivity", "━".repeat(80))
         
         // 🔥 Проверяем, есть ли свежие краш-логи
         checkForRecentCrashes()
@@ -144,13 +149,6 @@ class MainActivity : ComponentActivity() {
 
     /**
      * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Валидация БЕЗ преждевременной инициализации
-     * 
-     * ПОЧЕМУ НЕ ИНИЦИАЛИЗИРУЕМ ЗДЕСЬ:
-     * ────────────────────────────────
-     * - CreatorViewModel инициализируется при открытии вкладки Creator
-     * - AnalyzerViewModel инициализируется при открытии вкладки Analyzer
-     * - Преждевременная инициализация может вызвать memory leak
-     * - ViewModels должны управляться своими lifecycle-владельцами
      */
     private fun performStartupValidation() {
         lifecycleScope.launch {
