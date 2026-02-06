@@ -31,24 +31,13 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * ✅ ИСПРАВЛЕНО: Теперь читает API ключ из SecureSettingsDataStore
+ * ✅ ПОЛНОСТЬЮ ИСПРАВЛЕНО - Professional Level 2026
  * 
- * Claude API Client for streaming and non-streaming completions.
- * 
- * Features:
- * - SSE (Server-Sent Events) streaming support
- * - Automatic retry-after handling for rate limits
- * - Cancellation-aware flows
- * - Comprehensive error handling
- * - Resource cleanup guarantees
- * - ✅ NEW: Reads API key from encrypted storage (SecureSettingsDataStore)
- * 
- * @property httpClient Ktor HTTP client configured for Anthropic API
- * @property json Kotlinx.serialization JSON instance
- * @property apiUrl Anthropic API endpoint URL
- * @property secureSettings Secure storage for API keys
- * 
- * @since 1.0.0
+ * Изменения:
+ * 1. ✅ Читает API ключ из SecureSettingsDataStore (как GitHub Token)
+ * 2. ✅ Добавлен метод testConnection() для кнопки "Test"
+ * 3. ✅ Добавлен метод validateApiKey() для автоматической проверки
+ * 4. ✅ Улучшенная обработка ошибок с детальными сообщениями
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -57,9 +46,10 @@ class ClaudeApiClient @Inject constructor(
     @Named("anthropicApiUrl") private val apiUrl: String = BuildConfig.ANTHROPIC_API_URL.ifBlank { 
         "https://api.anthropic.com/v1/messages" 
     },
-    private val secureSettings: SecureSettingsDataStore // ✅ NEW: Inject secure storage
+    private val secureSettings: SecureSettingsDataStore
 ) {
     companion object {
+        private const val TAG = "ClaudeApiClient"
         private const val API_VERSION = "2023-06-01"
         private const val ANTHROPIC_BETA = "messages-2023-12-15"
         private const val READ_TIMEOUT_MS = 30_000L
@@ -67,74 +57,141 @@ class ClaudeApiClient @Inject constructor(
     }
 
     /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Читает ключ из SecureSettingsDataStore
-     * 
-     * СТАРАЯ ПРОБЛЕМА:
-     * ─────────────────
-     * ```kotlin
-     * private val apiKey: String
-     *     get() = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
-     *         ?: throw IllegalStateException("ANTHROPIC_API_KEY not configured")
-     * ```
-     * 
-     * Проблемы:
-     * 1. Игнорировал ключ из UI настроек
-     * 2. Всегда требовал BuildConfig (local.properties)
-     * 3. Не работал с зашифрованным хранилищем
-     * 
-     * НОВОЕ РЕШЕНИЕ:
-     * ─────────────────
-     * - Сначала пытается взять ключ из SecureSettingsDataStore
-     * - Если пусто → fallback на BuildConfig (для backward compatibility)
-     * - Если оба пусты → выбрасывает ошибку
+     * ✅ ИСПРАВЛЕНО: Получает ключ из SecureSettingsDataStore (приоритет) или BuildConfig (fallback)
      */
     private suspend fun getApiKey(): String {
-        // 1. Пытаемся взять из SecureSettingsDataStore (приоритет)
+        // 1. Приоритет: SecureSettingsDataStore (как GitHub Token)
         val keyFromStorage = secureSettings.getAnthropicApiKey().first()
         if (keyFromStorage.isNotBlank()) {
+            android.util.Log.d(TAG, "✅ Using API key from SecureSettings")
             return keyFromStorage
         }
 
-        // 2. Fallback на BuildConfig (для совместимости)
+        // 2. Fallback: BuildConfig (для backward compatibility)
         val keyFromBuildConfig = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
         if (keyFromBuildConfig != null) {
+            android.util.Log.d(TAG, "⚠️ Using API key from BuildConfig (fallback)")
             return keyFromBuildConfig
         }
 
         // 3. Оба пусты → ошибка
         throw IllegalStateException(
-            "ANTHROPIC_API_KEY not configured. " +
-            "Please set it in Settings or local.properties file."
+            "ANTHROPIC_API_KEY not configured. Please set it in Settings."
         )
     }
 
     /**
+     * ✅ НОВЫЙ МЕТОД: Тест подключения к Claude API (для кнопки "Test Biometric Access")
+     * 
+     * Отправляет минимальный запрос в API чтобы проверить:
+     * - Валидность API ключа
+     * - Доступность API
+     * - Корректность модели
+     * 
+     * @return Result с сообщением об успехе или ошибке
+     */
+    suspend fun testConnection(): Result<String> {
+        return try {
+            val apiKey = getApiKey()
+            
+            android.util.Log.d(TAG, "🧪 Testing Claude API connection...")
+            
+            val testMessage = ClaudeMessage(
+                role = "user",
+                content = "Hi"
+            )
+            
+            val request = ClaudeRequest(
+                model = BuildConfig.CLAUDE_MODEL.ifBlank { "claude-sonnet-4-5-20250929" },
+                maxTokens = 10,
+                messages = listOf(testMessage),
+                stream = false
+            )
+
+            val response = httpClient.post(apiUrl) {
+                contentType(ContentType.Application.Json)
+                header("x-api-key", apiKey)
+                header("anthropic-version", API_VERSION)
+                setBody(request)
+            }
+
+            when (response.status) {
+                HttpStatusCode.OK -> {
+                    val claudeResponse = response.body<ClaudeResponse>()
+                    android.util.Log.d(TAG, "✅ API connection successful!")
+                    Result.success("✅ Connected successfully!\nModel: ${claudeResponse.model}")
+                }
+                
+                HttpStatusCode.Unauthorized -> {
+                    android.util.Log.e(TAG, "❌ Invalid API key")
+                    Result.failure(ClaudeApiException(
+                        type = "authentication_error",
+                        message = "Invalid API key. Please check your Anthropic API key in Settings."
+                    ))
+                }
+                
+                HttpStatusCode.TooManyRequests -> {
+                    val retryAfter = response.headers["Retry-After"]?.toIntOrNull()
+                    android.util.Log.e(TAG, "❌ Rate limit exceeded")
+                    Result.failure(ClaudeApiException(
+                        type = "rate_limit_error",
+                        message = "Rate limit exceeded. Please try again in ${retryAfter ?: 60} seconds.",
+                        retryAfterSeconds = retryAfter
+                    ))
+                }
+                
+                else -> {
+                    val error = parseError(response)
+                    android.util.Log.e(TAG, "❌ API error: ${error.message}")
+                    Result.failure(error)
+                }
+            }
+            
+        } catch (e: IllegalStateException) {
+            // API ключ не настроен
+            android.util.Log.e(TAG, "❌ ${e.message}")
+            Result.failure(ClaudeApiException(
+                type = "configuration_error",
+                message = e.message ?: "API key not configured"
+            ))
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "❌ Connection test failed", e)
+            Result.failure(ClaudeApiException(
+                type = "network_error",
+                message = "Connection failed: ${e.message ?: "Unknown error"}",
+                cause = e
+            ))
+        }
+    }
+
+    /**
+     * ✅ НОВЫЙ МЕТОД: Валидация наличия и корректности API ключа (для автозапуска)
+     * 
+     * Используется при старте приложения для проверки готовности к работе.
+     * НЕ отправляет запрос в API (в отличие от testConnection).
+     * 
+     * @return true если ключ настроен, false если нет
+     */
+    suspend fun validateApiKey(): Boolean {
+        return try {
+            val key = getApiKey()
+            val isValid = key.isNotBlank() && key.startsWith("sk-ant-")
+            
+            if (isValid) {
+                android.util.Log.d(TAG, "✅ API key validated (length: ${key.length})")
+            } else {
+                android.util.Log.w(TAG, "⚠️ API key format invalid")
+            }
+            
+            isValid
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "⚠️ API key validation failed: ${e.message}")
+            false
+        }
+    }
+
+    /**
      * Stream messages from Claude API using Server-Sent Events.
-     * 
-     * This method is cancellation-aware - when the collector cancels the flow,
-     * the underlying HTTP connection is properly closed.
-     * 
-     * @param messages Conversation history (user/assistant messages)
-     * @param systemPrompt Optional system prompt for context
-     * @param maxTokens Maximum tokens to generate (default: 4096)
-     * @param temperature Sampling temperature (0.0-1.0, optional)
-     * @return Flow of [StreamingResult] events
-     * 
-     * @throws ClaudeApiException on API errors
-     * 
-     * Example:
-     * ```kotlin
-     * claudeClient.streamMessage(
-     *     messages = listOf(ClaudeMessage("user", "Hello!")),
-     *     systemPrompt = "You are a helpful assistant"
-     * ).collect { result ->
-     *     when (result) {
-     *         is StreamingResult.Delta -> println(result.text)
-     *         is StreamingResult.Completed -> println("Done!")
-     *         is StreamingResult.Error -> handleError(result.exception)
-     *     }
-     * }
-     * ```
      */
     fun streamMessage(
         messages: List<ClaudeMessage>,
@@ -143,7 +200,7 @@ class ClaudeApiClient @Inject constructor(
         temperature: Double? = null
     ): Flow<StreamingResult> = flow {
         val request = ClaudeRequest(
-            model = BuildConfig.CLAUDE_MODEL,
+            model = BuildConfig.CLAUDE_MODEL.ifBlank { "claude-sonnet-4-5-20250929" },
             maxTokens = maxTokens,
             messages = messages,
             system = systemPrompt,
@@ -154,7 +211,7 @@ class ClaudeApiClient @Inject constructor(
         var channel: io.ktor.utils.io.ByteReadChannel? = null
         
         try {
-            val apiKey = getApiKey() // ✅ Получаем ключ динамически
+            val apiKey = getApiKey()
             
             val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
@@ -175,7 +232,6 @@ class ClaudeApiClient @Inject constructor(
             val startTime = System.currentTimeMillis()
 
             while (!channel.isClosedForRead) {
-                // Timeout protection for entire streaming session
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
                     emit(StreamingResult.Error(
                         ClaudeApiException(
@@ -186,7 +242,6 @@ class ClaudeApiClient @Inject constructor(
                     return@flow
                 }
 
-                // Read line with timeout
                 val line = withTimeoutOrNull(READ_TIMEOUT_MS) {
                     channel.readUTF8Line()
                 }
@@ -201,7 +256,6 @@ class ClaudeApiClient @Inject constructor(
                     return@flow
                 }
                 
-                // Parse SSE events
                 if (line.startsWith("data: ")) {
                     val data = line.removePrefix("data: ").trim()
                     if (data.isEmpty() || data == "[DONE]") continue
@@ -243,11 +297,18 @@ class ClaudeApiClient @Inject constructor(
                             }
                         }
                     } catch (e: Exception) {
-                        android.util.Log.w("ClaudeAPI", "Failed to parse SSE event: $data", e)
+                        android.util.Log.w(TAG, "Failed to parse SSE event: $data", e)
                     }
                 }
             }
 
+        } catch (e: IllegalStateException) {
+            emit(StreamingResult.Error(
+                ClaudeApiException(
+                    type = "configuration_error",
+                    message = e.message ?: "API key not configured"
+                )
+            ))
         } catch (e: Exception) {
             emit(StreamingResult.Error(
                 ClaudeApiException(
@@ -257,19 +318,12 @@ class ClaudeApiClient @Inject constructor(
                 )
             ))
         } finally {
-            // Ensure channel is always closed
             channel?.cancel()
         }
     }.cancellable()
 
     /**
      * Send a non-streaming message to Claude API.
-     * 
-     * @param messages Conversation history
-     * @param systemPrompt Optional system prompt
-     * @param maxTokens Maximum tokens to generate
-     * @param temperature Sampling temperature (0.0-1.0)
-     * @return Result containing [ClaudeResponse] or error
      */
     suspend fun sendMessage(
         messages: List<ClaudeMessage>,
@@ -278,7 +332,7 @@ class ClaudeApiClient @Inject constructor(
         temperature: Double? = null
     ): Result<ClaudeResponse> {
         val request = ClaudeRequest(
-            model = BuildConfig.CLAUDE_MODEL,
+            model = BuildConfig.CLAUDE_MODEL.ifBlank { "claude-sonnet-4-5-20250929" },
             maxTokens = maxTokens,
             messages = messages,
             system = systemPrompt,
@@ -287,7 +341,7 @@ class ClaudeApiClient @Inject constructor(
         )
 
         return try {
-            val apiKey = getApiKey() // ✅ Получаем ключ динамически
+            val apiKey = getApiKey()
             
             val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
@@ -301,6 +355,13 @@ class ClaudeApiClient @Inject constructor(
             } else {
                 Result.failure(parseError(response))
             }
+        } catch (e: IllegalStateException) {
+            Result.failure(
+                ClaudeApiException(
+                    type = "configuration_error",
+                    message = e.message ?: "API key not configured"
+                )
+            )
         } catch (e: Exception) {
             Result.failure(
                 ClaudeApiException(
@@ -312,18 +373,6 @@ class ClaudeApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Parse error response from Anthropic API.
-     * 
-     * Handles:
-     * - Rate limit errors with Retry-After header
-     * - Authentication errors
-     * - Invalid request errors
-     * - Server errors
-     * 
-     * @param response HTTP response with error status
-     * @return [ClaudeApiException] with parsed error details
-     */
     private suspend fun parseError(response: HttpResponse): ClaudeApiException {
         return try {
             val errorBody = response.body<String>()
@@ -347,68 +396,14 @@ class ClaudeApiClient @Inject constructor(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// STREAMING RESULT TYPES
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Sealed class representing streaming events from Claude API.
- */
 sealed class StreamingResult {
-    /**
-     * Streaming started with message ID.
-     */
     data class Started(val messageId: String) : StreamingResult()
-    
-    /**
-     * Delta (chunk) of text received.
-     * 
-     * @property text New text chunk
-     * @property accumulated All accumulated text so far
-     */
     data class Delta(val text: String, val accumulated: String) : StreamingResult()
-    
-    /**
-     * Stop reason received (e.g., "end_turn", "max_tokens").
-     */
     data class StopReason(val reason: String) : StreamingResult()
-    
-    /**
-     * Streaming completed successfully.
-     * 
-     * @property fullText Complete generated text
-     * @property usage Token usage statistics
-     */
     data class Completed(val fullText: String, val usage: Usage?) : StreamingResult()
-    
-    /**
-     * Error occurred during streaming.
-     */
     data class Error(val exception: ClaudeApiException) : StreamingResult()
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// EXCEPTION CLASS (Production-ready, 2026 level)
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * Exception thrown by Claude API operations.
- * 
- * Provides structured error information including:
- * - Error type classification
- * - Human-readable message
- * - Retry-After header for rate limits
- * - Original cause exception
- * 
- * @property type Error type from Anthropic API
- * @property retryAfterSeconds Seconds to wait before retry (for rate limits)
- * 
- * @constructor Creates exception with type, message, and optional cause
- * @param type Error type (e.g., "rate_limit_error", "invalid_request_error")
- * @param message Human-readable error message
- * @param cause Original exception that caused this error (optional)
- * @param retryAfterSeconds Seconds to wait before retry (optional)
- */
 class ClaudeApiException(
     val type: String,
     message: String,
@@ -416,29 +411,14 @@ class ClaudeApiException(
     val retryAfterSeconds: Int? = null
 ) : Exception(message, cause) {
     
-    /**
-     * Convenience constructor without retry-after.
-     */
-    constructor(
-        type: String,
-        message: String
-    ) : this(type, message, null, null)
+    constructor(type: String, message: String) : this(type, message, null, null)
     
-    /** True if this is a rate limit error. */
     val isRateLimitError: Boolean get() = type == "rate_limit_error"
-    
-    /** True if this is an authentication error. */
     val isAuthError: Boolean get() = type == "authentication_error"
-    
-    /** True if this is an invalid request error. */
     val isInvalidRequest: Boolean get() = type == "invalid_request_error"
-    
-    /** True if the API is overloaded. */
     val isOverloaded: Boolean get() = type == "overloaded_error"
+    val isConfigurationError: Boolean get() = type == "configuration_error"
     
-    /**
-     * User-friendly error message with retry information.
-     */
     override fun toString(): String = buildString {
         append("ClaudeApiException(type=$type, message=$message")
         retryAfterSeconds?.let { append(", retryAfter=${it}s") }
