@@ -1,6 +1,8 @@
 package com.opuside.app.feature.settings.presentation
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -23,7 +25,7 @@ import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
-import com.opuside.app.core.security.BiometricAuthHelper  // ✅ ДОБАВЛЕНО
+import com.opuside.app.core.security.BiometricAuthHelper
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.util.CacheNotificationHelper
@@ -65,11 +67,11 @@ fun SettingsScreen(
     val message by viewModel.message.collectAsState()
     
     val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
-    val useBiometric by viewModel.useBiometricInput.collectAsState()
     
-    // 🔐 НОВОЕ: Состояние блокировки
+    // 🔐 Состояние блокировки
     val isUnlocked by viewModel.isUnlocked.collectAsState()
     val unlockExpiration by viewModel.unlockExpiration.collectAsState()
+    val timerTick by viewModel.timerTick.collectAsState() // ✅ НОВОЕ: для обновления UI
     
     val activity = remember(context) {
         if (context is androidx.activity.ComponentActivity) {
@@ -97,38 +99,31 @@ fun SettingsScreen(
         }
     }
 
-    // 🔐 НОВОЕ: Обработка биометрии для разблокировки Settings
+    // 🔐 Обработка биометрии для разблокировки Settings
     if (biometricAuthRequest && activity != null) {
-        // ✅ ИСПРАВЛЕНО: Явно указываем тип для activity
         val currentActivity: FragmentActivity = activity
-        
-        // Определяем, это для разблокировки Settings или для переключения тумблера
-        val isForToggle = useBiometric != viewModel.useBiometricInput.value
         
         LaunchedEffect(Unit) {
             BiometricAuthHelper.authenticate(
-                activity = currentActivity,  // ✅ ИСПРАВЛЕНО: используем typed variable
-                title = if (isForToggle) {
-                    if (viewModel.useBiometricInput.value) "Enable Biometric Protection" else "Disable Biometric Protection"
-                } else {
-                    "Unlock Settings"
-                },
-                subtitle = if (isForToggle) {
-                    "Confirm with fingerprint"
-                } else {
-                    "Authentication required to access sensitive settings"
-                },
+                activity = currentActivity,
+                title = "Unlock Settings",
+                subtitle = "Authentication required to access sensitive settings",
                 onSuccess = {
-                    if (isForToggle) {
-                        viewModel.onBiometricSuccessForToggle()
-                    } else {
-                        viewModel.onBiometricSuccess()
-                    }
+                    viewModel.onBiometricSuccess()
                 },
                 onError = { error ->
                     viewModel.onBiometricError(error)
                 }
             )
+        }
+    }
+
+    // ✅ НОВОЕ: File picker для импорта конфигурации
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let { 
+            viewModel.importConfigFromFile(it)
         }
     }
 
@@ -141,7 +136,7 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 🔐 НОВОЕ: Заголовок с индикатором блокировки
+            // 🔐 Заголовок с индикатором блокировки
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -149,7 +144,7 @@ fun SettingsScreen(
             ) {
                 Text("Settings", style = MaterialTheme.typography.headlineMedium)
                 
-                // 🔐 НОВОЕ: Индикатор и кнопка разблокировки
+                // 🔐 Индикатор и кнопка разблокировки
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -178,9 +173,9 @@ fun SettingsScreen(
                                 color = indicatorColor
                             )
                             
-                            // Показываем таймер, если разблокировано
+                            // ✅ ИСПРАВЛЕНО: Показываем таймер с автообновлением
                             if (isUnlocked && unlockExpiration != null) {
-                                val remainingTime = remember {
+                                val remainingTime = remember(timerTick, unlockExpiration) {
                                     derivedStateOf {
                                         val now = System.currentTimeMillis()
                                         val remaining = (unlockExpiration!! - now) / 1000
@@ -191,14 +186,6 @@ fun SettingsScreen(
                                         } else {
                                             "0:00"
                                         }
-                                    }
-                                }
-                                
-                                // Триггер для обновления каждую секунду
-                                LaunchedEffect(unlockExpiration) {
-                                    while (true) {
-                                        kotlinx.coroutines.delay(1000)
-                                        // Просто триггерим recomposition
                                     }
                                 }
                                 
@@ -271,6 +258,59 @@ fun SettingsScreen(
                 }
             }
 
+            // ✅ НОВОЕ: Import Config Button
+            if (!sensitiveFeatureDisabled && isUnlocked) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Upload,
+                                    null,
+                                    tint = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    "Import Configuration",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Load all settings from a .txt file",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                        }
+                        
+                        Button(
+                            onClick = { 
+                                filePickerLauncher.launch("text/plain")
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.tertiary
+                            )
+                        ) {
+                            Icon(Icons.Default.FolderOpen, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Browse")
+                        }
+                    }
+                }
+            }
+
             // ═══════════════════════════════════════════════════════════════════════════
             // GITHUB SETTINGS
             // ═══════════════════════════════════════════════════════════════════════════
@@ -283,7 +323,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.Person, null) },
-                    enabled = !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
+                    enabled = !sensitiveFeatureDisabled && isUnlocked
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -294,7 +334,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.Folder, null) },
-                    enabled = !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
+                    enabled = !sensitiveFeatureDisabled && isUnlocked
                 )
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
@@ -305,7 +345,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.CallSplit, null) },
-                    enabled = isUnlocked // 🔐 ИЗМЕНЕНО (branch можно менять всегда, но тоже под блокировкой)
+                    enabled = isUnlocked
                 )
                 Spacer(Modifier.height(8.dp))
                 
@@ -336,7 +376,7 @@ fun SettingsScreen(
                             Icon(if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
                     },
-                    enabled = !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
+                    enabled = !sensitiveFeatureDisabled && isUnlocked
                 )
                 Spacer(Modifier.height(12.dp))
                 
@@ -351,7 +391,7 @@ fun SettingsScreen(
                         }
                         Button(
                             onClick = viewModel::saveGitHubSettings, 
-                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
+                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
                         ) { 
                             Text("Save") 
                         }
@@ -370,7 +410,7 @@ fun SettingsScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════════════════
-            // ANTHROPIC SETTINGS
+            // ANTHROPIC SETTINGS (✅ БЕЗ Biometric Protection toggle)
             // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Claude API", icon = Icons.Default.Psychology) {
                 var showApiKey by remember { mutableStateOf(false) }
@@ -400,7 +440,7 @@ fun SettingsScreen(
                             Icon(if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
                     },
-                    enabled = !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
+                    enabled = !sensitiveFeatureDisabled && isUnlocked
                 )
                 Spacer(Modifier.height(8.dp))
                 
@@ -422,38 +462,8 @@ fun SettingsScreen(
                 }
                 Spacer(Modifier.height(12.dp))
                 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            if (sensitiveFeatureDisabled)
-                                "Biometric Protection (Disabled - Root Access)"
-                            else if (!isUnlocked)
-                                "Biometric Protection (Locked)"
-                            else
-                                "Biometric Protection",
-                            color = if (sensitiveFeatureDisabled || !isUnlocked) 
-                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
-                            else
-                                MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            "Require fingerprint/face to access API key",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(
-                        checked = useBiometric,
-                        onCheckedChange = viewModel::updateUseBiometric,
-                        enabled = !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
-                    )
-                }
-                
-                Spacer(Modifier.height(12.dp))
+                // ✅ УДАЛЕНО: Biometric Protection toggle
+                // Биометрия теперь всегда включена при сохранении
                 
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
@@ -472,8 +482,8 @@ fun SettingsScreen(
                             Text("Test") 
                         }
                         Button(
-                            onClick = { viewModel.saveAnthropicSettings(useBiometric) }, 
-                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
+                            onClick = { viewModel.saveAnthropicSettings() }, 
+                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
                         ) { 
                             Text("Save") 
                         }
@@ -543,7 +553,8 @@ fun SettingsScreen(
                     else -> {}
                 }
                 
-                if (useBiometric && !sensitiveFeatureDisabled) {
+                // ✅ НОВОЕ: Информация о биометрии (всегда включена)
+                if (!sensitiveFeatureDisabled) {
                     Spacer(Modifier.height(8.dp))
                     
                     Card(
@@ -575,19 +586,28 @@ fun SettingsScreen(
                                 }
                             )
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                when {
-                                    activity == null -> "⚠️ Biometric unavailable (restart app)"
-                                    !SecurityUtils.isDeviceSecure(context) -> "⚠️ Set up lock screen first"
-                                    else -> "✅ Biometric authentication ready"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = when {
-                                    activity == null -> MaterialTheme.colorScheme.onErrorContainer
-                                    !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.onTertiaryContainer
-                                    else -> MaterialTheme.colorScheme.onPrimaryContainer
+                            Column {
+                                Text(
+                                    when {
+                                        activity == null -> "⚠️ Biometric unavailable (restart app)"
+                                        !SecurityUtils.isDeviceSecure(context) -> "⚠️ Set up lock screen first"
+                                        else -> "✅ Biometric protection enabled"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = when {
+                                        activity == null -> MaterialTheme.colorScheme.onErrorContainer
+                                        !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.onTertiaryContainer
+                                        else -> MaterialTheme.colorScheme.onPrimaryContainer
+                                    }
+                                )
+                                if (activity != null && SecurityUtils.isDeviceSecure(context)) {
+                                    Text(
+                                        "API key protected by fingerprint/face",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                    )
                                 }
-                            )
+                            }
                         }
                     }
                 }
@@ -993,7 +1013,7 @@ fun SettingsScreen(
                 Button(
                     onClick = viewModel::saveAllSettings, 
                     modifier = Modifier.weight(1f), 
-                    enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked // 🔐 ИЗМЕНЕНО
+                    enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
                 ) {
                     if (isSaving) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     else Icon(Icons.Default.Save, null, Modifier.size(18.dp))
@@ -1017,17 +1037,20 @@ fun SettingsScreen(
                         "🔐 SECURITY:\n" +
                         "• Click 🔓 Unlock button to edit sensitive settings\n" +
                         "• Auto-locks after 5 minutes of inactivity\n" +
-                        "• Biometric toggle requires fingerprint to enable/disable\n\n" +
+                        "• Biometric protection is ALWAYS ENABLED for API keys\n\n" +
+                        "📥 QUICK SETUP:\n" +
+                        "• Click \"Import Config\" button to load settings from .txt file\n" +
+                        "• File format: [GitHub] and [Claude] sections with key=value pairs\n" +
+                        "• Example file provided in downloads\n\n" +
                         "📱 USAGE:\n" +
-                        "1. Set your GitHub repo and API keys above\n" +
+                        "1. Set your GitHub repo and API keys above (or import from file)\n" +
                         "2. In Creator tab: browse files, edit, commit\n" +
                         "3. Select files and add to Cache for analysis\n" +
                         "4. In Analyzer tab: chat with Claude about cached files\n" +
                         "5. Timer shows cache validity (5 min default)\n" +
                         "6. When timer expires, add files again\n" +
-                        "7. Enable biometric protection for extra security\n" +
-                        "8. Use Developer Tools to test crash logger\n" +
-                        "9. Toggle Root Dialog in Developer Tools to control startup behavior\n\n" +
+                        "7. Use Developer Tools to test crash logger\n" +
+                        "8. Toggle Root Dialog in Developer Tools to control startup behavior\n\n" +
                         "✅ NEW: Click \"Test\" to verify Claude API connection before using Analyzer",
                         style = MaterialTheme.typography.bodySmall, 
                         color = MaterialTheme.colorScheme.onTertiaryContainer
