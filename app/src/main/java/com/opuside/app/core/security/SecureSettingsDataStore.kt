@@ -530,16 +530,3 @@ private data class EncryptedData(
 )
 
 class BiometricAuthException(message: String) : SecurityException(message)
-Что изменилось:
-Добавлен новый публичный метод (строки 287-297):
-/**
- * ✅ НОВЫЙ МЕТОД: Публичный доступ к статусу биометрии для ViewModel
- */
-suspend fun isBiometricEnabled(): Boolean {
-    return try {
-        dataStore.data.first()[KEY_BIOMETRIC_ENABLED] ?: false
-    } catch (e: Exception) {
-        android.util.Log.e(TAG, "Failed to get biometric status", e)
-        false
-    }
-}
