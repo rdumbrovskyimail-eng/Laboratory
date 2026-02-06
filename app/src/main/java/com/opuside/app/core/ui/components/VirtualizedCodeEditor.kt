@@ -1,6 +1,7 @@
 package com.opuside.app.core.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.animation.core.exponentialDecay
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
@@ -302,11 +303,29 @@ fun VirtualizedCodeEditor(
                                             val velocityY = -velocity.y
                                             
                                             coroutineScope.launch {
-                                                // Используем встроенный animateScrollBy с decay animation
+                                                // Создаём decay анимацию для плавного замедления
+                                                var currentVelocity = velocityY
+                                                val decay = exponentialDecay<Float>(
+                                                    frictionMultiplier = 2.5f, // Умеренное трение
+                                                    absVelocityThreshold = 0.5f
+                                                )
+                                                
+                                                // Симулируем fling через постепенное замедление
                                                 try {
-                                                    listState.animateScrollBy(
-                                                        value = velocityY * 0.5f, // Коэффициент инерции
-                                                    )
+                                                    var lastFrameTime = withFrameNanos { it }
+                                                    
+                                                    while (kotlin.math.abs(currentVelocity) > 0.5f) {
+                                                        val frameTime = withFrameNanos { it }
+                                                        val deltaTimeMillis = (frameTime - lastFrameTime) / 1_000_000f
+                                                        lastFrameTime = frameTime
+                                                        
+                                                        // Рассчитываем смещение на этом кадре
+                                                        val deltaScroll = currentVelocity * deltaTimeMillis / 1000f
+                                                        listState.scrollBy(deltaScroll)
+                                                        
+                                                        // Применяем затухание
+                                                        currentVelocity *= kotlin.math.exp(-decay.absVelocityThreshold * deltaTimeMillis / 100f)
+                                                    }
                                                 } catch (e: Exception) {
                                                     // Игнорируем ошибки анимации
                                                 }
