@@ -22,65 +22,61 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Клиент для работы с GitHub REST API.
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06):
  * 
- * ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Чтение настроек из AppSettings (DataStore)
+ * ПРОБЛЕМА: Crash при первом запуске приложения
+ * ────────────────────────────────────────────────
+ * ПРИЧИНА:
+ * - getConfig() требовал наличия owner/repo/token
+ * - При первом запуске они пустые
+ * - Выбрасывался IllegalStateException
+ * - Приложение крашилось
  * 
- * СТАРАЯ ПРОБЛЕМА:
- * ────────────────
- * - owner/repo/token читались из BuildConfig (local.properties)
- * - BuildConfig компилируется ОДИН РАЗ при сборке
- * - Пользователь НЕ МОГ изменить настройки в UI
- * - Ошибка: "GITHUB_OWNER not configured in local.properties"
- * 
- * НОВОЕ РЕШЕНИЕ:
- * ──────────────
- * - Все настройки читаются из AppSettings (DataStore)
- * - Пользователь может изменить их в Settings UI
- * - Изменения применяются немедленно
- * - BuildConfig используется только для fallback/default значений
+ * РЕШЕНИЕ:
+ * - getConfig() возвращает null если настройки не заполнены
+ * - Все API методы проверяют config на null
+ * - Возвращают Result.failure с понятным сообщением
+ * - UI показывает placeholder вместо краша
  */
 @Singleton
 class GitHubApiClient @Inject constructor(
     @Named("github") private val httpClient: HttpClient,
     private val json: Json,
-    private val appSettings: AppSettings  // ✅ ДОБАВЛЕНО: Dependency Injection для настроек
+    private val appSettings: AppSettings
 ) {
     companion object {
         private const val BASE_URL = "https://api.github.com"
         private const val API_VERSION = "2022-11-28"
     }
 
-    // ✅ КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Читаем настройки из AppSettings
-    // Больше НЕ используем BuildConfig для runtime конфигурации
-    
     /**
-     * Получает текущую конфигурацию GitHub из DataStore.
-     * Вызывается перед каждым API запросом.
+     * ✅ ИСПРАВЛЕНО: Возвращает null если настройки не заполнены
+     * Больше НЕ выбрасывает exception
      */
-    private suspend fun getConfig(): GitHubConfig {
+    private suspend fun getConfig(): GitHubConfig? {
         val config = appSettings.gitHubConfig.first()
         
-        // Валидация: проверяем что все поля заполнены
-        if (config.owner.isBlank()) {
-            throw IllegalStateException("GitHub Owner not configured. Please set it in Settings.")
-        }
-        if (config.repo.isBlank()) {
-            throw IllegalStateException("GitHub Repository not configured. Please set it in Settings.")
-        }
-        if (config.token.isBlank()) {
-            throw IllegalStateException("GitHub Token not configured. Please set it in Settings.")
+        // Проверяем что ВСЕ обязательные поля заполнены
+        if (config.owner.isBlank() || config.repo.isBlank() || config.token.isBlank()) {
+            android.util.Log.w("GitHubApiClient", "⚠️ GitHub not configured: owner=${config.owner.isNotBlank()}, repo=${config.repo.isNotBlank()}, token=${config.token.isNotBlank()}")
+            return null
         }
         
         return config
     }
 
-    // ✅ ДОБАВЛЕНО: BUG #10 - Helper для URL encoding путей с Unicode
+    /**
+     * ✅ НОВЫЙ МЕТОД: Проверка наличия конфигурации
+     */
+    suspend fun isConfigured(): Boolean {
+        return getConfig() != null
+    }
+
     private fun encodePath(path: String): String {
         return path.split("/")
             .joinToString("/") { segment ->
                 URLEncoder.encode(segment, StandardCharsets.UTF_8.toString())
-                    .replace("+", "%20") // Пробел должен быть %20, не +
+                    .replace("+", "%20")
             }
     }
 
@@ -88,14 +84,15 @@ class GitHubApiClient @Inject constructor(
     // REPOSITORY CONTENT
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Получить содержимое директории или файла.
-     */
     suspend fun getContent(
         path: String = "",
         ref: String? = null
     ): Result<List<GitHubContent>> {
-        val config = getConfig()  // ✅ Читаем настройки из DataStore
+        val config = getConfig() 
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
@@ -105,14 +102,15 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Получить содержимое одного файла.
-     */
     suspend fun getFileContent(
         path: String,
         ref: String? = null
     ): Result<GitHubContent> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
@@ -122,9 +120,6 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Получить декодированное содержимое файла.
-     */
     suspend fun getFileContentDecoded(
         path: String,
         ref: String? = null
@@ -136,9 +131,6 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Создать или обновить файл.
-     */
     suspend fun createOrUpdateFile(
         path: String,
         content: String,
@@ -147,6 +139,11 @@ class GitHubApiClient @Inject constructor(
         branch: String? = null
     ): Result<CreateOrUpdateFileResponse> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
+            
         val encodedContent = Base64.encodeToString(content.toByteArray(), Base64.NO_WRAP)
         val request = CreateOrUpdateFileRequest(
             message = message,
@@ -164,9 +161,6 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Удалить файл.
-     */
     suspend fun deleteFile(
         path: String,
         message: String,
@@ -174,6 +168,10 @@ class GitHubApiClient @Inject constructor(
         branch: String? = null
     ): Result<Unit> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
         
         return apiCall {
             httpClient.delete("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
@@ -194,6 +192,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getBranches(): Result<List<GitHubBranch>> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/branches") {
@@ -204,6 +206,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getBranch(branch: String): Result<GitHubBranch> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/branches/$branch") {
@@ -218,6 +224,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getWorkflows(): Result<WorkflowsResponse> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/workflows") {
@@ -232,6 +242,11 @@ class GitHubApiClient @Inject constructor(
         inputs: Map<String, String>? = null
     ): Result<Unit> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
+            
         val request = WorkflowDispatchRequest(ref = ref, inputs = inputs)
         
         return apiCallUnit {
@@ -250,6 +265,11 @@ class GitHubApiClient @Inject constructor(
         perPage: Int = 10
     ): Result<WorkflowRunsResponse> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
+            
         val url = if (workflowId != null) {
             "$BASE_URL/repos/${config.owner}/${config.repo}/actions/workflows/$workflowId/runs"
         } else {
@@ -268,6 +288,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getWorkflowRun(runId: Long): Result<WorkflowRun> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId") {
@@ -278,6 +302,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getWorkflowJobs(runId: Long): Result<WorkflowJobsResponse> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/jobs") {
@@ -288,6 +316,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getJobLogs(jobId: Long): Result<String> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return try {
             val response = httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/jobs/$jobId/logs") {
@@ -306,6 +338,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun rerunWorkflow(runId: Long): Result<Unit> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return apiCallUnit {
             httpClient.post("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/rerun") {
@@ -316,6 +352,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun cancelWorkflow(runId: Long): Result<Unit> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return apiCallUnit {
             httpClient.post("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/cancel") {
@@ -330,6 +370,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getRunArtifacts(runId: Long): Result<ArtifactsResponse> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/runs/$runId/artifacts") {
@@ -340,6 +384,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getArtifactDownloadUrl(artifactId: Long): Result<String> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
         
         return try {
             val response = httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/artifacts/$artifactId/zip") {
@@ -363,6 +411,10 @@ class GitHubApiClient @Inject constructor(
 
     suspend fun getRepository(): Result<GitHubRepository> {
         val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
         
         return apiCall {
             httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}") {
@@ -375,9 +427,6 @@ class GitHubApiClient @Inject constructor(
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ ИСПРАВЛЕНО: setupHeaders теперь принимает токен как параметр
-     */
     private fun HttpRequestBuilder.setupHeaders(token: String) {
         header("Authorization", "Bearer $token")
         header("Accept", "application/vnd.github+json")
@@ -500,9 +549,6 @@ class GitHubApiClient @Inject constructor(
     }
 }
 
-/**
- * Exception для ошибок GitHub API.
- */
 class GitHubApiException(
     val type: String,
     override val message: String,
@@ -513,7 +559,7 @@ class GitHubApiException(
     val isUnauthorized: Boolean get() = statusCode == 401
     val isForbidden: Boolean get() = statusCode == 403
     val isRateLimited: Boolean get() = statusCode == 403 && message.contains("rate limit", ignoreCase = true)
+    val isNotConfigured: Boolean get() = type == "not_configured"
 }
 
-// ✅ ДОБАВЛЕНО: typealias для удобства
 typealias GitHubConfig = com.opuside.app.core.data.GitHubConfig
