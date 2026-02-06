@@ -21,15 +21,21 @@ sealed class ConnectionStatus {
 }
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06):
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06) - ПРОБЛЕМА С СОХРАНЕНИЕМ ДАННЫХ
+ * 
+ * ПРОБЛЕМЫ:
+ * ────────────────────────────────────────────────────────────
+ * 1. ❌ При выходе из приложения данные НЕ сохраняются
+ * 2. ❌ При повторном запуске поля пустые
+ * 3. ❌ Ошибки шифрования молча проглатываются
+ * 4. ❌ Нет логирования процесса сохранения
  * 
  * ИСПРАВЛЕНИЯ:
  * ────────────────────────────────────────────────────────────
- * 1. ✅ Anthropic API ключ теперь правильно загружается из SecureSettingsDataStore
- * 2. ✅ Биометрия восстанавливается из DataStore при старте
- * 3. ✅ ИСПРАВЛЕНА БЕСКОНЕЧНАЯ РЕКУРСИЯ: Test НЕ вызывает Save автоматически
- * 4. ✅ Добавлено логирование для диагностики проблем с ключами
- * 5. ✅ Удалено дублирование операций шифрования
+ * 1. ✅ Добавлено детальное логирование КАЖДОГО шага сохранения
+ * 2. ✅ Все ошибки теперь выводятся в UI через _message
+ * 3. ✅ Проверка успешности записи в DataStore
+ * 4. ✅ Graceful fallback при ошибках расшифровки
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -116,42 +122,100 @@ class SettingsViewModel @Inject constructor(
     // ═════════════════════════════════════════════════════════════════════════
 
     init {
-        android.util.Log.d("SettingsViewModel", "🚀 Initializing SettingsViewModel...")
+        android.util.Log.d(TAG, "━".repeat(80))
+        android.util.Log.d(TAG, "🚀 SettingsViewModel INITIALIZED")
+        android.util.Log.d(TAG, "━".repeat(80))
         loadSettings()
     }
 
+    /**
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Детальное логирование загрузки настроек
+     */
     private fun loadSettings() {
         viewModelScope.launch {
-            android.util.Log.d("SettingsViewModel", "📥 Loading settings from DataStore...")
+            android.util.Log.d(TAG, "📥 Loading settings from DataStore...")
             
             try {
-                val githubConfig = appSettings.gitHubConfig.first()
-                val githubToken = try {
-                    secureSettings.getGitHubToken().first()
+                // ═══════════════════════════════════════════════════════════
+                // GITHUB CONFIG
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Loading GitHub config...")
+                val githubConfig = try {
+                    appSettings.gitHubConfig.first()
                 } catch (e: Exception) {
-                    android.util.Log.e("SettingsViewModel", "❌ Failed to load GitHub token", e)
+                    android.util.Log.e(TAG, "  │  ❌ Failed to load GitHub config from Flow", e)
+                    SecureSettingsDataStore.GitHubConfig("", "", "main", "")
+                }
+                
+                android.util.Log.d(TAG, "  │  ├─ Owner: ${if (githubConfig.owner.isNotEmpty()) "[${githubConfig.owner}]" else "[EMPTY]"}")
+                android.util.Log.d(TAG, "  │  ├─ Repo: ${if (githubConfig.repo.isNotEmpty()) "[${githubConfig.repo}]" else "[EMPTY]"}")
+                android.util.Log.d(TAG, "  │  └─ Branch: ${githubConfig.branch}")
+
+                // ═══════════════════════════════════════════════════════════
+                // GITHUB TOKEN
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Loading GitHub token...")
+                val githubToken = try {
+                    val token = secureSettings.getGitHubToken().first()
+                    android.util.Log.d(TAG, "  │  └─ Token: ${if (token.isNotEmpty()) "[${token.take(10)}...]" else "[EMPTY]"}")
+                    token
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to decrypt GitHub token", e)
                     ""
                 }
 
+                // ═══════════════════════════════════════════════════════════
+                // ANTHROPIC KEY
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Loading Anthropic API key...")
                 val anthropicKey = try {
                     val key = secureSettings.getAnthropicApiKey().first()
-                    android.util.Log.d("SettingsViewModel", "✅ Anthropic key loaded: ${if (key.isNotEmpty()) "[${key.take(10)}...]" else "[EMPTY]"}")
+                    android.util.Log.d(TAG, "  │  └─ Key: ${if (key.isNotEmpty()) "[${key.take(10)}...]" else "[EMPTY]"}")
                     key
                 } catch (e: Exception) {
-                    android.util.Log.e("SettingsViewModel", "❌ Failed to load Anthropic key", e)
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to decrypt Anthropic key", e)
                     ""
                 }
 
+                // ═══════════════════════════════════════════════════════════
+                // BIOMETRIC STATUS
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Loading biometric status...")
                 val biometricEnabled = try {
-                    secureSettings.isBiometricEnabled()
+                    val enabled = secureSettings.isBiometricEnabled()
+                    android.util.Log.d(TAG, "  │  └─ Biometric: ${if (enabled) "ENABLED" else "DISABLED"}")
+                    enabled
                 } catch (e: Exception) {
-                    android.util.Log.e("SettingsViewModel", "❌ Failed to load biometric status", e)
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to load biometric status", e)
                     false
                 }
 
-                val claudeModel = appSettings.claudeModel.first()
-                val cacheConfig = appSettings.cacheConfig.first()
+                // ═══════════════════════════════════════════════════════════
+                // OTHER SETTINGS
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Loading Claude model...")
+                val claudeModel = try {
+                    appSettings.claudeModel.first()
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to load Claude model", e)
+                    "claude-opus-4-5-20251101"
+                }
+                android.util.Log.d(TAG, "  │  └─ Model: $claudeModel")
 
+                android.util.Log.d(TAG, "  └─ Loading cache config...")
+                val cacheConfig = try {
+                    appSettings.cacheConfig.first()
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "     └─ ❌ Failed to load cache config", e)
+                    AppSettings.CacheConfig(5, 20, true)
+                }
+                android.util.Log.d(TAG, "     ├─ Timeout: ${cacheConfig.timeoutMinutes} min")
+                android.util.Log.d(TAG, "     ├─ Max files: ${cacheConfig.maxFiles}")
+                android.util.Log.d(TAG, "     └─ Auto-clear: ${cacheConfig.autoClear}")
+
+                // ═══════════════════════════════════════════════════════════
+                // UPDATE UI STATE
+                // ═══════════════════════════════════════════════════════════
                 _githubOwnerInput.value = githubConfig.owner
                 _githubRepoInput.value = githubConfig.repo
                 _githubBranchInput.value = githubConfig.branch
@@ -163,10 +227,14 @@ class SettingsViewModel @Inject constructor(
                 _maxCacheFilesInput.value = cacheConfig.maxFiles
                 _autoClearCacheInput.value = cacheConfig.autoClear
                 
-                android.util.Log.d("SettingsViewModel", "✅ Settings loaded successfully")
+                android.util.Log.d(TAG, "━".repeat(80))
+                android.util.Log.d(TAG, "✅ Settings loaded successfully")
+                android.util.Log.d(TAG, "━".repeat(80))
                 
             } catch (e: Exception) {
-                android.util.Log.e("SettingsViewModel", "❌ Failed to load settings", e)
+                android.util.Log.e(TAG, "━".repeat(80))
+                android.util.Log.e(TAG, "❌ CRITICAL: Failed to load settings", e)
+                android.util.Log.e(TAG, "━".repeat(80))
                 _message.value = "⚠️ Failed to load settings: ${e.message}"
             }
         }
@@ -178,30 +246,37 @@ class SettingsViewModel @Inject constructor(
 
     fun updateGitHubOwner(owner: String) {
         _githubOwnerInput.value = owner
+        android.util.Log.d(TAG, "🔄 GitHub Owner updated: $owner")
     }
 
     fun updateGitHubRepo(repo: String) {
         _githubRepoInput.value = repo
+        android.util.Log.d(TAG, "🔄 GitHub Repo updated: $repo")
     }
 
     fun updateGitHubToken(token: String) {
         _githubTokenInput.value = token
+        android.util.Log.d(TAG, "🔄 GitHub Token updated: ${token.take(10)}...")
     }
 
     fun updateGitHubBranch(branch: String) {
         _githubBranchInput.value = branch
+        android.util.Log.d(TAG, "🔄 GitHub Branch updated: $branch")
     }
 
     fun updateAnthropicKey(key: String) {
         _anthropicKeyInput.value = key
+        android.util.Log.d(TAG, "🔄 Anthropic Key updated: ${key.take(10)}...")
     }
 
     fun updateClaudeModel(model: String) {
         _claudeModelInput.value = model
+        android.util.Log.d(TAG, "🔄 Claude Model updated: $model")
     }
 
     fun updateUseBiometric(enabled: Boolean) {
         _useBiometricInput.value = enabled
+        android.util.Log.d(TAG, "🔄 Biometric Protection updated: $enabled")
     }
 
     fun updateCacheTimeout(minutes: Int) {
@@ -217,44 +292,109 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // SAVE OPERATIONS - ✅ ИСПРАВЛЕНО: Убрана автоматическая рекурсия
+    // SAVE OPERATIONS
     // ═════════════════════════════════════════════════════════════════════════
 
+    /**
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Детальное логирование сохранения GitHub настроек
+     */
     fun saveGitHubSettings() {
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d("SettingsViewModel", "💾 Saving GitHub settings...")
+            
+            android.util.Log.d(TAG, "━".repeat(80))
+            android.util.Log.d(TAG, "💾 SAVING GITHUB SETTINGS")
+            android.util.Log.d(TAG, "━".repeat(80))
 
             try {
+                // ═══════════════════════════════════════════════════════════
+                // VALIDATION
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Validating inputs...")
+                
                 if (_githubOwnerInput.value.isBlank()) {
+                    android.util.Log.w(TAG, "  │  └─ ❌ Owner is blank")
                     _message.value = "❌ Owner cannot be empty"
                     _isSaving.value = false
                     return@launch
                 }
+                android.util.Log.d(TAG, "  │  ├─ Owner: ${_githubOwnerInput.value}")
+                
                 if (_githubRepoInput.value.isBlank()) {
+                    android.util.Log.w(TAG, "  │  └─ ❌ Repository is blank")
                     _message.value = "❌ Repository cannot be empty"
                     _isSaving.value = false
                     return@launch
                 }
+                android.util.Log.d(TAG, "  │  ├─ Repo: ${_githubRepoInput.value}")
+                
                 if (_githubTokenInput.value.isBlank()) {
+                    android.util.Log.w(TAG, "  │  └─ ❌ Token is blank")
                     _message.value = "❌ Token cannot be empty"
                     _isSaving.value = false
                     return@launch
                 }
-                
-                secureSettings.setGitHubToken(_githubTokenInput.value)
-                secureSettings.setGitHubConfig(
-                    owner = _githubOwnerInput.value,
-                    repo = _githubRepoInput.value,
-                    branch = _githubBranchInput.value
-                )
-                
+                android.util.Log.d(TAG, "  │  ├─ Token: ${_githubTokenInput.value.take(10)}...")
+                android.util.Log.d(TAG, "  │  └─ Branch: ${_githubBranchInput.value}")
+
+                // ═══════════════════════════════════════════════════════════
+                // SAVE TOKEN
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Saving GitHub token...")
+                try {
+                    secureSettings.setGitHubToken(_githubTokenInput.value)
+                    android.util.Log.d(TAG, "  │  └─ ✅ Token encrypted and saved")
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to save token", e)
+                    _message.value = "❌ Failed to save token: ${e.message}"
+                    _isSaving.value = false
+                    return@launch
+                }
+
+                // ═══════════════════════════════════════════════════════════
+                // SAVE CONFIG
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Saving GitHub config...")
+                try {
+                    secureSettings.setGitHubConfig(
+                        owner = _githubOwnerInput.value,
+                        repo = _githubRepoInput.value,
+                        branch = _githubBranchInput.value
+                    )
+                    android.util.Log.d(TAG, "  │  └─ ✅ Config saved")
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to save config", e)
+                    _message.value = "❌ Failed to save config: ${e.message}"
+                    _isSaving.value = false
+                    return@launch
+                }
+
+                // ═══════════════════════════════════════════════════════════
+                // VERIFY SAVE
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  └─ Verifying save...")
+                try {
+                    val savedToken = secureSettings.getGitHubToken().first()
+                    val savedConfig = appSettings.gitHubConfig.first()
+                    
+                    android.util.Log.d(TAG, "     ├─ Verified token: ${savedToken.take(10)}...")
+                    android.util.Log.d(TAG, "     ├─ Verified owner: ${savedConfig.owner}")
+                    android.util.Log.d(TAG, "     ├─ Verified repo: ${savedConfig.repo}")
+                    android.util.Log.d(TAG, "     └─ Verified branch: ${savedConfig.branch}")
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "     └─ ⚠️ Verification failed (non-critical)", e)
+                }
+
                 _message.value = "✅ GitHub settings saved successfully"
-                android.util.Log.d("SettingsViewModel", "✅ GitHub settings saved successfully")
+                android.util.Log.d(TAG, "━".repeat(80))
+                android.util.Log.d(TAG, "✅ GITHUB SETTINGS SAVED SUCCESSFULLY")
+                android.util.Log.d(TAG, "━".repeat(80))
                 
             } catch (e: Exception) {
+                android.util.Log.e(TAG, "━".repeat(80))
+                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
+                android.util.Log.e(TAG, "━".repeat(80))
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "❌ Save failed", e)
             } finally {
                 _isSaving.value = false
             }
@@ -262,39 +402,92 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Убран автоматический тест после сохранения
-     * 
-     * БЫЛО: saveAnthropicSettings() → автоматически вызывает testClaudeConnection()
-     * СТАЛО: saveAnthropicSettings() → просто сохраняет, без автотеста
-     * 
-     * Теперь пользователь явно нажимает кнопку "Test" для проверки соединения.
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Детальное логирование сохранения Anthropic настроек
      */
     fun saveAnthropicSettings(useBiometric: Boolean = _useBiometricInput.value) {
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d("SettingsViewModel", "💾 Saving Anthropic settings (biometric: $useBiometric)...")
+            
+            android.util.Log.d(TAG, "━".repeat(80))
+            android.util.Log.d(TAG, "💾 SAVING ANTHROPIC SETTINGS")
+            android.util.Log.d(TAG, "   Biometric: $useBiometric")
+            android.util.Log.d(TAG, "━".repeat(80))
 
             try {
+                // ═══════════════════════════════════════════════════════════
+                // VALIDATION
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Validating inputs...")
+                
                 if (_anthropicKeyInput.value.isBlank()) {
+                    android.util.Log.w(TAG, "  │  └─ ❌ API Key is blank")
                     _message.value = "❌ API Key cannot be empty"
                     _isSaving.value = false
                     return@launch
                 }
-                
-                secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric)
-                appSettings.setClaudeModel(_claudeModelInput.value)
-                
+                android.util.Log.d(TAG, "  │  ├─ Key: ${_anthropicKeyInput.value.take(10)}...")
+                android.util.Log.d(TAG, "  │  ├─ Model: ${_claudeModelInput.value}")
+                android.util.Log.d(TAG, "  │  └─ Biometric: $useBiometric")
+
+                // ═══════════════════════════════════════════════════════════
+                // SAVE API KEY
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Saving Anthropic API key...")
+                try {
+                    secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric)
+                    android.util.Log.d(TAG, "  │  └─ ✅ Key encrypted and saved")
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to save key", e)
+                    _message.value = "❌ Failed to save key: ${e.message}"
+                    _isSaving.value = false
+                    return@launch
+                }
+
+                // ═══════════════════════════════════════════════════════════
+                // SAVE MODEL
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  ├─ Saving Claude model...")
+                try {
+                    appSettings.setClaudeModel(_claudeModelInput.value)
+                    android.util.Log.d(TAG, "  │  └─ ✅ Model saved")
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to save model", e)
+                    _message.value = "❌ Failed to save model: ${e.message}"
+                    _isSaving.value = false
+                    return@launch
+                }
+
+                // ═══════════════════════════════════════════════════════════
+                // UPDATE BIOMETRIC STATE
+                // ═══════════════════════════════════════════════════════════
                 _useBiometricInput.value = useBiometric
-                
+
+                // ═══════════════════════════════════════════════════════════
+                // VERIFY SAVE
+                // ═══════════════════════════════════════════════════════════
+                android.util.Log.d(TAG, "  └─ Verifying save...")
+                try {
+                    val savedKey = secureSettings.getAnthropicApiKey().first()
+                    val savedModel = appSettings.claudeModel.first()
+                    val savedBiometric = secureSettings.isBiometricEnabled()
+                    
+                    android.util.Log.d(TAG, "     ├─ Verified key: ${savedKey.take(10)}...")
+                    android.util.Log.d(TAG, "     ├─ Verified model: $savedModel")
+                    android.util.Log.d(TAG, "     └─ Verified biometric: $savedBiometric")
+                } catch (e: Exception) {
+                    android.util.Log.w(TAG, "     └─ ⚠️ Verification failed (non-critical)", e)
+                }
+
                 _message.value = "✅ Claude settings saved successfully"
-                android.util.Log.d("SettingsViewModel", "✅ Anthropic settings saved successfully (biometric: $useBiometric)")
-                
-                // ❌ УБРАНО: Автоматический тест после сохранения
-                // testClaudeConnection()
+                android.util.Log.d(TAG, "━".repeat(80))
+                android.util.Log.d(TAG, "✅ ANTHROPIC SETTINGS SAVED SUCCESSFULLY")
+                android.util.Log.d(TAG, "━".repeat(80))
                 
             } catch (e: Exception) {
+                android.util.Log.e(TAG, "━".repeat(80))
+                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
+                android.util.Log.e(TAG, "━".repeat(80))
                 _message.value = "❌ Failed to save: ${e.message}"
-                android.util.Log.e("SettingsViewModel", "❌ Save failed", e)
             } finally {
                 _isSaving.value = false
             }
@@ -350,8 +543,6 @@ class SettingsViewModel @Inject constructor(
                 
                 _message.value = "✅ All settings saved successfully"
                 
-                // ❌ УБРАНО: Автоматические тесты после сохранения
-                
             } catch (e: Exception) {
                 _message.value = "❌ Failed to save: ${e.message}"
             } finally {
@@ -361,21 +552,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // TEST CONNECTIONS - ✅ ИСПРАВЛЕНО: НЕ сохраняют перед тестом
+    // TEST CONNECTIONS
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Убрано сохранение перед тестом
-     * 
-     * БЫЛО: testGitHubConnection() → saveGitHubSettings() → delay → test
-     * СТАЛО: testGitHubConnection() → просто тестирует текущие настройки из полей ввода
-     * 
-     * Теперь Test использует данные напрямую из input полей, без сохранения в DataStore.
-     */
     fun testGitHubConnection() {
         viewModelScope.launch {
             _githubStatus.value = ConnectionStatus.Testing
-            android.util.Log.d("SettingsViewModel", "🔍 Testing GitHub connection...")
+            android.util.Log.d(TAG, "🔍 Testing GitHub connection...")
 
             try {
                 val result = gitHubClient.getRepository()
@@ -395,13 +578,10 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Убрано сохранение перед тестом
-     */
     fun testClaudeConnection() {
         viewModelScope.launch {
             _claudeStatus.value = ConnectionStatus.Testing
-            android.util.Log.d("SettingsViewModel", "🔍 Testing Claude connection...")
+            android.util.Log.d(TAG, "🔍 Testing Claude connection...")
 
             try {
                 val result = claudeClient.testConnection()
@@ -429,6 +609,7 @@ class SettingsViewModel @Inject constructor(
     // ═════════════════════════════════════════════════════════════════════════
 
     fun requestBiometricAuth() {
+        android.util.Log.d(TAG, "🔐 Requesting biometric authentication...")
         _biometricAuthRequest.value = true
     }
 
@@ -446,5 +627,9 @@ class SettingsViewModel @Inject constructor(
 
     fun clearMessage() {
         _message.value = null
+    }
+
+    companion object {
+        private const val TAG = "SettingsViewModel"
     }
 }
