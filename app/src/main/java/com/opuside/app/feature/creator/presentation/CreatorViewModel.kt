@@ -31,7 +31,7 @@ import javax.inject.Inject
  * - Репозиторий НЕ загружается
  * 
  * РЕШЕНИЕ:
- * - Загружаем репозиторий если есть owner И repo (независимо от токена)
+ * - Загружаем репозиторий если есть owner И repo И токен
  * - Токен проверяется при реальных API запросах
  * - Добавлено логирование для диагностики
  * 
@@ -141,7 +141,7 @@ class CreatorViewModel @Inject constructor(
      * 
      * СТАЛО:
      * ```kotlin
-     * if (config.owner.isNotBlank() && config.repo.isNotBlank()) {  // ← НЕ требует токен
+     * if (config.owner.isNotBlank() && config.repo.isNotBlank() && config.token.isNotBlank()) {
      *     loadContents("")
      * }
      * ```
@@ -149,7 +149,7 @@ class CreatorViewModel @Inject constructor(
      * ПОЧЕМУ:
      * - Токен расшифровывается асинхронно
      * - При первом запуске config.token может быть пустым
-     * - Но owner/repo уже доступны
+     * - Теперь проверяем ВСЕ три поля
      * - Токен проверится при реальном API запросе
      */
     init {
@@ -167,8 +167,8 @@ class CreatorViewModel @Inject constructor(
                     android.util.Log.d("CreatorViewModel", "   Branch: ${config.branch}")
                     android.util.Log.d("CreatorViewModel", "   Token: ${if (config.token.isNotEmpty()) "[SET]" else "[EMPTY]"}")
                     
-                    // ✅ ИСПРАВЛЕНО: Проверяем ТОЛЬКО owner и repo (не токен)
-                    if (config.owner.isNotBlank() && config.repo.isNotBlank()) {
+                    // ✅ ИСПРАВЛЕНО: Проверяем owner, repo И токен
+                    if (config.owner.isNotBlank() && config.repo.isNotBlank() && config.token.isNotBlank()) {
                         // ✅ Проверяем реальное изменение перед загрузкой
                         val ownerChanged = _currentOwner.value != config.owner
                         val repoChanged = _currentRepo.value != config.repo
@@ -188,7 +188,7 @@ class CreatorViewModel @Inject constructor(
                             android.util.Log.d("CreatorViewModel", "⏭️  Config unchanged, skipping reload")
                         }
                     } else {
-                        android.util.Log.d("CreatorViewModel", "⚠️  Config incomplete (missing owner or repo), clearing state")
+                        android.util.Log.d("CreatorViewModel", "⚠️  Config incomplete (missing owner, repo, or token), clearing state")
                         
                         // ✅ Конфиг не настроен - очищаем состояние
                         _currentOwner.value = ""
@@ -685,4 +685,7 @@ class CreatorViewModel @Inject constructor(
             }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), listOf("root"))
+    
+    // ✅ ДОБАВЛЕНО: Expose gitHubConfig для CreatorScreen
+    val gitHubConfig = appSettings.gitHubConfig
 }
