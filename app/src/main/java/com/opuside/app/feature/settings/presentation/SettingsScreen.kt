@@ -67,30 +67,22 @@ fun SettingsScreen(
     
     val useBiometric by viewModel.useBiometricInput.collectAsState()
     
-    // ✅ ИСПРАВЛЕНО: Правильное получение FragmentActivity
-    val activity = remember {
-        try {
-            when (context) {
-                is FragmentActivity -> context
-                is androidx.activity.ComponentActivity -> {
-                    // Пытаемся получить FragmentActivity из ComponentActivity
-                    if (context is FragmentActivity) context else null
-                }
-                else -> {
-                    // Ищем FragmentActivity в дереве контекстов
-                    var ctx = context
-                    while (ctx is android.content.ContextWrapper) {
-                        if (ctx is FragmentActivity) {
-                            return@remember ctx
-                        }
-                        ctx = ctx.baseContext
-                    }
-                    null
-                }
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("SettingsScreen", "Failed to get FragmentActivity", e)
+    // ✅ УПРОЩЕНО: Используем только ComponentActivity
+    val activity = remember(context) {
+        if (context is androidx.activity.ComponentActivity) {
+            context as? FragmentActivity
+        } else {
             null
+        }
+    }
+
+    // ✅ ДОБАВЛЕНО: LaunchedEffect для отложенной инициализации
+    LaunchedEffect(Unit) {
+        if (activity == null) {
+            android.util.Log.w("SettingsScreen", "⚠️ FragmentActivity not available")
+            android.util.Log.w("SettingsScreen", "   Context type: ${context.javaClass.simpleName}")
+        } else {
+            android.util.Log.d("SettingsScreen", "✅ FragmentActivity available: ${activity.javaClass.simpleName}")
         }
     }
 
@@ -425,37 +417,56 @@ fun SettingsScreen(
                     else -> {}
                 }
                 
-                // ✅ ИСПРАВЛЕНО: Кнопка биометрии теперь ВСЕГДА активна если activity != null
+                // ✅ ВСЕГДА показываем статус биометрии
                 if (useBiometric && !sensitiveFeatureDisabled) {
                     Spacer(Modifier.height(8.dp))
                     
-                    // ✅ ДОБАВЛЕНО: Показываем статус биометрии
-                    if (activity == null) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.Warning,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "Biometric authentication unavailable in current context",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = when {
+                                activity == null -> MaterialTheme.colorScheme.errorContainer
+                                !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.tertiaryContainer
+                                else -> MaterialTheme.colorScheme.primaryContainer
                             }
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                when {
+                                    activity == null -> Icons.Default.Warning
+                                    !SecurityUtils.isDeviceSecure(context) -> Icons.Default.Lock
+                                    else -> Icons.Default.Fingerprint
+                                },
+                                null,
+                                modifier = Modifier.size(20.dp),
+                                tint = when {
+                                    activity == null -> MaterialTheme.colorScheme.error
+                                    !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.onTertiaryContainer
+                                    else -> MaterialTheme.colorScheme.primary
+                                }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                when {
+                                    activity == null -> "⚠️ Biometric unavailable (restart app)"
+                                    !SecurityUtils.isDeviceSecure(context) -> "⚠️ Set up lock screen first"
+                                    else -> "✅ Biometric authentication ready"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = when {
+                                    activity == null -> MaterialTheme.colorScheme.onErrorContainer
+                                    !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.onTertiaryContainer
+                                    else -> MaterialTheme.colorScheme.onPrimaryContainer
+                                }
+                            )
                         }
                     }
+                    
+                    Spacer(Modifier.height(8.dp))
                     
                     Button(
                         onClick = { 
@@ -464,13 +475,12 @@ fun SettingsScreen(
                             } else {
                                 Toast.makeText(
                                     context,
-                                    "❌ FragmentActivity not available. Restart app.",
+                                    "❌ Restart app to enable biometric features",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        // ✅ ИСПРАВЛЕНО: Кнопка активна если activity доступен
                         enabled = activity != null
                     ) {
                         Icon(Icons.Default.Fingerprint, null, Modifier.size(18.dp))
