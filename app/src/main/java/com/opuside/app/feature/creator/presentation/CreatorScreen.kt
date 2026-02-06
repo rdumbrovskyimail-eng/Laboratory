@@ -1,7 +1,11 @@
 package com.opuside.app.feature.creator.presentation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -10,6 +14,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,8 +48,12 @@ fun CreatorScreen(
 
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showCommitDialog by remember { mutableStateOf(false) }
-    // ✅ ДОБАВЛЕНО: State для диалога удаления
-    var fileToDelete by remember { mutableStateOf<GitHubContent?>(null) }
+    var itemToDelete by remember { mutableStateOf<GitHubContent?>(null) }
+
+    // ✅ ПРОБЛЕМА 6: Обработка системной кнопки "Назад"
+    BackHandler(enabled = canGoBack) {
+        viewModel.navigateBack()
+    }
 
     if (showNewFileDialog) {
         NewFileDialog(
@@ -66,14 +75,19 @@ fun CreatorScreen(
         )
     }
 
-    // ✅ ДОБАВЛЕНО: Диалог подтверждения удаления
-    fileToDelete?.let { file ->
+    // ✅ ПРОБЛЕМА 7: Диалог удаления для файлов И папок
+    itemToDelete?.let { item ->
         DeleteConfirmationDialog(
-            fileName = file.name,
-            onDismiss = { fileToDelete = null },
+            itemName = item.name,
+            isFolder = item.type == "dir",
+            onDismiss = { itemToDelete = null },
             onConfirm = {
-                viewModel.deleteFile(file)
-                fileToDelete = null
+                if (item.type == "dir") {
+                    viewModel.deleteFolder(item)
+                } else {
+                    viewModel.deleteFile(item)
+                }
+                itemToDelete = null
             }
         )
     }
@@ -123,90 +137,24 @@ fun CreatorScreen(
             when {
                 isLoading -> LoadingState()
                 currentOwner.isBlank() || currentRepo.isBlank() -> {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(24.dp),
-                            modifier = Modifier.padding(48.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.Settings,
-                                null,
-                                Modifier.size(72.dp),
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
-                            )
-                            
-                            Text(
-                                "GitHub Not Configured",
-                                style = MaterialTheme.typography.headlineSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                textAlign = TextAlign.Center
-                            )
-                            
-                            Text(
-                                "To start working with your repository:\n\n" +
-                                "1. Go to Settings tab\n" +
-                                "2. Enter GitHub Owner\n" +
-                                "3. Enter Repository Name\n" +
-                                "4. Enter Personal Access Token\n" +
-                                "5. Click Save",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.Center,
-                                lineHeight = 20.sp
-                            )
-                            
-                            Spacer(Modifier.height(8.dp))
-                            
-                            Card(
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                                )
-                            ) {
-                                Column(Modifier.padding(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            Icons.Default.Info,
-                                            null,
-                                            Modifier.size(20.dp),
-                                            tint = MaterialTheme.colorScheme.onTertiaryContainer
-                                        )
-                                        Spacer(Modifier.width(8.dp))
-                                        Text(
-                                            "Need a GitHub Token?",
-                                            style = MaterialTheme.typography.titleSmall,
-                                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                                        )
-                                    }
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(
-                                        "1. Go to github.com → Settings\n" +
-                                        "2. Developer settings → Personal access tokens\n" +
-                                        "3. Generate new token (classic)\n" +
-                                        "4. Select 'repo' scope\n" +
-                                        "5. Copy token and paste in Settings",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onTertiaryContainer,
-                                        lineHeight = 18.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    ConfigurationNeededState()
                 }
                 else -> FileBrowser(
                     contents = contents,
                     onFolderClick = viewModel::navigateToFolder,
                     onFileClick = viewModel::openFile,
                     onAddToCache = viewModel::addToCache,
-                    // ✅ ДОБАВЛЕНО: Callback для удаления
-                    onDeleteFile = { fileToDelete = it },
+                    onDeleteItem = { itemToDelete = it },
                     modifier = Modifier.weight(1f)
                 )
             }
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TOP BAR
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun TopBar(
@@ -270,6 +218,10 @@ private fun TopBar(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ERROR BANNER
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
     Card(
@@ -306,6 +258,10 @@ private fun ErrorBanner(message: String, onDismiss: () -> Unit) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOADING STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun LoadingState() {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -314,10 +270,96 @@ private fun LoadingState() {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             CircularProgressIndicator()
-            Text("Loading files...", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "Loading files...", 
+                style = MaterialTheme.typography.bodyMedium, 
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CONFIGURATION NEEDED STATE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ConfigurationNeededState() {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(24.dp),
+            modifier = Modifier.padding(48.dp)
+        ) {
+            Icon(
+                Icons.Default.Settings,
+                null,
+                Modifier.size(72.dp),
+                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+            )
+            
+            Text(
+                "GitHub Not Configured",
+                style = MaterialTheme.typography.headlineSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center
+            )
+            
+            Text(
+                "To start working with your repository:\n\n" +
+                "1. Go to Settings tab\n" +
+                "2. Enter GitHub Owner\n" +
+                "3. Enter Repository Name\n" +
+                "4. Enter Personal Access Token\n" +
+                "5. Click Save",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                lineHeight = 20.sp
+            )
+            
+            Spacer(Modifier.height(8.dp))
+            
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Info,
+                            null,
+                            Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Need a GitHub Token?",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "1. Go to github.com → Settings\n" +
+                        "2. Developer settings → Personal access tokens\n" +
+                        "3. Generate new token (classic)\n" +
+                        "4. Select 'repo' scope\n" +
+                        "5. Copy token and paste in Settings",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        lineHeight = 18.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE BROWSER (✅ ИСПРАВЛЕНО: Проблемы 7, 8)
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun FileBrowser(
@@ -325,8 +367,7 @@ private fun FileBrowser(
     onFolderClick: (String) -> Unit,
     onFileClick: (GitHubContent) -> Unit,
     onAddToCache: (GitHubContent) -> Unit,
-    // ✅ ДОБАВЛЕНО: Параметр для удаления
-    onDeleteFile: (GitHubContent) -> Unit,
+    onDeleteItem: (GitHubContent) -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (contents.isEmpty()) {
@@ -342,15 +383,21 @@ private fun FileBrowser(
             items(items = contents, key = { it.path }) { item ->
                 FileItem(
                     content = item,
-                    onClick = { if (item.type == "dir") onFolderClick(item.path) else onFileClick(item) },
+                    onClick = { 
+                        if (item.type == "dir") onFolderClick(item.path) 
+                        else onFileClick(item) 
+                    },
                     onAddToCache = { onAddToCache(item) },
-                    // ✅ ДОБАВЛЕНО: Передача callback удаления
-                    onDelete = { onDeleteFile(item) }
+                    onDelete = { onDeleteItem(item) }
                 )
             }
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EMPTY FOLDER STATE
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun EmptyFolderState(modifier: Modifier = Modifier) {
@@ -359,35 +406,41 @@ private fun EmptyFolderState(modifier: Modifier = Modifier) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Icon(Icons.Default.FolderOpen, null, Modifier.size(64.dp), MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
-            Text("Empty folder", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(
+                Icons.Default.FolderOpen, 
+                null, 
+                Modifier.size(64.dp), 
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+            )
+            Text(
+                "Empty folder", 
+                style = MaterialTheme.typography.bodyLarge, 
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
 
-// ✅ ИСПРАВЛЕНО: FileItem с combinedClickable и отдельной кнопкой Add to Cache
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE ITEM (✅ ИСПРАВЛЕНО: Проблемы 7, 8)
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileItem(
     content: GitHubContent,
     onClick: () -> Unit,
     onAddToCache: () -> Unit,
-    // ✅ ДОБАВЛЕНО: Callback для удаления
     onDelete: () -> Unit
 ) {
     val isDir = content.type == "dir"
     
-    Card(
-        modifier = Modifier.fillMaxWidth()
-    ) {
+    Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .combinedClickable(
                     onClick = onClick,
-                    // ✅ ДОБАВЛЕНО: Удаление по долгому нажатию (только для файлов)
-                    onLongClick = if (!isDir) {
-                        { onDelete() }
-                    } else null
+                    onLongClick = { onDelete() }  // ✅ ПРОБЛЕМА 7: Удаление для файлов И папок
                 )
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -398,7 +451,9 @@ private fun FileItem(
                 tint = if (isDir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(24.dp)
             )
+            
             Spacer(Modifier.width(12.dp))
+            
             Column(modifier = Modifier.weight(1f)) {
                 Text(content.name, style = MaterialTheme.typography.bodyLarge)
                 if (!isDir) {
@@ -410,25 +465,27 @@ private fun FileItem(
                 }
             }
             
-            // ✅ ИСПРАВЛЕНО: Кнопка Add to Cache вынесена из зоны клика Card
+            // ✅ ПРОБЛЕМА 8: Изолированная кнопка Add to Cache
             if (!isDir) {
-                // Используем Box для изоляции клика кнопки
                 Box(
-                    modifier = Modifier.size(48.dp),
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = rememberRipple(bounded = false, radius = 24.dp),
+                            onClick = {
+                                android.util.Log.d("FileItem", "🔥 Add to Cache clicked: ${content.path}")
+                                onAddToCache()
+                            }
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
-                    IconButton(
-                        onClick = {
-                            // ✅ Принудительно останавливаем propagation клика
-                            onAddToCache()
-                        }
-                    ) {
-                        Icon(
-                            Icons.Default.AddCircleOutline,
-                            "Add to cache",
-                            tint = MaterialTheme.colorScheme.secondary
-                        )
-                    }
+                    Icon(
+                        Icons.Default.AddCircleOutline,
+                        "Add to cache",
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
             }
             
@@ -441,6 +498,10 @@ private fun FileItem(
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EDITOR MODE
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun EditorMode(
@@ -470,11 +531,15 @@ private fun EditorMode(
                 modifier = Modifier.fillMaxSize(),
                 readOnly = false,
                 showLineNumbers = true,
-                fontSize = 14
+                fontSize = 12  // ✅ ПРОБЛЕМА 4: Уменьшен шрифт
             )
         }
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EDITOR TOOLBAR
+// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun EditorToolbar(
@@ -492,7 +557,10 @@ private fun EditorToolbar(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.primaryContainer) {
+            Surface(
+                shape = MaterialTheme.shapes.small, 
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {
                 Text(
                     language.uppercase(),
                     Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
@@ -500,16 +568,24 @@ private fun EditorToolbar(
                     color = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             }
+            
             Spacer(Modifier.weight(1f))
+            
             TextButton(onClick = onAddToCache) {
                 Icon(Icons.Default.AddCircleOutline, null, Modifier.size(18.dp))
                 Spacer(Modifier.width(4.dp))
                 Text("Add to Cache")
             }
+            
             Spacer(Modifier.width(8.dp))
+            
             Button(onClick = onSave, enabled = hasChanges && !isSaving) {
                 if (isSaving) {
-                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    CircularProgressIndicator(
+                        Modifier.size(16.dp), 
+                        strokeWidth = 2.dp, 
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
                 } else {
                     Icon(Icons.Default.Save, null, Modifier.size(18.dp))
                 }
@@ -520,9 +596,14 @@ private fun EditorToolbar(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DIALOGS
+// ═══════════════════════════════════════════════════════════════════════════════
+
 @Composable
 private fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
     var fileName by remember { mutableStateOf("") }
+    
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create New File") },
@@ -537,15 +618,23 @@ private fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String, String) -> U
             )
         },
         confirmButton = {
-            TextButton(onClick = { onCreate(fileName, "") }, enabled = fileName.isNotBlank()) { Text("Create") }
+            TextButton(
+                onClick = { onCreate(fileName, "") }, 
+                enabled = fileName.isNotBlank()
+            ) { 
+                Text("Create") 
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { 
+            TextButton(onClick = onDismiss) { Text("Cancel") } 
+        }
     )
 }
 
 @Composable
 private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
     var message by remember { mutableStateOf("") }
+    
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Commit Changes") },
@@ -560,16 +649,21 @@ private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
             )
         },
         confirmButton = {
-            TextButton(onClick = { onCommit(message.ifBlank { "Update file" }) }) { Text("Commit") }
+            TextButton(onClick = { onCommit(message.ifBlank { "Update file" }) }) { 
+                Text("Commit") 
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+        dismissButton = { 
+            TextButton(onClick = onDismiss) { Text("Cancel") } 
+        }
     )
 }
 
-// ✅ ДОБАВЛЕНО: Диалог подтверждения удаления
+// ✅ ПРОБЛЕМА 7: Универсальный диалог удаления для файлов И папок
 @Composable
 private fun DeleteConfirmationDialog(
-    fileName: String,
+    itemName: String,
+    isFolder: Boolean,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
@@ -585,7 +679,7 @@ private fun DeleteConfirmationDialog(
         },
         title = {
             Text(
-                "Delete File?",
+                if (isFolder) "Delete Folder?" else "Delete File?",
                 style = MaterialTheme.typography.headlineSmall
             )
         },
@@ -595,6 +689,7 @@ private fun DeleteConfirmationDialog(
                     "Are you sure you want to delete:",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                
                 Surface(
                     shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.errorContainer,
@@ -606,20 +701,24 @@ private fun DeleteConfirmationDialog(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            Icons.Default.Description,
+                            if (isFolder) Icons.Default.Folder else Icons.Default.Description,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onErrorContainer,
                             modifier = Modifier.size(20.dp)
                         )
                         Text(
-                            fileName,
+                            itemName,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
                     }
                 }
+                
                 Text(
-                    "This action cannot be undone. The file will be permanently deleted from GitHub.",
+                    if (isFolder) 
+                        "This will delete the folder and ALL its contents recursively. This action cannot be undone."
+                    else 
+                        "This action cannot be undone. The file will be permanently deleted from GitHub.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -645,6 +744,10 @@ private fun DeleteConfirmationDialog(
         }
     )
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════════
 
 private fun formatFileSize(bytes: Int): String = when {
     bytes < 1024 -> "$bytes B"
