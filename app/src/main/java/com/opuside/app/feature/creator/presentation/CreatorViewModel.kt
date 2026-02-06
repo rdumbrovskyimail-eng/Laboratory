@@ -20,7 +20,7 @@ import javax.inject.Inject
 /**
  * ViewModel для Creator (Окно 1) — Редактирование без кеша/таймера.
  * 
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-05):
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06):
  * 
  * ПРОБЛЕМА #1: Репозиторий не загружается при старте
  * ────────────────────────────────────────────────────────
@@ -34,6 +34,7 @@ import javax.inject.Inject
  * - Загружаем репозиторий если есть owner И repo И токен
  * - Токен проверяется при реальных API запросах
  * - Добавлено логирование для диагностики
+ * - Try-catch для безопасной загрузки
  * 
  * ПРОБЛЕМА #2: Network spam при переключении вкладок
  * ────────────────────────────────────────────────────────
@@ -142,7 +143,12 @@ class CreatorViewModel @Inject constructor(
      * СТАЛО:
      * ```kotlin
      * if (config.owner.isNotBlank() && config.repo.isNotBlank() && config.token.isNotBlank()) {
-     *     loadContents("")
+     *     try {
+     *         loadContents("")
+     *         loadBranches()
+     *     } catch (e: Exception) {
+     *         // Обработка ошибок
+     *     }
      * }
      * ```
      * 
@@ -151,6 +157,7 @@ class CreatorViewModel @Inject constructor(
      * - При первом запуске config.token может быть пустым
      * - Теперь проверяем ВСЕ три поля
      * - Токен проверится при реальном API запросе
+     * - Try-catch предотвращает краши
      */
     init {
         android.util.Log.d("CreatorViewModel", "🚀 Initializing CreatorViewModel...")
@@ -181,14 +188,19 @@ class CreatorViewModel @Inject constructor(
                             _currentRepo.value = config.repo
                             _currentBranch.value = config.branch
                             
-                            // Загружаем данные только если что-то реально изменилось
-                            loadContents("")
-                            loadBranches()
+                            // ✅ ДОБАВЛЕНО: Безопасная загрузка с обработкой ошибок
+                            try {
+                                loadContents("")
+                                loadBranches()
+                            } catch (e: Exception) {
+                                android.util.Log.e("CreatorViewModel", "❌ Failed to load repository data", e)
+                                _error.value = "Failed to load repository: ${e.message}"
+                            }
                         } else {
-                            android.util.Log.d("CreatorViewModel", "⏭️  Config unchanged, skipping reload")
+                            android.util.Log.d("CreatorViewModel", "⏭️ Config unchanged, skipping reload")
                         }
                     } else {
-                        android.util.Log.d("CreatorViewModel", "⚠️  Config incomplete (missing owner, repo, or token), clearing state")
+                        android.util.Log.d("CreatorViewModel", "⚠️ Config incomplete, clearing state")
                         
                         // ✅ Конфиг не настроен - очищаем состояние
                         _currentOwner.value = ""
@@ -286,7 +298,7 @@ class CreatorViewModel @Inject constructor(
     fun navigateBack() {
         val history = _pathHistory.value
         if (history.size > 1) {
-            android.util.Log.d("CreatorViewModel", "⬅️  Navigating back")
+            android.util.Log.d("CreatorViewModel", "⬅️ Navigating back")
             _pathHistory.value = history.dropLast(1)
             loadContents(history[history.size - 2])
         }
@@ -344,7 +356,7 @@ class CreatorViewModel @Inject constructor(
     }
 
     fun discardChanges() {
-        android.util.Log.d("CreatorViewModel", "↩️  Discarding changes")
+        android.util.Log.d("CreatorViewModel", "↩️ Discarding changes")
         _fileContent.value = _originalContent.value
     }
 
@@ -381,7 +393,7 @@ class CreatorViewModel @Inject constructor(
                 
                 is ConflictResult.Conflict -> {
                     _conflictState.value = result
-                    android.util.Log.w("CreatorViewModel", "⚠️  Conflict detected")
+                    android.util.Log.w("CreatorViewModel", "⚠️ Conflict detected")
                 }
                 
                 is ConflictResult.Error -> {
@@ -482,7 +494,7 @@ class CreatorViewModel @Inject constructor(
             _isLoading.value = true
             _error.value = null
             
-            android.util.Log.d("CreatorViewModel", "🗑️  Deleting file: ${file.path}")
+            android.util.Log.d("CreatorViewModel", "🗑️ Deleting file: ${file.path}")
 
             gitHubClient.deleteFile(
                 path = file.path,
@@ -511,7 +523,7 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             
-            android.util.Log.d("CreatorViewModel", "✏️  Renaming file: ${file.name} → $newName")
+            android.util.Log.d("CreatorViewModel", "✏️ Renaming file: ${file.name} → $newName")
             
             val contentResult = gitHubClient.getFileContentDecoded(file.path)
             
@@ -657,7 +669,7 @@ class CreatorViewModel @Inject constructor(
             gitHubClient.getBranch(fromBranch)
                 .onSuccess { branch ->
                     _error.value = "Branch creation via API requires refs endpoint (TODO)"
-                    android.util.Log.w("CreatorViewModel", "⚠️  Branch creation not implemented")
+                    android.util.Log.w("CreatorViewModel", "⚠️ Branch creation not implemented")
                 }
                 .onFailure { e ->
                     _error.value = "Failed: ${e.message}"
