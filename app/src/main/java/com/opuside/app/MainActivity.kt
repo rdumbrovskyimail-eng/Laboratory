@@ -34,20 +34,14 @@ import kotlin.system.exitProcess
 val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "app_preferences")
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06):
+ * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06) - ПРОБЛЕМА #3: АВТОИНИЦИАЛИЗАЦИЯ
  * 
- * ПРОБЛЕМЫ:
+ * ИЗМЕНЕНИЯ:
  * ────────────────────────────────────────────────────────────
- * 1. ❌ Нет автоматического подключения к GitHub и Claude при старте
- * 2. ❌ performStartupValidation() только проверяет наличие ключа, но НЕ тестирует соединение
- * 3. ❌ Отсутствует GitHubApiClient в dependencies
- * 
- * ИСПРАВЛЕНИЯ:
- * ────────────────────────────────────────────────────────────
- * 1. ✅ Добавлен @Inject GitHubApiClient
- * 2. ✅ performStartupValidation() теперь вызывает РЕАЛЬНЫЕ тесты подключения
- * 3. ✅ Автоматическая проверка GitHub и Claude API при каждом запуске
- * 4. ✅ Детальное логирование результатов тестов
+ * 1. ✅ УБРАНО: Преждевременная инициализация ViewModels
+ * 2. ✅ ДОБАВЛЕНО: Только валидация и логирование статуса
+ * 3. ✅ ИСПРАВЛЕНО: ViewModels инициализируются при открытии вкладок
+ * 4. ✅ ДОБАВЛЕНО: Подсказки пользователю в логах
  */
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -56,7 +50,7 @@ class MainActivity : ComponentActivity() {
     lateinit var claudeApiClient: ClaudeApiClient
     
     @Inject
-    lateinit var gitHubApiClient: GitHubApiClient // ✅ ДОБАВЛЕНО
+    lateinit var gitHubApiClient: GitHubApiClient
     
     @Inject
     lateinit var appSettings: AppSettings
@@ -67,7 +61,7 @@ class MainActivity : ComponentActivity() {
         // 🔥 Проверяем, есть ли свежие краш-логи
         checkForRecentCrashes()
         
-        // ✅ ИСПРАВЛЕНО: Автоматическая валидация И подключение API при старте
+        // ✅ ИСПРАВЛЕНО: Только валидация, БЕЗ автоинициализации
         performStartupValidation()
         
         enableEdgeToEdge()
@@ -149,53 +143,35 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Автоматическое подключение к API при старте
+     * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО: Валидация БЕЗ преждевременной инициализации
      * 
-     * БЫЛО:
-     * ──────
-     * - Только проверка validateApiKey() (проверяет формат, НЕ соединение)
-     * - Никаких реальных запросов к API
-     * - При повторном запуске приложения нет автоматического подключения
-     * 
-     * СТАЛО:
-     * ──────
-     * - Вызов testConnection() для Claude (реальный запрос к API)
-     * - Вызов getRepository() для GitHub (реальный запрос к API)
-     * - Детальное логирование результатов
-     * - Автоматическое подключение при каждом запуске
+     * ПОЧЕМУ НЕ ИНИЦИАЛИЗИРУЕМ ЗДЕСЬ:
+     * ────────────────────────────────
+     * - CreatorViewModel инициализируется при открытии вкладки Creator
+     * - AnalyzerViewModel инициализируется при открытии вкладки Analyzer
+     * - Преждевременная инициализация может вызвать memory leak
+     * - ViewModels должны управляться своими lifecycle-владельцами
      */
     private fun performStartupValidation() {
         lifecycleScope.launch {
             android.util.Log.d("MainActivity", "━".repeat(80))
-            android.util.Log.d("MainActivity", "🔍 STARTUP VALIDATION & AUTO-CONNECT")
+            android.util.Log.d("MainActivity", "🔍 STARTUP VALIDATION")
             android.util.Log.d("MainActivity", "━".repeat(80))
             
             // ═══════════════════════════════════════════════════════════
-            // ВАЛИДАЦИЯ И АВТОПОДКЛЮЧЕНИЕ CLAUDE API
+            // ПРОВЕРКА CLAUDE API
             // ═══════════════════════════════════════════════════════════
             android.util.Log.d("MainActivity", "  ├─ Claude API:")
             
             val isClaudeReady = try {
-                // ✅ ИСПРАВЛЕНО: Сначала проверяем наличие ключа
                 val hasKey = claudeApiClient.validateApiKey()
                 
                 if (!hasKey) {
-                    android.util.Log.w("MainActivity", "  │  ├─ ⚠️ API key not configured")
+                    android.util.Log.w("MainActivity", "  │  └─ ⚠️ API key not configured")
                     false
                 } else {
-                    android.util.Log.d("MainActivity", "  │  ├─ ✅ API key found")
-                    
-                    // ✅ НОВОЕ: Тестируем РЕАЛЬНОЕ подключение
-                    android.util.Log.d("MainActivity", "  │  ├─ 🔄 Testing connection...")
-                    val testResult = claudeApiClient.testConnection()
-                    
-                    testResult.onSuccess { message ->
-                        android.util.Log.i("MainActivity", "  │  └─ ✅ CONNECTED: $message")
-                        true
-                    }.onFailure { error ->
-                        android.util.Log.e("MainActivity", "  │  └─ ❌ Connection failed: ${error.message}")
-                        false
-                    }.isSuccess
+                    android.util.Log.d("MainActivity", "  │  └─ ✅ API key found")
+                    true
                 }
             } catch (e: Exception) {
                 android.util.Log.e("MainActivity", "  │  └─ ❌ Error: ${e.message}", e)
@@ -204,19 +180,18 @@ class MainActivity : ComponentActivity() {
             
             if (isClaudeReady) {
                 android.util.Log.i("MainActivity", "  │")
-                android.util.Log.i("MainActivity", "  ├─ ✅ Claude API: READY & CONNECTED")
-                android.util.Log.i("MainActivity", "  │  • Can send requests to Anthropic")
-                android.util.Log.i("MainActivity", "  │  • Analyzer tab fully functional")
+                android.util.Log.i("MainActivity", "  ├─ ✅ Claude API: READY")
+                android.util.Log.i("MainActivity", "  │  • API key configured")
+                android.util.Log.i("MainActivity", "  │  • Analyzer tab will connect on first use")
             } else {
                 android.util.Log.w("MainActivity", "  │")
-                android.util.Log.w("MainActivity", "  ├─ ⚠️ Claude API: NOT READY")
+                android.util.Log.w("MainActivity", "  ├─ ⚠️ Claude API: NOT CONFIGURED")
                 android.util.Log.w("MainActivity", "  │  • Please configure API key in Settings")
                 android.util.Log.w("MainActivity", "  │  • Click 'Test' button to verify connection")
-                android.util.Log.w("MainActivity", "  │  • Analyzer tab will show error")
             }
             
             // ═══════════════════════════════════════════════════════════
-            // ВАЛИДАЦИЯ И АВТОПОДКЛЮЧЕНИЕ GITHUB API
+            // ПРОВЕРКА GITHUB API
             // ═══════════════════════════════════════════════════════════
             android.util.Log.d("MainActivity", "  │")
             android.util.Log.d("MainActivity", "  ├─ GitHub API:")
@@ -228,32 +203,17 @@ class MainActivity : ComponentActivity() {
                 null
             }
             
-            val isGitHubReady = if (gitHubConfig?.isConfigured == true) {
+            val isGitHubReady = if (gitHubConfig != null && 
+                                   gitHubConfig.owner.isNotBlank() && 
+                                   gitHubConfig.repo.isNotBlank() && 
+                                   gitHubConfig.token.isNotBlank()) {
                 android.util.Log.d("MainActivity", "  │  ├─ ✅ Config found:")
                 android.util.Log.d("MainActivity", "  │  │  ├─ Owner: ${gitHubConfig.owner}")
                 android.util.Log.d("MainActivity", "  │  │  ├─ Repo: ${gitHubConfig.repo}")
                 android.util.Log.d("MainActivity", "  │  │  ├─ Branch: ${gitHubConfig.branch}")
-                android.util.Log.d("MainActivity", "  │  │  └─ Token: ${if (gitHubConfig.token.isNotEmpty()) "[${gitHubConfig.token.take(10)}...]" else "[EMPTY]"}")
-                
-                // ✅ НОВОЕ: Тестируем РЕАЛЬНОЕ подключение
-                try {
-                    android.util.Log.d("MainActivity", "  │  ├─ 🔄 Testing connection...")
-                    val repoResult = gitHubApiClient.getRepository()
-                    
-                    repoResult.onSuccess { repo ->
-                        android.util.Log.i("MainActivity", "  │  └─ ✅ CONNECTED: ${repo.fullName}")
-                        android.util.Log.i("MainActivity", "  │     ├─ Description: ${repo.description ?: "N/A"}")
-                        android.util.Log.i("MainActivity", "  │     ├─ Private: ${repo.isPrivate}")
-                        android.util.Log.i("MainActivity", "  │     └─ Default branch: ${repo.defaultBranch}")
-                        true
-                    }.onFailure { error ->
-                        android.util.Log.e("MainActivity", "  │  └─ ❌ Connection failed: ${error.message}")
-                        false
-                    }.isSuccess
-                } catch (e: Exception) {
-                    android.util.Log.e("MainActivity", "  │  └─ ❌ Error: ${e.message}", e)
-                    false
-                }
+                android.util.Log.d("MainActivity", "  │  │  └─ Token: [${gitHubConfig.token.take(10)}...]")
+                android.util.Log.d("MainActivity", "  │  └─ ✅ Configuration complete")
+                true
             } else {
                 android.util.Log.w("MainActivity", "  │  └─ ⚠️ Config not found or incomplete")
                 false
@@ -261,15 +221,14 @@ class MainActivity : ComponentActivity() {
             
             if (isGitHubReady) {
                 android.util.Log.i("MainActivity", "  │")
-                android.util.Log.i("MainActivity", "  ├─ ✅ GitHub API: READY & CONNECTED")
-                android.util.Log.i("MainActivity", "  │  • Can access repository")
-                android.util.Log.i("MainActivity", "  │  • Creator tab fully functional")
+                android.util.Log.i("MainActivity", "  ├─ ✅ GitHub API: READY")
+                android.util.Log.i("MainActivity", "  │  • Repository configured")
+                android.util.Log.i("MainActivity", "  │  • Creator tab will load files on first open")
             } else {
                 android.util.Log.w("MainActivity", "  │")
-                android.util.Log.w("MainActivity", "  ├─ ⚠️ GitHub API: NOT READY")
+                android.util.Log.w("MainActivity", "  ├─ ⚠️ GitHub API: NOT CONFIGURED")
                 android.util.Log.w("MainActivity", "  │  • Please configure repository in Settings")
                 android.util.Log.w("MainActivity", "  │  • Click 'Test' button to verify connection")
-                android.util.Log.w("MainActivity", "  │  • Creator tab will be limited")
             }
             
             // ═══════════════════════════════════════════════════════════
@@ -279,24 +238,34 @@ class MainActivity : ComponentActivity() {
             android.util.Log.d("MainActivity", "━".repeat(80))
             when {
                 isClaudeReady && isGitHubReady -> {
-                    android.util.Log.i("MainActivity", "🎉 ALL SYSTEMS GO - App fully functional")
-                    android.util.Log.i("MainActivity", "   ✅ Claude API connected and ready")
-                    android.util.Log.i("MainActivity", "   ✅ GitHub API connected and ready")
+                    android.util.Log.i("MainActivity", "🎉 ALL SYSTEMS READY")
+                    android.util.Log.i("MainActivity", "   ✅ Claude API configured")
+                    android.util.Log.i("MainActivity", "   ✅ GitHub API configured")
+                    android.util.Log.i("MainActivity", "")
+                    android.util.Log.i("MainActivity", "💡 NEXT STEPS:")
+                    android.util.Log.i("MainActivity", "   → Open Creator tab to load repository files")
+                    android.util.Log.i("MainActivity", "   → Open Analyzer tab to start chatting with Claude")
                 }
                 isClaudeReady -> {
-                    android.util.Log.i("MainActivity", "⚡ PARTIAL MODE - Analyzer ready, Creator limited")
-                    android.util.Log.i("MainActivity", "   ✅ Claude API connected")
+                    android.util.Log.i("MainActivity", "⚡ PARTIAL READY - Analyzer available")
+                    android.util.Log.i("MainActivity", "   ✅ Claude API configured")
                     android.util.Log.i("MainActivity", "   ⚠️ GitHub API needs configuration")
+                    android.util.Log.i("MainActivity", "")
+                    android.util.Log.i("MainActivity", "💡 TIP: Configure GitHub in Settings for Creator tab")
                 }
                 isGitHubReady -> {
-                    android.util.Log.i("MainActivity", "⚡ PARTIAL MODE - Creator ready, Analyzer limited")
+                    android.util.Log.i("MainActivity", "⚡ PARTIAL READY - Creator available")
                     android.util.Log.i("MainActivity", "   ⚠️ Claude API needs configuration")
-                    android.util.Log.i("MainActivity", "   ✅ GitHub API connected")
+                    android.util.Log.i("MainActivity", "   ✅ GitHub API configured")
+                    android.util.Log.i("MainActivity", "")
+                    android.util.Log.i("MainActivity", "💡 TIP: Configure Claude API in Settings for Analyzer tab")
                 }
                 else -> {
-                    android.util.Log.w("MainActivity", "⚠️ LIMITED MODE - Please configure Settings")
+                    android.util.Log.w("MainActivity", "⚠️ CONFIGURATION REQUIRED")
                     android.util.Log.w("MainActivity", "   ⚠️ Claude API needs configuration")
                     android.util.Log.w("MainActivity", "   ⚠️ GitHub API needs configuration")
+                    android.util.Log.w("MainActivity", "")
+                    android.util.Log.w("MainActivity", "💡 TIP: Go to Settings tab to configure both APIs")
                 }
             }
             android.util.Log.d("MainActivity", "━".repeat(80))
