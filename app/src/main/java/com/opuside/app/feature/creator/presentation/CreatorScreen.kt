@@ -1,5 +1,7 @@
 package com.opuside.app.feature.creator.presentation
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -41,6 +43,8 @@ fun CreatorScreen(
 
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showCommitDialog by remember { mutableStateOf(false) }
+    // ✅ ДОБАВЛЕНО: State для диалога удаления
+    var fileToDelete by remember { mutableStateOf<GitHubContent?>(null) }
 
     if (showNewFileDialog) {
         NewFileDialog(
@@ -58,6 +62,18 @@ fun CreatorScreen(
             onCommit = { message ->
                 viewModel.saveFile(message)
                 showCommitDialog = false
+            }
+        )
+    }
+
+    // ✅ ДОБАВЛЕНО: Диалог подтверждения удаления
+    fileToDelete?.let { file ->
+        DeleteConfirmationDialog(
+            fileName = file.name,
+            onDismiss = { fileToDelete = null },
+            onConfirm = {
+                viewModel.deleteFile(file)
+                fileToDelete = null
             }
         )
     }
@@ -107,7 +123,6 @@ fun CreatorScreen(
             when {
                 isLoading -> LoadingState()
                 currentOwner.isBlank() || currentRepo.isBlank() -> {
-                    // ✅ УЛУЧШЕНО: Более информативный placeholder
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
@@ -184,6 +199,8 @@ fun CreatorScreen(
                     onFolderClick = viewModel::navigateToFolder,
                     onFileClick = viewModel::openFile,
                     onAddToCache = viewModel::addToCache,
+                    // ✅ ДОБАВЛЕНО: Callback для удаления
+                    onDeleteFile = { fileToDelete = it },
                     modifier = Modifier.weight(1f)
                 )
             }
@@ -308,6 +325,8 @@ private fun FileBrowser(
     onFolderClick: (String) -> Unit,
     onFileClick: (GitHubContent) -> Unit,
     onAddToCache: (GitHubContent) -> Unit,
+    // ✅ ДОБАВЛЕНО: Параметр для удаления
+    onDeleteFile: (GitHubContent) -> Unit,
     modifier: Modifier = Modifier
 ) {
     if (contents.isEmpty()) {
@@ -324,7 +343,9 @@ private fun FileBrowser(
                 FileItem(
                     content = item,
                     onClick = { if (item.type == "dir") onFolderClick(item.path) else onFileClick(item) },
-                    onAddToCache = { onAddToCache(item) }
+                    onAddToCache = { onAddToCache(item) },
+                    // ✅ ДОБАВЛЕНО: Передача callback удаления
+                    onDelete = { onDeleteFile(item) }
                 )
             }
         }
@@ -344,11 +365,33 @@ private fun EmptyFolderState(modifier: Modifier = Modifier) {
     }
 }
 
+// ✅ ИСПРАВЛЕНО: FileItem с combinedClickable и отдельной кнопкой Add to Cache
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileItem(content: GitHubContent, onClick: () -> Unit, onAddToCache: () -> Unit) {
+private fun FileItem(
+    content: GitHubContent,
+    onClick: () -> Unit,
+    onAddToCache: () -> Unit,
+    // ✅ ДОБАВЛЕНО: Callback для удаления
+    onDelete: () -> Unit
+) {
     val isDir = content.type == "dir"
-    Card(modifier = Modifier.fillMaxWidth(), onClick = onClick) {
-        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+    
+    Card(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = onClick,
+                    // ✅ ДОБАВЛЕНО: Удаление по долгому нажатию (только для файлов)
+                    onLongClick = if (!isDir) {
+                        { onDelete() }
+                    } else null
+                )
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Icon(
                 imageVector = if (isDir) Icons.Default.Folder else Icons.Default.Description,
                 contentDescription = null,
@@ -366,12 +409,35 @@ private fun FileItem(content: GitHubContent, onClick: () -> Unit, onAddToCache: 
                     )
                 }
             }
+            
+            // ✅ ИСПРАВЛЕНО: Кнопка Add to Cache вынесена из зоны клика Card
             if (!isDir) {
-                IconButton(onClick = onAddToCache) {
-                    Icon(Icons.Default.AddCircleOutline, "Add to cache", tint = MaterialTheme.colorScheme.secondary)
+                // Используем Box для изоляции клика кнопки
+                Box(
+                    modifier = Modifier.size(48.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    IconButton(
+                        onClick = {
+                            // ✅ Принудительно останавливаем propagation клика
+                            onAddToCache()
+                        }
+                    ) {
+                        Icon(
+                            Icons.Default.AddCircleOutline,
+                            "Add to cache",
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    }
                 }
             }
-            Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
+            
+            Icon(
+                Icons.Default.ChevronRight,
+                null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }
@@ -497,6 +563,86 @@ private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
             TextButton(onClick = { onCommit(message.ifBlank { "Update file" }) }) { Text("Commit") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+// ✅ ДОБАВЛЕНО: Диалог подтверждения удаления
+@Composable
+private fun DeleteConfirmationDialog(
+    fileName: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                Icons.Default.Delete,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(32.dp)
+            )
+        },
+        title = {
+            Text(
+                "Delete File?",
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Are you sure you want to delete:",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Description,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            fileName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+                Text(
+                    "This action cannot be undone. The file will be permanently deleted from GitHub.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) {
+                Icon(Icons.Default.Delete, null, Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Delete")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
     )
 }
 
