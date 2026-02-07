@@ -15,7 +15,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.material3.ripple
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -26,6 +25,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.git.ConflictResolverDialog
 import com.opuside.app.core.git.ConflictResult
 import com.opuside.app.core.network.github.model.GitHubContent
+import com.opuside.app.core.ui.components.EditorConfig
 import com.opuside.app.core.ui.components.VirtualizedCodeEditor
 import com.opuside.app.core.util.detectLanguage
 
@@ -50,7 +50,6 @@ fun CreatorScreen(
     var showCommitDialog by remember { mutableStateOf(false) }
     var itemToDelete by remember { mutableStateOf<GitHubContent?>(null) }
 
-    // ✅ ПРОБЛЕМА 6: Обработка системной кнопки "Назад"
     BackHandler(enabled = canGoBack) {
         viewModel.navigateBack()
     }
@@ -75,7 +74,6 @@ fun CreatorScreen(
         )
     }
 
-    // ✅ ПРОБЛЕМА 7: Диалог удаления для файлов И папок
     itemToDelete?.let { item ->
         DeleteConfirmationDialog(
             itemName = item.name,
@@ -358,7 +356,7 @@ private fun ConfigurationNeededState() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FILE BROWSER (✅ ИСПРАВЛЕНО: Проблемы 7, 8)
+// FILE BROWSER
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -422,7 +420,7 @@ private fun EmptyFolderState(modifier: Modifier = Modifier) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FILE ITEM (✅ ИСПРАВЛЕНО: Проблемы 7, 8)
+// FILE ITEM
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -440,7 +438,7 @@ private fun FileItem(
             modifier = Modifier
                 .combinedClickable(
                     onClick = onClick,
-                    onLongClick = { onDelete() }  // ✅ ПРОБЛЕМА 7: Удаление для файлов И папок
+                    onLongClick = onDelete
                 )
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -465,7 +463,6 @@ private fun FileItem(
                 }
             }
             
-            // ✅ ПРОБЛЕМА 8: Изолированная кнопка Add to Cache
             if (!isDir) {
                 Box(
                     modifier = Modifier
@@ -473,10 +470,7 @@ private fun FileItem(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = ripple(bounded = false, radius = 24.dp),
-                            onClick = {
-                                android.util.Log.d("FileItem", "🔥 Add to Cache clicked: ${content.path}")
-                                onAddToCache()
-                            }
+                            onClick = onAddToCache
                         ),
                     contentAlignment = Alignment.Center
                 ) {
@@ -529,9 +523,14 @@ private fun EditorMode(
                 onContentChange = onContentChange,
                 language = detectLanguage(file.name),
                 modifier = Modifier.fillMaxSize(),
-                readOnly = false,
-                showLineNumbers = true,
-                fontSize = 12  // ✅ ПРОБЛЕМА 4: Уменьшен шрифт
+                config = EditorConfig(
+                    readOnly = false,
+                    showLineNumbers = true,
+                    fontSize = 12,
+                    autoIndent = true,
+                    highlightCurrentLine = true,
+                    enableBracketMatching = true
+                )
             )
         }
     }
@@ -659,7 +658,6 @@ private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
     )
 }
 
-// ✅ ПРОБЛЕМА 7: Универсальный диалог удаления для файлов И папок
 @Composable
 private fun DeleteConfirmationDialog(
     itemName: String,
