@@ -39,18 +39,7 @@ import kotlin.math.min
 
 /**
  * 🏆 ULTIMATE CODE EDITOR - PRODUCTION GRADE
- * 
- * Based on best practices from:
- * - JetBrains Fleet (IntelliJ on Android)
- * - Acode Editor (4M+ downloads)
- * - Sora Editor (Professional Android IDE)
- * - CodeEditor by Rosemoe
- * 
- * ✅ Proper TextFieldValue handling (NO reversed text)
- * ✅ Native selection behavior (visual + cursor)
- * ✅ Smooth scrolling with content awareness
- * ✅ Memory-efficient syntax highlighting
- * ✅ Professional undo/redo system
+ * ✅ FIXED: Text overlay rendering issue
  */
 
 @Stable
@@ -110,13 +99,11 @@ fun VirtualizedCodeEditor(
     }
     
     var highlightedText by remember { mutableStateOf(AnnotatedString(content)) }
-    var isHighlighting by remember { mutableStateOf(false) }
     
     // Debounced syntax highlighting
     LaunchedEffect(textFieldValue.text, language) {
         if (highlightedText.text == textFieldValue.text) return@LaunchedEffect
         
-        isHighlighting = true
         delay(150)
         
         highlightedText = withContext(Dispatchers.Default) {
@@ -131,7 +118,6 @@ fun VirtualizedCodeEditor(
                 AnnotatedString(textFieldValue.text)
             }
         }
-        isHighlighting = false
     }
     
     // Undo/Redo Manager
@@ -248,7 +234,7 @@ fun VirtualizedCodeEditor(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// EDITOR COMPONENT
+// EDITOR COMPONENT (🔥 FIXED OVERLAY BUG)
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
@@ -281,6 +267,15 @@ private fun Editor(
         else findMatchingBracket(value.text, value.selection.start)
     }
     
+    // 🔥 FIX: Используем подсвеченный текст напрямую
+    val displayText = remember(value.text, highlightedText) {
+        if (value.text == highlightedText.text && highlightedText.spanStyles.isNotEmpty()) {
+            highlightedText
+        } else {
+            AnnotatedString(value.text)
+        }
+    }
+    
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
@@ -308,7 +303,8 @@ private fun Editor(
             fontFamily = FontFamily.Monospace,
             fontSize = fontSize.sp,
             lineHeight = (fontSize * 1.5).sp,
-            color = theme.text
+            // 🔥 FIX: Цвет зависит от наличия подсветки
+            color = if (displayText.spanStyles.isNotEmpty()) Color.Unspecified else theme.text
         ),
         cursorBrush = SolidColor(Color.Transparent),
         keyboardOptions = KeyboardOptions(
@@ -319,34 +315,17 @@ private fun Editor(
         ),
         readOnly = readOnly,
         onTextLayout = { textLayoutResult = it },
-        decorationBox = { innerTextField ->
-            Box {
-                if (highlightedText.text == value.text && highlightedText.spanStyles.isNotEmpty()) {
-                    Text(
-                        text = highlightedText,
-                        style = TextStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = fontSize.sp,
-                            lineHeight = (fontSize * 1.5).sp,
-                            color = Color.Transparent
-                        ),
-                        modifier = Modifier.matchParentSize()
-                    )
-                }
-                
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .then(
-                            if (highlightedText.text == value.text && highlightedText.spanStyles.isNotEmpty()) {
-                                Modifier.drawBehind { }
-                            } else {
-                                Modifier
-                            }
-                        )
-                ) {
-                    innerTextField()
-                }
+        // 🔥 CRITICAL FIX: Правильный decorationBox БЕЗ наложения
+        decorationBox = @Composable { innerTextField ->
+            // Просто отображаем поле ввода с подсветкой через visualTransformation
+            innerTextField()
+        },
+        visualTransformation = VisualTransformation { text ->
+            // 🔥 FIX: Применяем подсветку через VisualTransformation
+            if (displayText.text == text.text && displayText.spanStyles.isNotEmpty()) {
+                TransformedText(displayText, OffsetMapping.Identity)
+            } else {
+                TransformedText(AnnotatedString(text.text), OffsetMapping.Identity)
             }
         }
     )
@@ -499,7 +478,6 @@ private fun handleKeyEvent(
             val textBefore = textFieldValue.text.take(cursorPos)
             val currentLine = textBefore.substringAfterLast('\n')
             
-            // ✅ FIX: Обработка nullable Char
             val baseIndent = currentLine.takeWhile { it.isWhitespace() }
             val lastChar = currentLine.trimEnd().lastOrNull()
             val extraIndent = if (lastChar != null && lastChar in setOf('{', '(', '[')) {
