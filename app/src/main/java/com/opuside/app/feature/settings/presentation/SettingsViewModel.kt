@@ -71,19 +71,6 @@ class SettingsViewModel @Inject constructor(
     val claudeStatus: StateFlow<ConnectionStatus> = _claudeStatus.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE - Cache Settings
-    // ═════════════════════════════════════════════════════════════════════════
-    
-    private val _cacheTimeoutInput = MutableStateFlow(5)
-    val cacheTimeoutInput: StateFlow<Int> = _cacheTimeoutInput.asStateFlow()
-
-    private val _maxCacheFilesInput = MutableStateFlow(20)
-    val maxCacheFilesInput: StateFlow<Int> = _maxCacheFilesInput.asStateFlow()
-
-    private val _autoClearCacheInput = MutableStateFlow(true)
-    val autoClearCacheInput: StateFlow<Boolean> = _autoClearCacheInput.asStateFlow()
-
-    // ═════════════════════════════════════════════════════════════════════════
     // STATE - UI
     // ═════════════════════════════════════════════════════════════════════════
     
@@ -106,7 +93,6 @@ class SettingsViewModel @Inject constructor(
     private val _unlockExpiration = MutableStateFlow<Long?>(null)
     val unlockExpiration: StateFlow<Long?> = _unlockExpiration.asStateFlow()
     
-    // ✅ ИСПРАВЛЕНО: Таймер для обновления UI каждую секунду
     private val _timerTick = MutableStateFlow(0L)
     val timerTick: StateFlow<Long> = _timerTick.asStateFlow()
     
@@ -168,25 +154,14 @@ class SettingsViewModel @Inject constructor(
                     ""
                 }
 
-                android.util.Log.d(TAG, "  ├─ Loading Claude model...")
+                android.util.Log.d(TAG, "  └─ Loading Claude model...")
                 val claudeModel = try {
                     appSettings.claudeModel.first()
                 } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to load Claude model", e)
+                    android.util.Log.e(TAG, "     └─ ❌ Failed to load Claude model", e)
                     "claude-opus-4-5-20251101"
                 }
-                android.util.Log.d(TAG, "  │  └─ Model: $claudeModel")
-
-                android.util.Log.d(TAG, "  └─ Loading cache config...")
-                val cacheConfig = try {
-                    appSettings.cacheConfig.first()
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "     └─ ❌ Failed to load cache config", e)
-                    AppSettings.CacheConfig(5, 20, true)
-                }
-                android.util.Log.d(TAG, "     ├─ Timeout: ${cacheConfig.timeoutMinutes} min")
-                android.util.Log.d(TAG, "     ├─ Max files: ${cacheConfig.maxFiles}")
-                android.util.Log.d(TAG, "     └─ Auto-clear: ${cacheConfig.autoClear}")
+                android.util.Log.d(TAG, "     └─ Model: $claudeModel")
 
                 _githubOwnerInput.value = githubConfig.owner
                 _githubRepoInput.value = githubConfig.repo
@@ -194,9 +169,6 @@ class SettingsViewModel @Inject constructor(
                 _githubTokenInput.value = githubToken
                 _anthropicKeyInput.value = anthropicKey
                 _claudeModelInput.value = claudeModel
-                _cacheTimeoutInput.value = cacheConfig.timeoutMinutes
-                _maxCacheFilesInput.value = cacheConfig.maxFiles
-                _autoClearCacheInput.value = cacheConfig.autoClear
                 
                 android.util.Log.d(TAG, "")
                 android.util.Log.d(TAG, "━".repeat(80))
@@ -216,9 +188,6 @@ class SettingsViewModel @Inject constructor(
     // 🔐 BIOMETRIC LOCK MANAGEMENT
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Разблокировка Settings на 5 минут с работающим таймером
-     */
     fun unlock() {
         android.util.Log.d(TAG, "🔓 Settings UNLOCKED")
         _isUnlocked.value = true
@@ -226,23 +195,19 @@ class SettingsViewModel @Inject constructor(
         val expirationTime = System.currentTimeMillis() + UNLOCK_TIMEOUT_MS
         _unlockExpiration.value = expirationTime
         
-        // Отменяем предыдущие таймеры
         unlockJob?.cancel()
         timerJob?.cancel()
         
-        // ✅ ИСПРАВЛЕНО: Таймер автоблокировки
         unlockJob = viewModelScope.launch {
             delay(UNLOCK_TIMEOUT_MS)
             lock()
         }
         
-        // ✅ НОВОЕ: Таймер для обновления UI каждую секунду
         timerJob = viewModelScope.launch {
             while (_isUnlocked.value) {
-                delay(1000) // Обновляем каждую секунду
+                delay(1000)
                 _timerTick.value = System.currentTimeMillis()
                 
-                // Проверяем, не истек ли таймер
                 val expiration = _unlockExpiration.value
                 if (expiration != null && System.currentTimeMillis() >= expiration) {
                     lock()
@@ -252,9 +217,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Блокировка Settings
-     */
     fun lock() {
         android.util.Log.d(TAG, "🔒 Settings LOCKED")
         _isUnlocked.value = false
@@ -265,26 +227,17 @@ class SettingsViewModel @Inject constructor(
         timerJob = null
     }
 
-    /**
-     * Запрос биометрической аутентификации для разблокировки
-     */
     fun requestUnlock() {
         android.util.Log.d(TAG, "🔐 Unlock requested via biometric")
         _biometricAuthRequest.value = true
     }
 
-    /**
-     * Обработка успешной биометрии
-     */
     fun onBiometricSuccess() {
         android.util.Log.d(TAG, "✅ Biometric authentication successful")
         unlock()
         clearBiometricRequest()
     }
 
-    /**
-     * Обработка ошибки биометрии
-     */
     fun onBiometricError(error: String) {
         android.util.Log.e(TAG, "❌ Biometric authentication failed: $error")
         _message.value = "❌ Authentication failed: $error"
@@ -292,12 +245,9 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // ✅ НОВОЕ: CONFIG IMPORT/EXPORT
+    // CONFIG IMPORT/EXPORT
     // ═════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Импортирует конфигурацию из файла
-     */
     fun importConfigFromFile(fileUri: Uri) {
         if (!_isUnlocked.value) {
             _message.value = "🔒 Unlock Settings to import configuration"
@@ -317,20 +267,12 @@ class SettingsViewModel @Inject constructor(
                 result.onSuccess { config ->
                     android.util.Log.d(TAG, "  ├─ Applying configuration...")
                     
-                    // GitHub settings
                     config.githubOwner?.let { _githubOwnerInput.value = it }
                     config.githubRepo?.let { _githubRepoInput.value = it }
                     config.githubBranch?.let { _githubBranchInput.value = it }
                     config.githubToken?.let { _githubTokenInput.value = it }
-                    
-                    // Claude settings
                     config.claudeApiKey?.let { _anthropicKeyInput.value = it }
                     config.claudeModel?.let { _claudeModelInput.value = it }
-                    
-                    // Cache settings
-                    config.cacheTimeout?.let { _cacheTimeoutInput.value = it }
-                    config.maxCacheFiles?.let { _maxCacheFilesInput.value = it }
-                    config.autoClearCache?.let { _autoClearCacheInput.value = it }
                     
                     android.util.Log.d(TAG, "  └─ ✅ Configuration applied")
                     android.util.Log.d(TAG, "")
@@ -354,9 +296,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Экспортирует текущую конфигурацию в строку
-     */
     fun exportCurrentConfig(): String {
         return ConfigImporter.exportConfig(
             githubOwner = _githubOwnerInput.value,
@@ -364,10 +303,7 @@ class SettingsViewModel @Inject constructor(
             githubBranch = _githubBranchInput.value,
             githubToken = _githubTokenInput.value,
             claudeApiKey = _anthropicKeyInput.value,
-            claudeModel = _claudeModelInput.value,
-            cacheTimeout = _cacheTimeoutInput.value,
-            maxFiles = _maxCacheFilesInput.value,
-            autoClear = _autoClearCacheInput.value
+            claudeModel = _claudeModelInput.value
         )
     }
 
@@ -423,18 +359,6 @@ class SettingsViewModel @Inject constructor(
     fun updateClaudeModel(model: String) {
         _claudeModelInput.value = model
         android.util.Log.d(TAG, "🔄 Claude Model updated: $model")
-    }
-
-    fun updateCacheTimeout(minutes: Int) {
-        _cacheTimeoutInput.value = minutes
-    }
-
-    fun updateMaxCacheFiles(count: Int) {
-        _maxCacheFilesInput.value = count
-    }
-
-    fun updateAutoClearCache(enabled: Boolean) {
-        _autoClearCacheInput.value = enabled
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -551,7 +475,6 @@ class SettingsViewModel @Inject constructor(
 
                 android.util.Log.d(TAG, "  ├─ Saving Anthropic API key...")
                 try {
-                    // ✅ ИЗМЕНЕНО: Биометрия всегда включена по умолчанию
                     secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
                     android.util.Log.d(TAG, "  │  └─ ✅ Key saved with biometric protection")
                 } catch (e: Exception) {
@@ -588,25 +511,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun saveCacheSettings() {
-        viewModelScope.launch {
-            _isSaving.value = true
-
-            try {
-                appSettings.setCacheSettings(
-                    timeoutMinutes = _cacheTimeoutInput.value,
-                    maxFiles = _maxCacheFilesInput.value,
-                    autoClear = _autoClearCacheInput.value
-                )
-                _message.value = "✅ Cache settings saved successfully"
-            } catch (e: Exception) {
-                _message.value = "❌ Failed to save: ${e.message}"
-            } finally {
-                _isSaving.value = false
-            }
-        }
-    }
-
     fun saveAllSettings() {
         if (!_isUnlocked.value) {
             _message.value = "🔒 Unlock Settings to save"
@@ -631,15 +535,8 @@ class SettingsViewModel @Inject constructor(
                     branch = _githubBranchInput.value
                 )
                 
-                // ✅ ИЗМЕНЕНО: Биометрия всегда включена
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
                 appSettings.setClaudeModel(_claudeModelInput.value)
-                
-                appSettings.setCacheSettings(
-                    timeoutMinutes = _cacheTimeoutInput.value,
-                    maxFiles = _maxCacheFilesInput.value,
-                    autoClear = _autoClearCacheInput.value
-                )
                 
                 _message.value = "✅ All settings saved successfully"
                 
@@ -713,9 +610,6 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun resetToDefaults() {
-        _cacheTimeoutInput.value = 5
-        _maxCacheFilesInput.value = 20
-        _autoClearCacheInput.value = true
         _claudeModelInput.value = "claude-opus-4-5-20251101"
         _message.value = "⚠️ Settings reset to defaults (not saved)"
     }
