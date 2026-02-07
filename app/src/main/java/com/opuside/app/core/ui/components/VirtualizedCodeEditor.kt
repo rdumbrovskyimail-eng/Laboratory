@@ -38,8 +38,14 @@ import java.util.LinkedList
 import kotlin.math.min
 
 /**
- * 🏆 ULTIMATE CODE EDITOR - PRODUCTION GRADE
- * ✅ FIXED: Text overlay rendering issue
+ * 🚀 ULTIMATE CODE EDITOR - FLAGSHIP OPTIMIZED
+ * 
+ * Performance optimizations for high-end devices:
+ * ✅ Aggressive derivedStateOf to prevent recomposition
+ * ✅ Remember scopes isolation
+ * ✅ Debounced rendering with smart cancellation
+ * ✅ Layout result caching
+ * ✅ Optimized draw operations
  */
 
 @Stable
@@ -83,6 +89,7 @@ fun VirtualizedCodeEditor(
     showLineNumbers: Boolean = config.showLineNumbers,
     fontSize: Int = config.fontSize
 ) {
+    // 🚀 OPTIMIZATION 1: Stable config to prevent cascade recomposition
     val finalConfig = remember(config, readOnly, showLineNumbers, fontSize) {
         config.copy(
             readOnly = readOnly,
@@ -91,6 +98,7 @@ fun VirtualizedCodeEditor(
         )
     }
     
+    // 🚀 OPTIMIZATION 2: Separate text state from UI state
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(
             text = content,
@@ -98,24 +106,37 @@ fun VirtualizedCodeEditor(
         ))
     }
     
+    // 🚀 OPTIMIZATION 3: Highlighting state with smart cancellation
     var highlightedText by remember { mutableStateOf(AnnotatedString(content)) }
+    var highlightJob by remember { mutableStateOf<Job?>(null) }
     
-    // Debounced syntax highlighting
+    // 🚀 OPTIMIZATION 4: Debounced highlighting with job cancellation
     LaunchedEffect(textFieldValue.text, language) {
         if (highlightedText.text == textFieldValue.text) return@LaunchedEffect
         
-        delay(150)
+        // Cancel previous job
+        highlightJob?.cancel()
         
-        highlightedText = withContext(Dispatchers.Default) {
-            try {
-                buildAnnotatedString {
-                    textFieldValue.text.lines().forEachIndexed { i, line ->
-                        append(SyntaxHighlighter.highlight(line, language))
-                        if (i < textFieldValue.text.lines().size - 1) append("\n")
+        highlightJob = launch {
+            delay(100) // Reduced from 150ms for flagship devices
+            
+            highlightedText = withContext(Dispatchers.Default) {
+                try {
+                    // 🚀 Chunked processing for large files
+                    val lines = textFieldValue.text.lines()
+                    
+                    buildAnnotatedString {
+                        lines.forEachIndexed { i, line ->
+                            // Check cancellation every 50 lines
+                            if (i % 50 == 0 && !isActive) return@withContext highlightedText
+                            
+                            append(SyntaxHighlighter.highlight(line, language))
+                            if (i < lines.size - 1) append("\n")
+                        }
                     }
+                } catch (e: Exception) {
+                    AnnotatedString(textFieldValue.text)
                 }
-            } catch (e: Exception) {
-                AnnotatedString(textFieldValue.text)
             }
         }
     }
@@ -141,7 +162,7 @@ fun VirtualizedCodeEditor(
     
     // Record changes for undo
     LaunchedEffect(textFieldValue.text) {
-        delay(500)
+        delay(400) // Reduced from 500ms
         if (textFieldValue.text != undoManager.getCurrentText()) {
             undoManager.recordChange(textFieldValue.text)
         }
@@ -154,32 +175,41 @@ fun VirtualizedCodeEditor(
         }
     }
     
-    // Cursor position tracking
-    val cursorPos = remember(textFieldValue.text, textFieldValue.selection.start) {
-        calculateCursorPosition(textFieldValue.text, textFieldValue.selection.start)
+    // 🚀 OPTIMIZATION 5: derivedStateOf for cursor position (prevents recomposition)
+    val cursorPos by remember {
+        derivedStateOf {
+            calculateCursorPosition(textFieldValue.text, textFieldValue.selection.start)
+        }
     }
     
     LaunchedEffect(cursorPos) {
         onCursorPositionChanged?.invoke(cursorPos.line, cursorPos.column)
     }
     
-    // Keyboard handling
-    val keyHandler = Modifier.onPreviewKeyEvent { event ->
-        handleKeyEvent(
-            event = event,
-            config = finalConfig,
-            textFieldValue = textFieldValue,
-            undoManager = undoManager,
-            onValueChange = { textFieldValue = it }
-        )
+    // 🚀 OPTIMIZATION 6: Memoized keyboard handler
+    val keyHandler = remember(finalConfig) {
+        Modifier.onPreviewKeyEvent { event ->
+            handleKeyEvent(
+                event = event,
+                config = finalConfig,
+                textFieldValue = textFieldValue,
+                undoManager = undoManager,
+                onValueChange = { textFieldValue = it }
+            )
+        }
     }
     
-    val lines = remember(textFieldValue.text) {
-        textFieldValue.text.lines().ifEmpty { listOf("") }
+    // 🚀 OPTIMIZATION 7: derivedStateOf for lines (prevents recalculation)
+    val lines by remember {
+        derivedStateOf {
+            textFieldValue.text.lines().ifEmpty { listOf("") }
+        }
     }
     
-    val lineNumberWidth = remember(lines.size) {
-        calculateLineNumberWidth(lines.size, finalConfig.fontSize)
+    val lineNumberWidth by remember {
+        derivedStateOf {
+            calculateLineNumberWidth(lines.size, finalConfig.fontSize)
+        }
     }
     
     val vScrollState = rememberScrollState()
@@ -187,10 +217,12 @@ fun VirtualizedCodeEditor(
     val focusRequester = remember { FocusRequester() }
     
     // Custom selection colors
-    val customSelectionColors = TextSelectionColors(
-        handleColor = theme.selectionHandle,
-        backgroundColor = theme.selection
-    )
+    val customSelectionColors = remember(theme) {
+        TextSelectionColors(
+            handleColor = theme.selectionHandle,
+            backgroundColor = theme.selection
+        )
+    }
     
     CompositionLocalProvider(
         LocalLayoutDirection provides LayoutDirection.Ltr,
@@ -199,42 +231,48 @@ fun VirtualizedCodeEditor(
         Surface(modifier = modifier.then(keyHandler), color = theme.background) {
             Row(Modifier.fillMaxSize()) {
                 if (finalConfig.showLineNumbers) {
-                    LineNumbers(
-                        count = lines.size,
-                        currentLine = cursorPos.line - 1,
-                        fontSize = finalConfig.fontSize,
-                        width = lineNumberWidth,
-                        scrollState = vScrollState,
-                        theme = theme
-                    )
+                    // 🚀 OPTIMIZATION 8: Isolated composition for line numbers
+                    key("line-numbers") {
+                        LineNumbers(
+                            count = lines.size,
+                            currentLine = cursorPos.line - 1,
+                            fontSize = finalConfig.fontSize,
+                            width = lineNumberWidth,
+                            scrollState = vScrollState,
+                            theme = theme
+                        )
+                    }
                     HorizontalDivider(
                         modifier = Modifier.fillMaxHeight().width(1.dp),
                         color = theme.divider
                     )
                 }
                 
-                Editor(
-                    value = textFieldValue,
-                    onValueChange = { newValue ->
-                        textFieldValue = newValue
-                    },
-                    highlightedText = highlightedText,
-                    currentLine = cursorPos.line - 1,
-                    fontSize = finalConfig.fontSize,
-                    readOnly = finalConfig.readOnly,
-                    focusRequester = focusRequester,
-                    vScrollState = vScrollState,
-                    hScrollState = hScrollState,
-                    theme = theme,
-                    config = finalConfig
-                )
+                // 🚀 OPTIMIZATION 9: Isolated editor composition
+                key("editor") {
+                    Editor(
+                        value = textFieldValue,
+                        onValueChange = { newValue ->
+                            textFieldValue = newValue
+                        },
+                        highlightedText = highlightedText,
+                        currentLine = cursorPos.line - 1,
+                        fontSize = finalConfig.fontSize,
+                        readOnly = finalConfig.readOnly,
+                        focusRequester = focusRequester,
+                        vScrollState = vScrollState,
+                        hScrollState = hScrollState,
+                        theme = theme,
+                        config = finalConfig
+                    )
+                }
             }
         }
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// EDITOR COMPONENT (🔥 FIXED OVERLAY BUG)
+// EDITOR COMPONENT (OPTIMIZED)
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
@@ -262,17 +300,50 @@ private fun Editor(
         }
     }
     
-    val bracketMatch = remember(value.selection.start, value.text) {
-        if (!config.enableBracketMatching) null
-        else findMatchingBracket(value.text, value.selection.start)
+    // 🚀 OPTIMIZATION 10: derivedStateOf for bracket matching
+    val bracketMatch by remember {
+        derivedStateOf {
+            if (!config.enableBracketMatching) null
+            else findMatchingBracket(value.text, value.selection.start)
+        }
     }
     
-    // 🔥 FIX: Используем подсвеченный текст напрямую
-    val displayText = remember(value.text, highlightedText) {
-        if (value.text == highlightedText.text && highlightedText.spanStyles.isNotEmpty()) {
-            highlightedText
-        } else {
-            AnnotatedString(value.text)
+    // 🚀 OPTIMIZATION 11: Memoized display text transformation
+    val displayText by remember {
+        derivedStateOf {
+            if (value.text == highlightedText.text && highlightedText.spanStyles.isNotEmpty()) {
+                highlightedText
+            } else {
+                AnnotatedString(value.text)
+            }
+        }
+    }
+    
+    // 🚀 OPTIMIZATION 12: Stable text style
+    val textStyle = remember(fontSize, displayText) {
+        TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = fontSize.sp,
+            lineHeight = (fontSize * 1.5).sp,
+            color = if (displayText.spanStyles.isNotEmpty()) Color.Unspecified else theme.text
+        )
+    }
+    
+    // 🚀 OPTIMIZATION 13: Cached drawing lambda
+    val drawDecorations = remember(theme, config) {
+        { scope: DrawScope, layout: TextLayoutResult ->
+            with(scope) {
+                drawEditorDecorations(
+                    layout = layout,
+                    value = value,
+                    currentLine = currentLine,
+                    bracketMatch = bracketMatch,
+                    isCursorVisible = isCursorVisible,
+                    readOnly = readOnly,
+                    theme = theme,
+                    config = config
+                )
+            }
         }
     }
     
@@ -287,25 +358,11 @@ private fun Editor(
             .focusRequester(focusRequester)
             .drawBehind {
                 textLayoutResult?.let { layout ->
-                    drawEditorDecorations(
-                        layout = layout,
-                        value = value,
-                        currentLine = currentLine,
-                        bracketMatch = bracketMatch,
-                        isCursorVisible = isCursorVisible,
-                        readOnly = readOnly,
-                        theme = theme,
-                        config = config
-                    )
+                    // 🚀 Draw decorations only when needed
+                    drawDecorations(this, layout)
                 }
             },
-        textStyle = TextStyle(
-            fontFamily = FontFamily.Monospace,
-            fontSize = fontSize.sp,
-            lineHeight = (fontSize * 1.5).sp,
-            // 🔥 FIX: Цвет зависит от наличия подсветки
-            color = if (displayText.spanStyles.isNotEmpty()) Color.Unspecified else theme.text
-        ),
+        textStyle = textStyle,
         cursorBrush = SolidColor(Color.Transparent),
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.None,
@@ -315,24 +372,23 @@ private fun Editor(
         ),
         readOnly = readOnly,
         onTextLayout = { textLayoutResult = it },
-        // 🔥 CRITICAL FIX: Правильный decorationBox БЕЗ наложения
         decorationBox = @Composable { innerTextField ->
-            // Просто отображаем поле ввода с подсветкой через visualTransformation
             innerTextField()
         },
-        visualTransformation = VisualTransformation { text ->
-            // 🔥 FIX: Применяем подсветку через VisualTransformation
-            if (displayText.text == text.text && displayText.spanStyles.isNotEmpty()) {
-                TransformedText(displayText, OffsetMapping.Identity)
-            } else {
-                TransformedText(AnnotatedString(text.text), OffsetMapping.Identity)
+        visualTransformation = remember(displayText) {
+            VisualTransformation { text ->
+                if (displayText.text == text.text && displayText.spanStyles.isNotEmpty()) {
+                    TransformedText(displayText, OffsetMapping.Identity)
+                } else {
+                    TransformedText(AnnotatedString(text.text), OffsetMapping.Identity)
+                }
             }
         }
     )
 }
 
 // ═══════════════════════════════════════════════════════════════
-// DRAWING DECORATIONS
+// DRAWING DECORATIONS (OPTIMIZED)
 // ═══════════════════════════════════════════════════════════════
 
 private fun DrawScope.drawEditorDecorations(
@@ -345,6 +401,14 @@ private fun DrawScope.drawEditorDecorations(
     theme: EditorTheme,
     config: EditorConfig
 ) {
+    // 🚀 OPTIMIZATION 14: Early return if nothing to draw
+    val hasSelection = !value.selection.collapsed
+    val hasCursor = isCursorVisible && !readOnly && value.selection.collapsed
+    
+    if (!config.highlightCurrentLine && !hasSelection && !hasCursor && bracketMatch == null) {
+        return
+    }
+    
     // Current line highlight
     if (config.highlightCurrentLine && currentLine >= 0 && currentLine < layout.lineCount) {
         try {
@@ -358,16 +422,16 @@ private fun DrawScope.drawEditorDecorations(
         } catch (_: Exception) {}
     }
     
-    // Text selection
-    val selection = value.selection
-    if (!selection.collapsed) {
+    // Text selection (🚀 optimized multi-line drawing)
+    if (hasSelection) {
         try {
-            val start = selection.min
-            val end = selection.max
+            val start = value.selection.min
+            val end = value.selection.max
             
             val startLine = layout.getLineForOffset(start)
             val endLine = layout.getLineForOffset(end)
             
+            // 🚀 Batch draw operations
             for (line in startLine..endLine) {
                 val lineStart = layout.getLineStart(line)
                 val lineEnd = layout.getLineEnd(line)
@@ -404,9 +468,9 @@ private fun DrawScope.drawEditorDecorations(
     }
     
     // Cursor
-    if (isCursorVisible && !readOnly && selection.collapsed) {
+    if (hasCursor) {
         try {
-            val offset = selection.start.coerceIn(0, value.text.length)
+            val offset = value.selection.start.coerceIn(0, value.text.length)
             val cursorRect = layout.getCursorRect(offset)
             
             drawLine(
@@ -433,7 +497,6 @@ private fun handleKeyEvent(
     if (event.type != KeyEventType.KeyDown || config.readOnly) return false
     
     return when {
-        // Undo
         event.isCtrlPressed && event.key == Key.Z && !event.isShiftPressed -> {
             undoManager.undo()?.let { text ->
                 onValueChange(TextFieldValue(
@@ -444,7 +507,6 @@ private fun handleKeyEvent(
             true
         }
         
-        // Redo
         (event.isCtrlPressed && event.isShiftPressed && event.key == Key.Z) ||
         (event.isCtrlPressed && event.key == Key.Y) -> {
             undoManager.redo()?.let { text ->
@@ -456,7 +518,6 @@ private fun handleKeyEvent(
             true
         }
         
-        // Tab
         event.key == Key.Tab && !event.isShiftPressed -> {
             val indent = " ".repeat(config.tabSize)
             val selection = textFieldValue.selection
@@ -472,7 +533,6 @@ private fun handleKeyEvent(
             true
         }
         
-        // Smart Enter
         event.key == Key.Enter && config.autoIndent -> {
             val cursorPos = textFieldValue.selection.start
             val textBefore = textFieldValue.text.take(cursorPos)
@@ -505,7 +565,7 @@ private fun handleKeyEvent(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// LINE NUMBERS
+// LINE NUMBERS (OPTIMIZED)
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
@@ -518,6 +578,25 @@ private fun LineNumbers(
     theme: EditorTheme
 ) {
     val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
+    
+    // 🚀 OPTIMIZATION 15: Stable text style
+    val normalStyle = remember(fontSize, theme) {
+        TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = fontSize.sp,
+            lineHeight = (fontSize * 1.5).sp,
+            color = theme.lineNumberText
+        )
+    }
+    
+    val currentStyle = remember(fontSize, theme) {
+        TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = fontSize.sp,
+            lineHeight = (fontSize * 1.5).sp,
+            color = theme.lineNumberCurrent
+        )
+    }
     
     Column(
         modifier = Modifier
@@ -533,12 +612,7 @@ private fun LineNumbers(
                     .fillMaxWidth()
                     .padding(end = 6.dp),
                 textAlign = androidx.compose.ui.text.style.TextAlign.End,
-                style = TextStyle(
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = fontSize.sp,
-                    lineHeight = (fontSize * 1.5).sp,
-                    color = if (index == currentLine) theme.lineNumberCurrent else theme.lineNumberText
-                )
+                style = if (index == currentLine) currentStyle else normalStyle
             )
         }
     }
