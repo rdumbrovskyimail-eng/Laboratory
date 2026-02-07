@@ -28,7 +28,6 @@ import androidx.lifecycle.lifecycleScope
 import com.opuside.app.core.security.BiometricAuthHelper
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
-import com.opuside.app.core.util.CacheNotificationHelper
 import com.opuside.app.core.util.CrashTestUtil
 import com.opuside.app.core.util.LogContentDialog
 import com.opuside.app.core.util.LogFile
@@ -60,18 +59,14 @@ fun SettingsScreen(
     val githubBranchInput by viewModel.githubBranchInput.collectAsState()
     val anthropicKeyInput by viewModel.anthropicKeyInput.collectAsState()
     val claudeModelInput by viewModel.claudeModelInput.collectAsState()
-    val cacheTimeoutInput by viewModel.cacheTimeoutInput.collectAsState()
-    val maxCacheFilesInput by viewModel.maxCacheFilesInput.collectAsState()
-    val autoClearCacheInput by viewModel.autoClearCacheInput.collectAsState()
     val isSaving by viewModel.isSaving.collectAsState()
     val message by viewModel.message.collectAsState()
     
     val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
     
-    // 🔐 Состояние блокировки
     val isUnlocked by viewModel.isUnlocked.collectAsState()
     val unlockExpiration by viewModel.unlockExpiration.collectAsState()
-    val timerTick by viewModel.timerTick.collectAsState() // ✅ НОВОЕ: для обновления UI
+    val timerTick by viewModel.timerTick.collectAsState()
     
     val activity = remember(context) {
         if (context is androidx.activity.ComponentActivity) {
@@ -99,7 +94,6 @@ fun SettingsScreen(
         }
     }
 
-    // 🔐 Обработка биометрии для разблокировки Settings
     if (biometricAuthRequest && activity != null) {
         val currentActivity: FragmentActivity = activity
         
@@ -118,7 +112,6 @@ fun SettingsScreen(
         }
     }
 
-    // ✅ НОВОЕ: File picker для импорта конфигурации
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -136,7 +129,6 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // 🔐 Заголовок с индикатором блокировки
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -144,12 +136,10 @@ fun SettingsScreen(
             ) {
                 Text("Settings", style = MaterialTheme.typography.headlineMedium)
                 
-                // 🔐 Индикатор и кнопка разблокировки
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Индикатор состояния
                     val indicatorColor by animateColorAsState(
                         targetValue = if (isUnlocked) Color(0xFF22C55E) else Color(0xFFEF4444),
                         label = "lock_indicator"
@@ -173,7 +163,6 @@ fun SettingsScreen(
                                 color = indicatorColor
                             )
                             
-                            // ✅ ИСПРАВЛЕНО: Показываем таймер с автообновлением
                             if (isUnlocked && unlockExpiration != null) {
                                 val remainingTime = remember(timerTick, unlockExpiration) {
                                     derivedStateOf {
@@ -198,7 +187,6 @@ fun SettingsScreen(
                         }
                     }
                     
-                    // Кнопка Unlock/Lock
                     if (!sensitiveFeatureDisabled) {
                         IconButton(
                             onClick = {
@@ -258,7 +246,6 @@ fun SettingsScreen(
                 }
             }
 
-            // ✅ НОВОЕ: Import Config Button
             if (!sensitiveFeatureDisabled && isUnlocked) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -410,7 +397,7 @@ fun SettingsScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════════════════
-            // ANTHROPIC SETTINGS (✅ БЕЗ Biometric Protection toggle)
+            // ANTHROPIC SETTINGS
             // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Claude API", icon = Icons.Default.Psychology) {
                 var showApiKey by remember { mutableStateOf(false) }
@@ -461,9 +448,6 @@ fun SettingsScreen(
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                
-                // ✅ УДАЛЕНО: Biometric Protection toggle
-                // Биометрия теперь всегда включена при сохранении
                 
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
@@ -553,7 +537,6 @@ fun SettingsScreen(
                     else -> {}
                 }
                 
-                // ✅ НОВОЕ: Информация о биометрии (всегда включена)
                 if (!sensitiveFeatureDisabled) {
                     Spacer(Modifier.height(8.dp))
                     
@@ -610,39 +593,6 @@ fun SettingsScreen(
                             }
                         }
                     }
-                }
-            }
-
-            // ═══════════════════════════════════════════════════════════════════════════
-            // CACHE SETTINGS
-            // ═══════════════════════════════════════════════════════════════════════════
-            SettingsSection(title = "Cache & Timer", icon = Icons.Default.Timer) {
-                Text("Cache keeps files for Claude analysis. Timer resets when adding files.",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(12.dp))
-                
-                Text("Cache Timeout: $cacheTimeoutInput minutes")
-                Slider(value = cacheTimeoutInput.toFloat(), onValueChange = { viewModel.updateCacheTimeout(it.toInt()) },
-                    valueRange = 1f..30f, steps = 28, modifier = Modifier.fillMaxWidth())
-                
-                Spacer(Modifier.height(8.dp))
-                Text("Max Files: $maxCacheFilesInput")
-                Slider(value = maxCacheFilesInput.toFloat(), onValueChange = { viewModel.updateMaxCacheFiles(it.toInt()) },
-                    valueRange = 5f..50f, steps = 44, modifier = Modifier.fillMaxWidth())
-                
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                    Column {
-                        Text("Auto-clear on timeout")
-                        Text("Automatically clear cache when timer expires",
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Switch(checked = autoClearCacheInput, onCheckedChange = viewModel::updateAutoClearCache)
-                }
-                
-                Spacer(Modifier.height(12.dp))
-                Button(onClick = viewModel::saveCacheSettings, modifier = Modifier.align(Alignment.End), enabled = !isSaving) {
-                    Text("Save Cache Settings")
                 }
             }
 
@@ -798,69 +748,6 @@ fun SettingsScreen(
                 }
                 
                 Spacer(Modifier.height(12.dp))
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                    )
-                ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Notifications, 
-                                null, 
-                                Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Notification Channel Test",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
-                        }
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            "On Android 14+, notification channels only appear in settings after sending at least one notification through that channel.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = { 
-                            CacheNotificationHelper.showCacheWarningNotification(context)
-                            Toast.makeText(context, "Warning notification sent! Check notification shade.", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.NotificationsActive, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Test Warning")
-                    }
-                    
-                    OutlinedButton(
-                        onClick = { 
-                            CacheNotificationHelper.showCacheExpiredNotification(context)
-                            Toast.makeText(context, "Expired notification sent! Check notification shade.", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.NotificationsOff, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Test Expired")
-                    }
-                }
-
-                Spacer(Modifier.height(16.dp))
                 
                 var showLogViewer by remember { mutableStateOf(false) }
                 var selectedLogForViewing by remember { mutableStateOf<LogFile?>(null) }
@@ -1045,12 +932,9 @@ fun SettingsScreen(
                         "📱 USAGE:\n" +
                         "1. Set your GitHub repo and API keys above (or import from file)\n" +
                         "2. In Creator tab: browse files, edit, commit\n" +
-                        "3. Select files and add to Cache for analysis\n" +
-                        "4. In Analyzer tab: chat with Claude about cached files\n" +
-                        "5. Timer shows cache validity (5 min default)\n" +
-                        "6. When timer expires, add files again\n" +
-                        "7. Use Developer Tools to test crash logger\n" +
-                        "8. Toggle Root Dialog in Developer Tools to control startup behavior\n\n" +
+                        "3. In Analyzer tab: chat with Claude about your project\n" +
+                        "4. Use Developer Tools to test crash logger\n" +
+                        "5. Toggle Root Dialog in Developer Tools to control startup behavior\n\n" +
                         "✅ NEW: Click \"Test\" to verify Claude API connection before using Analyzer",
                         style = MaterialTheme.typography.bodySmall, 
                         color = MaterialTheme.colorScheme.onTertiaryContainer
