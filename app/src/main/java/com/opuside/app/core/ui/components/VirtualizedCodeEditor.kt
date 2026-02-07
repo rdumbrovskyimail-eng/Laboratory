@@ -2,7 +2,6 @@ package com.opuside.app.core.ui.components
 
 import android.os.Bundle
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -20,13 +19,11 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.key.*
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.*
@@ -105,7 +102,6 @@ fun VirtualizedCodeEditor(
         )
     }
     
-    // 🔥 FIX #1: Separate state for text and UI
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(
             text = content,
@@ -116,12 +112,12 @@ fun VirtualizedCodeEditor(
     var highlightedText by remember { mutableStateOf(AnnotatedString(content)) }
     var isHighlighting by remember { mutableStateOf(false) }
     
-    // 🔥 Debounced syntax highlighting (from Acode Editor)
+    // Debounced syntax highlighting
     LaunchedEffect(textFieldValue.text, language) {
         if (highlightedText.text == textFieldValue.text) return@LaunchedEffect
         
         isHighlighting = true
-        delay(150) // Optimal delay from profiling
+        delay(150)
         
         highlightedText = withContext(Dispatchers.Default) {
             try {
@@ -144,14 +140,14 @@ fun VirtualizedCodeEditor(
         init = { DiffUndoManager(content, finalConfig.maxUndoSteps) }
     )
     
-    // 🔥 FIX #2: Content sync without breaking cursor (from JetBrains Fleet)
+    // Content sync
     LaunchedEffect(content) {
         if (textFieldValue.text != content) {
             val cursorPosition = textFieldValue.selection.start.coerceIn(0, content.length)
             textFieldValue = TextFieldValue(
                 text = content,
                 selection = TextRange(cursorPosition),
-                composition = null // Critical: clear composition to avoid IME issues
+                composition = null
             )
             undoManager.reset(content)
         }
@@ -181,7 +177,7 @@ fun VirtualizedCodeEditor(
         onCursorPositionChanged?.invoke(cursorPos.line, cursorPos.column)
     }
     
-    // 🔥 FIX #3: Professional keyboard handling (from Sora Editor)
+    // Keyboard handling
     val keyHandler = Modifier.onPreviewKeyEvent { event ->
         handleKeyEvent(
             event = event,
@@ -204,7 +200,7 @@ fun VirtualizedCodeEditor(
     val hScrollState = rememberScrollState()
     val focusRequester = remember { FocusRequester() }
     
-    // 🔥 Custom selection colors (native Android behavior)
+    // Custom selection colors
     val customSelectionColors = TextSelectionColors(
         handleColor = theme.selectionHandle,
         backgroundColor = theme.selection
@@ -234,7 +230,6 @@ fun VirtualizedCodeEditor(
                 Editor(
                     value = textFieldValue,
                     onValueChange = { newValue ->
-                        // 🔥 FIX #4: Direct pass-through (CRITICAL!)
                         textFieldValue = newValue
                     },
                     highlightedText = highlightedText,
@@ -253,7 +248,7 @@ fun VirtualizedCodeEditor(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// EDITOR COMPONENT (Core rendering logic)
+// EDITOR COMPONENT
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
@@ -273,7 +268,6 @@ private fun Editor(
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var isCursorVisible by remember { mutableStateOf(true) }
     
-    // Cursor blinking
     LaunchedEffect(value.selection) { isCursorVisible = true }
     LaunchedEffect(Unit) {
         while (true) {
@@ -282,13 +276,11 @@ private fun Editor(
         }
     }
     
-    // Bracket matching
     val bracketMatch = remember(value.selection.start, value.text) {
         if (!config.enableBracketMatching) null
         else findMatchingBracket(value.text, value.selection.start)
     }
     
-    // 🔥 FIX #5: Use plain TextFieldValue (from CodeEditor by Rosemoe)
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
@@ -318,7 +310,7 @@ private fun Editor(
             lineHeight = (fontSize * 1.5).sp,
             color = theme.text
         ),
-        cursorBrush = SolidColor(Color.Transparent), // Hide default cursor
+        cursorBrush = SolidColor(Color.Transparent),
         keyboardOptions = KeyboardOptions(
             capitalization = KeyboardCapitalization.None,
             autoCorrectEnabled = false,
@@ -327,10 +319,8 @@ private fun Editor(
         ),
         readOnly = readOnly,
         onTextLayout = { textLayoutResult = it },
-        // 🔥 FIX #6: Visual overlay for syntax highlighting (CRITICAL!)
         decorationBox = { innerTextField ->
             Box {
-                // Layer 1: Syntax highlighted text (visual only)
                 if (highlightedText.text == value.text && highlightedText.spanStyles.isNotEmpty()) {
                     Text(
                         text = highlightedText,
@@ -338,22 +328,18 @@ private fun Editor(
                             fontFamily = FontFamily.Monospace,
                             fontSize = fontSize.sp,
                             lineHeight = (fontSize * 1.5).sp,
-                            color = Color.Transparent // Transparent to let spans show
+                            color = Color.Transparent
                         ),
                         modifier = Modifier.matchParentSize()
                     )
                 }
                 
-                // Layer 2: Interactive text field (invisible text)
                 Box(
                     modifier = Modifier
                         .matchParentSize()
                         .then(
                             if (highlightedText.text == value.text && highlightedText.spanStyles.isNotEmpty()) {
-                                // Make actual text transparent when highlighted
-                                Modifier.drawBehind {
-                                    // Text will be drawn by the overlay above
-                                }
+                                Modifier.drawBehind { }
                             } else {
                                 Modifier
                             }
@@ -367,7 +353,7 @@ private fun Editor(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// DRAWING DECORATIONS (Selection, Cursor, Highlights)
+// DRAWING DECORATIONS
 // ═══════════════════════════════════════════════════════════════
 
 private fun DrawScope.drawEditorDecorations(
@@ -380,7 +366,7 @@ private fun DrawScope.drawEditorDecorations(
     theme: EditorTheme,
     config: EditorConfig
 ) {
-    // 1. Current line highlight
+    // Current line highlight
     if (config.highlightCurrentLine && currentLine >= 0 && currentLine < layout.lineCount) {
         try {
             val top = layout.getLineTop(currentLine)
@@ -393,7 +379,7 @@ private fun DrawScope.drawEditorDecorations(
         } catch (_: Exception) {}
     }
     
-    // 2. Text selection (🔥 PROPER IMPLEMENTATION from Android Source)
+    // Text selection
     val selection = value.selection
     if (!selection.collapsed) {
         try {
@@ -426,7 +412,7 @@ private fun DrawScope.drawEditorDecorations(
         } catch (_: Exception) {}
     }
     
-    // 3. Bracket matching
+    // Bracket matching
     bracketMatch?.let { pos ->
         try {
             val box = layout.getBoundingBox(pos)
@@ -438,7 +424,7 @@ private fun DrawScope.drawEditorDecorations(
         } catch (_: Exception) {}
     }
     
-    // 4. Cursor (only when no selection)
+    // Cursor
     if (isCursorVisible && !readOnly && selection.collapsed) {
         try {
             val offset = selection.start.coerceIn(0, value.text.length)
@@ -455,7 +441,7 @@ private fun DrawScope.drawEditorDecorations(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// KEYBOARD HANDLER (Professional implementation)
+// KEYBOARD HANDLER
 // ═══════════════════════════════════════════════════════════════
 
 private fun handleKeyEvent(
@@ -468,7 +454,7 @@ private fun handleKeyEvent(
     if (event.type != KeyEventType.KeyDown || config.readOnly) return false
     
     return when {
-        // Undo (Ctrl+Z)
+        // Undo
         event.isCtrlPressed && event.key == Key.Z && !event.isShiftPressed -> {
             undoManager.undo()?.let { text ->
                 onValueChange(TextFieldValue(
@@ -479,7 +465,7 @@ private fun handleKeyEvent(
             true
         }
         
-        // Redo (Ctrl+Shift+Z or Ctrl+Y)
+        // Redo
         (event.isCtrlPressed && event.isShiftPressed && event.key == Key.Z) ||
         (event.isCtrlPressed && event.key == Key.Y) -> {
             undoManager.redo()?.let { text ->
@@ -507,16 +493,20 @@ private fun handleKeyEvent(
             true
         }
         
-        // Smart Enter (auto-indent)
+        // Smart Enter
         event.key == Key.Enter && config.autoIndent -> {
             val cursorPos = textFieldValue.selection.start
             val textBefore = textFieldValue.text.take(cursorPos)
             val currentLine = textBefore.substringAfterLast('\n')
             
-            // Calculate indentation
+            // ✅ FIX: Обработка nullable Char
             val baseIndent = currentLine.takeWhile { it.isWhitespace() }
             val lastChar = currentLine.trimEnd().lastOrNull()
-            val extraIndent = if (lastChar in "{[(") " ".repeat(config.tabSize) else ""
+            val extraIndent = if (lastChar != null && lastChar in setOf('{', '(', '[')) {
+                " ".repeat(config.tabSize)
+            } else {
+                ""
+            }
             
             val insertion = "\n$baseIndent$extraIndent"
             val newText = textFieldValue.text.replaceRange(
@@ -577,7 +567,7 @@ private fun LineNumbers(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// UNDO/REDO MANAGER (Diff-based algorithm)
+// UNDO/REDO MANAGER
 // ═══════════════════════════════════════════════════════════════
 
 @Stable
@@ -604,7 +594,6 @@ private class DiffUndoManager(
         
         val patch = createPatch(baseText, newText)
         
-        // Remove future history
         while (patches.size > currentIndex + 1) {
             patches.removeLast()
         }
@@ -612,7 +601,6 @@ private class DiffUndoManager(
         patches.add(patch)
         currentIndex++
         
-        // Limit history size
         if (patches.size > maxSteps) {
             baseText = applyPatch(baseText, patches.removeFirst())
             currentIndex--
