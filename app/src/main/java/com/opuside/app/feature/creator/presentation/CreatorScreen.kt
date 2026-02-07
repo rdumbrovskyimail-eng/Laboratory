@@ -2,7 +2,6 @@ package com.opuside.app.feature.creator.presentation
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -128,7 +127,6 @@ fun CreatorScreen(
                 isSaving = isSaving,
                 onContentChange = viewModel::updateFileContent,
                 onSave = { showCommitDialog = true },
-                onAddToCache = viewModel::addCurrentFileToCache,
                 modifier = Modifier.weight(1f)
             )
         } else {
@@ -141,7 +139,6 @@ fun CreatorScreen(
                     contents = contents,
                     onFolderClick = viewModel::navigateToFolder,
                     onFileClick = viewModel::openFile,
-                    onAddToCache = viewModel::addToCache,
                     onDeleteItem = { itemToDelete = it },
                     modifier = Modifier.weight(1f)
                 )
@@ -364,7 +361,6 @@ private fun FileBrowser(
     contents: List<GitHubContent>,
     onFolderClick: (String) -> Unit,
     onFileClick: (GitHubContent) -> Unit,
-    onAddToCache: (GitHubContent) -> Unit,
     onDeleteItem: (GitHubContent) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -385,7 +381,6 @@ private fun FileBrowser(
                         if (item.type == "dir") onFolderClick(item.path) 
                         else onFileClick(item) 
                     },
-                    onAddToCache = { onAddToCache(item) },
                     onDelete = { onDeleteItem(item) }
                 )
             }
@@ -428,7 +423,6 @@ private fun EmptyFolderState(modifier: Modifier = Modifier) {
 private fun FileItem(
     content: GitHubContent,
     onClick: () -> Unit,
-    onAddToCache: () -> Unit,
     onDelete: () -> Unit
 ) {
     val isDir = content.type == "dir"
@@ -463,26 +457,6 @@ private fun FileItem(
                 }
             }
             
-            if (!isDir) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = ripple(bounded = false, radius = 24.dp),
-                            onClick = onAddToCache
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.AddCircleOutline,
-                        "Add to cache",
-                        tint = MaterialTheme.colorScheme.secondary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-            
             Icon(
                 Icons.Default.ChevronRight,
                 null,
@@ -505,7 +479,6 @@ private fun EditorMode(
     isSaving: Boolean,
     onContentChange: (String) -> Unit,
     onSave: () -> Unit,
-    onAddToCache: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -513,8 +486,7 @@ private fun EditorMode(
             language = detectLanguage(file.name),
             hasChanges = hasChanges,
             isSaving = isSaving,
-            onSave = onSave,
-            onAddToCache = onAddToCache
+            onSave = onSave
         )
 
         key(file.path) {
@@ -545,8 +517,7 @@ private fun EditorToolbar(
     language: String,
     hasChanges: Boolean,
     isSaving: Boolean,
-    onSave: () -> Unit,
-    onAddToCache: () -> Unit
+    onSave: () -> Unit
 ) {
     Surface(tonalElevation = 1.dp) {
         Row(
@@ -569,14 +540,6 @@ private fun EditorToolbar(
             }
             
             Spacer(Modifier.weight(1f))
-            
-            TextButton(onClick = onAddToCache) {
-                Icon(Icons.Default.AddCircleOutline, null, Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Add to Cache")
-            }
-            
-            Spacer(Modifier.width(8.dp))
             
             Button(onClick = onSave, enabled = hasChanges && !isSaving) {
                 if (isSaving) {
