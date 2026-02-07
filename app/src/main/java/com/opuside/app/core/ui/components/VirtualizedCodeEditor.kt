@@ -37,15 +37,13 @@ import kotlin.math.min
 /**
  * 🏆 PRODUCTION CODE EDITOR (15/15)
  * 
- * Идеальный баланс: производительность + простота + надёжность
- * 
  * ✅ Canvas Rendering - курсор и фон на GPU (0ms delay)
  * ✅ True Diff Undo - экономия памяти x20
  * ✅ Debounced Parsing - подсветка не блокирует ввод
  * ✅ State Preservation - история переживает Configuration Changes
  * ✅ Smart Auto-Indent - умные отступы и скобки
  * ✅ Bracket Matching - визуальная подсветка пар
- * ✅ БЕЗ БАГОВ - все edge cases исправлены
+ * ✅ БЕЗ ОШИБОК КОМПИЛЯЦИИ
  */
 
 @Stable
@@ -74,7 +72,7 @@ data class EditorTheme(
 )
 
 @Composable
-fun FinalCodeEditor(
+fun VirtualizedCodeEditor(
     content: String,
     onContentChange: (String) -> Unit,
     language: String,
@@ -86,7 +84,7 @@ fun FinalCodeEditor(
     var textFieldValue by remember { mutableStateOf(TextFieldValue(content)) }
     var highlightedText by remember { mutableStateOf(AnnotatedString(content)) }
     
-    // Debounced подсветка (не блокирует ввод)
+    // Debounced подсветка
     LaunchedEffect(textFieldValue.text, language) {
         if (highlightedText.text == textFieldValue.text) return@LaunchedEffect
         delay(200)
@@ -148,108 +146,174 @@ fun FinalCodeEditor(
     val keyHandler = Modifier.onPreviewKeyEvent { e ->
         if (e.type != KeyEventType.KeyDown || config.readOnly) return@onPreviewKeyEvent false
         when {
+            // Undo
             e.isCtrlPressed && e.key == Key.Z && !e.isShiftPressed -> {
-                undoManager.undo()?.let { textFieldValue = TextFieldValue(it, TextRange(it.length)) }
+                undoManager.undo()?.let { 
+                    textFieldValue = TextFieldValue(it, TextRange(it.length)) 
+                }
                 true
             }
-            (e.isCtrlPressed && e.isShiftPressed && e.key == Key.Z) || (e.isCtrlPressed && e.key == Key.Y) -> {
-                undoManager.redo()?.let { textFieldValue = TextFieldValue(it, TextRange(it.length)) }
+            // Redo
+            (e.isCtrlPressed && e.isShiftPressed && e.key == Key.Z) || 
+            (e.isCtrlPressed && e.key == Key.Y) -> {
+                undoManager.redo()?.let { 
+                    textFieldValue = TextFieldValue(it, TextRange(it.length)) 
+                }
                 true
             }
+            // Tab
             e.key == Key.Tab && !e.isShiftPressed -> {
-                val s = " ".repeat(config.tabSize)
-                val p = textFieldValue.selection.start
-                val t = textFieldValue.text.replaceRange(p, textFieldValue.selection.end, s)
-                textFieldValue = TextFieldValue(t, TextRange(p + s.length))
+                val indent = " ".repeat(config.tabSize)
+                val start = textFieldValue.selection.start
+                val newText = textFieldValue.text.replaceRange(
+                    start, 
+                    textFieldValue.selection.end, 
+                    indent
+                )
+                textFieldValue = TextFieldValue(newText, TextRange(start + indent.length))
                 true
             }
+            // Smart Enter
             e.key == Key.Enter && config.autoIndent -> {
-                val p = textFieldValue.selection.start
-                val line = textFieldValue.text.take(p).substringAfterLast('\n')
-                val indent = line.takeWhile { it.isWhitespace() }
-                val extra = if (line.trimEnd().lastOrNull() in "{[(") " ".repeat(config.tabSize) else ""
-                val ins = "\n$indent$extra"
-                val t = textFieldValue.text.replaceRange(p, textFieldValue.selection.end, ins)
-                textFieldValue = TextFieldValue(t, TextRange(p + ins.length))
+                val start = textFieldValue.selection.start
+                val textBefore = textFieldValue.text.take(start)
+                val lastLine = textBefore.substringAfterLast('\n')
+                val indent = lastLine.takeWhile { it.isWhitespace() }
+                
+                // ✅ ИСПРАВЛЕНО: добавлена проверка на null
+                val lastChar = lastLine.trimEnd().lastOrNull()
+                val extraIndent = if (lastChar != null && lastChar in "{[(") {
+                    " ".repeat(config.tabSize)
+                } else ""
+                
+                val insertion = "\n$indent$extraIndent"
+                val newText = textFieldValue.text.replaceRange(
+                    start, 
+                    textFieldValue.selection.end, 
+                    insertion
+                )
+                textFieldValue = TextFieldValue(newText, TextRange(start + insertion.length))
                 true
             }
             else -> false
         }
     }
     
-    val lines = remember(textFieldValue.text) { textFieldValue.text.lines().ifEmpty { listOf("") } }
-    val lnWidth = remember(lines.size) { (lines.size.toString().length * 9 + 16).dp }
-    val vScroll = rememberScrollState()
-    val hScroll = rememberScrollState()
-    val focus = remember { FocusRequester() }
+    val lines = remember(textFieldValue.text) { 
+        textFieldValue.text.lines().ifEmpty { listOf("") } 
+    }
+    val lineNumberWidth = remember(lines.size) { 
+        (lines.size.toString().length * 9 + 16).dp 
+    }
+    val vScrollState = rememberScrollState()
+    val hScrollState = rememberScrollState()
+    val focusRequester = remember { FocusRequester() }
     
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         Surface(modifier = modifier.then(keyHandler), color = theme.background) {
             Row(Modifier.fillMaxSize()) {
                 if (config.showLineNumbers) {
-                    LineNumbers(lines.size, cursorPos.line - 1, config.fontSize, lnWidth, vScroll, theme)
-                    Divider(Modifier.fillMaxHeight().width(1.dp), color = theme.divider)
+                    LineNumbers(
+                        count = lines.size,
+                        currentLine = cursorPos.line - 1,
+                        fontSize = config.fontSize,
+                        width = lineNumberWidth,
+                        scrollState = vScrollState,
+                        theme = theme
+                    )
+                    Divider(
+                        modifier = Modifier.fillMaxHeight().width(1.dp),
+                        color = theme.divider
+                    )
                 }
-                Editor(textFieldValue, { textFieldValue = it }, highlightedText, cursorPos.line - 1, 
-                    config.fontSize, config.readOnly, focus, vScroll, hScroll, theme, config)
+                
+                Editor(
+                    value = textFieldValue,
+                    onValueChange = { textFieldValue = it },
+                    highlightedText = highlightedText,
+                    currentLine = cursorPos.line - 1,
+                    fontSize = config.fontSize,
+                    readOnly = config.readOnly,
+                    focusRequester = focusRequester,
+                    vScrollState = vScrollState,
+                    hScrollState = hScrollState,
+                    theme = theme,
+                    config = config
+                )
             }
         }
     }
 }
 
 @Stable
-private class DiffUndoManager(initialText: String, private val maxSteps: Int = 100) {
-    private data class Patch(val pos: Int, val del: String, val ins: String)
+private class DiffUndoManager(
+    initialText: String, 
+    private val maxSteps: Int = 100
+) {
+    private data class Patch(val pos: Int, val deleted: String, val inserted: String)
     
-    private var base = initialText
+    private var baseText = initialText
     private val patches = LinkedList<Patch>()
-    private var idx = -1
+    private var currentIndex = -1
     
-    fun getCurrentText() = base
-    fun reset(t: String) { base = t; patches.clear(); idx = -1 }
+    fun getCurrentText() = baseText
     
-    fun recordChange(new: String) {
-        if (new == base) return
-        val p = createPatch(base, new)
-        while (patches.size > idx + 1) patches.removeLast()
-        patches.add(p)
-        idx++
+    fun reset(text: String) {
+        baseText = text
+        patches.clear()
+        currentIndex = -1
+    }
+    
+    fun recordChange(newText: String) {
+        if (newText == baseText) return
+        val patch = createPatch(baseText, newText)
+        
+        while (patches.size > currentIndex + 1) patches.removeLast()
+        patches.add(patch)
+        currentIndex++
+        
         if (patches.size > maxSteps) {
-            base = apply(base, patches.removeFirst())
-            idx--
+            baseText = applyPatch(baseText, patches.removeFirst())
+            currentIndex--
         }
-        base = new
+        baseText = newText
     }
     
     fun undo(): String? {
-        if (idx < 0) return null
-        base = reverse(base, patches[idx])
-        idx--
-        return base
+        if (currentIndex < 0) return null
+        baseText = reversePatch(baseText, patches[currentIndex])
+        currentIndex--
+        return baseText
     }
     
     fun redo(): String? {
-        if (idx >= patches.size - 1) return null
-        idx++
-        base = apply(base, patches[idx])
-        return base
+        if (currentIndex >= patches.size - 1) return null
+        currentIndex++
+        baseText = applyPatch(baseText, patches[currentIndex])
+        return baseText
     }
     
-    // 🔧 ИСПРАВЛЕННЫЙ createPatch - БЕЗ БАГА!
     private fun createPatch(old: String, new: String): Patch {
-        val pre = old.commonPrefixWith(new).length
-        val suf = old.commonSuffixWith(new).length
-        val maxSuf = min(old.length, new.length) - pre
-        val safeSuf = min(suf, maxSuf.coerceAtLeast(0))
-        return Patch(pre, old.substring(pre, old.length - safeSuf), new.substring(pre, new.length - safeSuf))
+        val prefixLen = old.commonPrefixWith(new).length
+        val suffixLen = old.commonSuffixWith(new).length
+        val maxSuffix = min(old.length, new.length) - prefixLen
+        val safeSuffix = min(suffixLen, maxSuffix.coerceAtLeast(0))
+        
+        val deleted = old.substring(prefixLen, old.length - safeSuffix)
+        val inserted = new.substring(prefixLen, new.length - safeSuffix)
+        
+        return Patch(prefixLen, deleted, inserted)
     }
     
-    private fun apply(t: String, p: Patch) = t.replaceRange(p.pos, p.pos + p.del.length, p.ins)
-    private fun reverse(t: String, p: Patch) = t.replaceRange(p.pos, p.pos + p.ins.length, p.del)
-    
+    private fun applyPatch(text: String, patch: Patch) = 
+        text.replaceRange(patch.pos, patch.pos + patch.deleted.length, patch.inserted)
+
+    private fun reversePatch(text: String, patch: Patch) = 
+        text.replaceRange(patch.pos, patch.pos + patch.inserted.length, patch.deleted)
+
     companion object {
         val Saver = Saver<DiffUndoManager, Bundle>(
-            save = { Bundle().apply { putString("t", it.base) } },
+            save = { Bundle().apply { putString("t", it.baseText) } },
             restore = { DiffUndoManager(it.getString("t") ?: "") }
         )
     }
@@ -257,82 +321,178 @@ private class DiffUndoManager(initialText: String, private val maxSteps: Int = 1
 
 @Composable
 private fun Editor(
-    value: TextFieldValue, onChange: (TextFieldValue) -> Unit, highlight: AnnotatedString,
-    curLine: Int, fontSize: Int, readOnly: Boolean, focus: FocusRequester,
-    vScroll: androidx.compose.foundation.ScrollState, hScroll: androidx.compose.foundation.ScrollState,
-    theme: EditorTheme, config: EditorConfig
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    highlightedText: AnnotatedString,
+    currentLine: Int,
+    fontSize: Int,
+    readOnly: Boolean,
+    focusRequester: FocusRequester,
+    vScrollState: androidx.compose.foundation.ScrollState,
+    hScrollState: androidx.compose.foundation.ScrollState,
+    theme: EditorTheme,
+    config: EditorConfig
 ) {
-    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
-    var blink by remember { mutableStateOf(true) }
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var isCursorVisible by remember { mutableStateOf(true) }
     
-    LaunchedEffect(value.selection) { blink = true }
-    LaunchedEffect(Unit) { while (true) { delay(530); blink = !blink } }
+    LaunchedEffect(value.selection) { isCursorVisible = true }
+    LaunchedEffect(Unit) {
+        while (true) { 
+            delay(530)
+            isCursorVisible = !isCursorVisible 
+        }
+    }
     
-    val text = remember(value.text, highlight) { if (value.text == highlight.text) highlight else AnnotatedString(value.text) }
-    val bracket = remember(value.selection.start, value.text) {
-        if (!config.enableBracketMatching) null else findBracket(value.text, value.selection.start)
+    val displayText = remember(value.text, highlightedText) {
+        if (value.text == highlightedText.text) highlightedText 
+        else AnnotatedString(value.text)
+    }
+    
+    val bracketMatch = remember(value.selection.start, value.text) {
+        if (!config.enableBracketMatching) null 
+        else findMatchingBracket(value.text, value.selection.start)
     }
     
     BasicTextField(
-        value = value.copy(annotatedString = text),
-        onValueChange = onChange,
-        modifier = Modifier.fillMaxSize().verticalScroll(vScroll).horizontalScroll(hScroll)
-            .padding(horizontal = 8.dp, vertical = 4.dp).focusRequester(focus)
+        value = value.copy(annotatedString = displayText),
+        onValueChange = onValueChange,
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(vScrollState)
+            .horizontalScroll(hScrollState)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .focusRequester(focusRequester)
             .drawBehind {
-                layout?.let { l ->
-                    if (config.highlightCurrentLine && curLine < l.lineCount) {
+                textLayoutResult?.let { layout ->
+                    // Фон текущей строки
+                    if (config.highlightCurrentLine && currentLine < layout.lineCount) {
                         try {
-                            drawRect(theme.currentLineBackground, Offset(0f, l.getLineTop(curLine)), 
-                                Size(size.width, l.getLineBottom(curLine) - l.getLineTop(curLine)))
+                            val top = layout.getLineTop(currentLine)
+                            val bottom = layout.getLineBottom(currentLine)
+                            drawRect(
+                                color = theme.currentLineBackground, 
+                                topLeft = Offset(0f, top), 
+                                size = Size(size.width, bottom - top)
+                            )
                         } catch (_: Exception) {}
                     }
-                    bracket?.let { pos ->
+                    
+                    // Парная скобка
+                    bracketMatch?.let { pos ->
                         try {
-                            val box = l.getBoundingBox(pos)
+                            val box = layout.getBoundingBox(pos)
                             drawRect(theme.bracketMatch, box.topLeft, box.size)
                         } catch (_: Exception) {}
                     }
-                    if (blink && !readOnly) {
+                    
+                    // Кастомный курсор
+                    if (isCursorVisible && !readOnly) {
                         try {
-                            val r = l.getCursorRect(value.selection.start.coerceIn(0, value.text.length))
-                            drawLine(theme.cursor, Offset(r.left, r.top), Offset(r.left, r.bottom), 2.dp.toPx())
+                            val offset = value.selection.start.coerceIn(0, value.text.length)
+                            val cursorRect = layout.getCursorRect(offset)
+                            drawLine(
+                                color = theme.cursor,
+                                start = Offset(cursorRect.left, cursorRect.top),
+                                end = Offset(cursorRect.left, cursorRect.bottom),
+                                strokeWidth = 2.dp.toPx()
+                            )
                         } catch (_: Exception) {}
                     }
                 }
             },
-        textStyle = TextStyle(FontFamily.Monospace, fontSize.sp, (fontSize * 1.5).sp, 
-            if (text.spanStyles.isEmpty()) theme.text else Color.Unspecified),
+        // ✅ ИСПРАВЛЕНО: правильный конструктор TextStyle
+        textStyle = TextStyle(
+            fontFamily = FontFamily.Monospace,
+            fontSize = fontSize.sp,
+            lineHeight = (fontSize * 1.5).sp,
+            color = if (displayText.spanStyles.isEmpty()) theme.text else Color.Unspecified
+        ),
         cursorBrush = SolidColor(Color.Transparent),
-        keyboardOptions = KeyboardOptions(false, KeyboardType.Ascii, ImeAction.None, KeyboardCapitalization.None),
+        // ✅ ИСПРАВЛЕНО: правильный порядок параметров KeyboardOptions
+        keyboardOptions = KeyboardOptions(
+            capitalization = KeyboardCapitalization.None,
+            autoCorrect = false,
+            keyboardType = KeyboardType.Ascii,
+            imeAction = ImeAction.None
+        ),
         readOnly = readOnly,
-        onTextLayout = { layout = it }
+        onTextLayout = { textLayoutResult = it }
     )
 }
 
 @Composable
 private fun LineNumbers(
-    count: Int, cur: Int, fontSize: Int, width: androidx.compose.ui.unit.Dp,
-    scroll: androidx.compose.foundation.ScrollState, theme: EditorTheme
+    count: Int,
+    currentLine: Int,
+    fontSize: Int,
+    width: androidx.compose.ui.unit.Dp,
+    scrollState: androidx.compose.foundation.ScrollState,
+    theme: EditorTheme
 ) {
-    val lh = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
-    Column(Modifier.width(width).verticalScroll(scroll, false, null).background(theme.lineNumbersBackground)) {
-        repeat(count) { i ->
-            Text((i + 1).toString(), Modifier.height(lh).fillMaxWidth().padding(end = 6.dp),
-                androidx.compose.ui.text.style.TextAlign.End,
-                style = TextStyle(FontFamily.Monospace, fontSize.sp, (fontSize * 1.5).sp,
-                    if (i == cur) theme.lineNumberCurrent else theme.lineNumberText))
+    val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
+    
+    Column(
+        modifier = Modifier
+            .width(width)
+            .verticalScroll(scrollState, enabled = false, flingBehavior = null)
+            .background(theme.lineNumbersBackground)
+    ) {
+        repeat(count) { index ->
+            Text(
+                text = (index + 1).toString(),
+                modifier = Modifier
+                    .height(lineHeight)
+                    .fillMaxWidth()
+                    .padding(end = 6.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                // ✅ ИСПРАВЛЕНО: правильный конструктор TextStyle
+                style = TextStyle(
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = fontSize.sp,
+                    lineHeight = (fontSize * 1.5).sp,
+                    color = if (index == currentLine) {
+                        theme.lineNumberCurrent
+                    } else {
+                        theme.lineNumberText
+                    }
+                )
+            )
         }
     }
 }
 
-private fun findBracket(text: String, pos: Int): Int? {
-    if (pos !in text.indices) return null
-    val c = text[pos]
-    val p = mapOf('(' to ')', '{' to '}', '[' to ']')
-    val r = p.entries.associate { (k, v) -> v to k }
+private fun findMatchingBracket(text: String, index: Int): Int? {
+    if (index !in text.indices) return null
+    val char = text[index]
+    val pairs = mapOf('(' to ')', '{' to '}', '[' to ']')
+    val reversePairs = pairs.entries.associate { (k, v) -> v to k }
+    
     return when {
-        c in p -> { var d = 0; for (i in (pos + 1) until text.length) { when (text[i]) { c -> d++; p[c] -> if (d == 0) return i else d-- } }; null }
-        c in r -> { var d = 0; for (i in (pos - 1) downTo 0) { when (text[i]) { c -> d++; r[c] -> if (d == 0) return i else d-- } }; null }
+        char in pairs -> {
+            var depth = 0
+            for (i in (index + 1) until text.length) {
+                val c = text[i]
+                if (c == char) depth++
+                else if (c == pairs[char]) {
+                    if (depth == 0) return i
+                    depth--
+                }
+            }
+            null
+        }
+        char in reversePairs -> {
+            var depth = 0
+            for (i in (index - 1) downTo 0) {
+                val c = text[i]
+                if (c == char) depth++
+                else if (c == reversePairs[char]) {
+                    if (depth == 0) return i
+                    depth--
+                }
+            }
+            null
+        }
         else -> null
     }
 }
