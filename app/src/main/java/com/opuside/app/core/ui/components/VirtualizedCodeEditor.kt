@@ -498,3 +498,4 @@ private fun findMatchingBracket(text: String, index: Int): Int? {
 }
 
 private data class CursorPosition(val line: Int, val column: Int)
+
