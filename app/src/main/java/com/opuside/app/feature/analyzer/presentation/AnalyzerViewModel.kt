@@ -1,16 +1,10 @@
 package com.opuside.app.feature.analyzer.presentation
 
-import android.Manifest
-import android.content.Context
-import android.content.pm.PackageManager
-import android.os.Build
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.ChatDao
-import com.opuside.app.core.database.entity.CachedFileEntity
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
@@ -20,9 +14,6 @@ import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.Artifact
 import com.opuside.app.core.network.github.model.WorkflowJob
 import com.opuside.app.core.network.github.model.WorkflowRun
-import com.opuside.app.core.util.CacheContext
-import com.opuside.app.core.util.PersistentCacheManager
-import com.opuside.app.core.util.TimerState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -34,20 +25,11 @@ import javax.inject.Inject
 /**
  * ViewModel для Analyzer (Окно 2).
  * 
- * КЛЮЧЕВАЯ ЛОГИКА КЕША:
- * 1. Файлы выбираются в Creator и добавляются в кеш
- * 2. При добавлении запускается 5-минутный таймер
- * 3. Все запросы к Claude используют ТОЛЬКО файлы из кеша как контекст
- * 4. Claude НЕ сканирует весь проект — только кеш!
- * 5. Таймер истёк = кеш очищен = нужно заново выбрать файлы
- * 
- * ✅ ИСПРАВЛЕНО (Проблема #12): Добавлены атомарные транзакции для DB операций
- * и shareIn для предотвращения множественных подписок на Room Flow.
+ * Работает напрямую с файлами проекта через Cloud API.
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
     private val savedStateHandle: SavedStateHandle,
-    private val cacheManager: PersistentCacheManager,
     private val claudeClient: ClaudeApiClient,
     private val gitHubClient: GitHubApiClient,
     private val chatDao: ChatDao,
@@ -62,89 +44,9 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE STATE
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    val cachedFiles: StateFlow<List<CachedFileEntity>> = cacheManager.cachedFiles
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
-    val fileCount: StateFlow<Int> = cacheManager.fileCount
-
-    val timerSeconds: StateFlow<Int> = cacheManager.remainingSeconds
-
-    val formattedTimer: StateFlow<String> = cacheManager.formattedTime
-
-    val timerProgress: StateFlow<Float> = cacheManager.timerProgress
-
-    val timerState: StateFlow<TimerState> = cacheManager.timerState
-
-    val isTimerCritical: StateFlow<Boolean> = cacheManager.isTimerCritical
-
-    val isCacheActive: StateFlow<Boolean> = cacheManager.isCacheActive
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // NOTIFICATION PERMISSION
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    private val _requestNotificationPermission = MutableStateFlow(false)
-    val requestNotificationPermission: StateFlow<Boolean> = _requestNotificationPermission.asStateFlow()
-
-    private val _showCacheWarningInApp = MutableStateFlow<String?>(null)
-    val showCacheWarningInApp: StateFlow<String?> = _showCacheWarningInApp.asStateFlow()
-
-    fun checkNotificationPermission(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val hasPermission = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-
-            if (!hasPermission) {
-                _requestNotificationPermission.value = true
-            }
-        }
-    }
-
-    fun clearNotificationPermissionRequest() {
-        _requestNotificationPermission.value = false
-    }
-
-    fun showCacheWarningFallback(context: Context, message: String) {
-        val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
-
-        if (!hasPermission) {
-            _showCacheWarningInApp.value = message
-        }
-    }
-
-    fun clearCacheWarningInApp() {
-        _showCacheWarningInApp.value = null
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // CHAT STATE
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ ИСПРАВЛЕНО (Проблема #14): Добавлен shareIn для предотвращения memory leak.
-     * 
-     * ПРОБЛЕМА:
-     * - chatDao.observeSession() создает новый observer при каждом collect
-     * - При rotation или recomposition создаются множественные подписки
-     * - Memory leak: старые observers не удаляются сразу
-     * 
-     * РЕШЕНИЕ:
-     * - shareIn() - создает один общий Flow для всех collectors
-     * - WhileSubscribed(5000) - отменяет подписку через 5 секунд после последнего subscriber
-     * - Предотвращает множественные DB queries на один и тот же запрос
-     */
     val chatMessages: StateFlow<List<ChatMessageEntity>> = chatDao.observeSession(sessionId)
         .shareIn(
             scope = viewModelScope,
@@ -195,78 +97,35 @@ class AnalyzerViewModel @Inject constructor(
     private var pollingJob: Job? = null
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE OPERATIONS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    fun removeFromCache(filePath: String) {
-        viewModelScope.launch {
-            cacheManager.removeFile(filePath)
-        }
-    }
-
-    fun clearCache() {
-        viewModelScope.launch {
-            cacheManager.clearCache()
-            chatDao.insert(ChatMessageEntity(
-                sessionId = sessionId,
-                role = MessageRole.SYSTEM,
-                content = "⚠️ Cache cleared. Add files from Creator to continue analysis."
-            ))
-        }
-    }
-
-    fun pauseTimer() = cacheManager.pauseTimer()
-    fun resumeTimer() = cacheManager.resumeTimer()
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CHAT WITH CLAUDE (USING CACHE CONTEXT!)
+    // CHAT WITH CLAUDE (DIRECT REPOSITORY ACCESS)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Отправить сообщение Claude.
      * 
-     * ВАЖНО: Контекст берётся ТОЛЬКО из кеша!
-     * Если кеш пуст или таймер истёк — предупреждаем пользователя.
-     * 
-     * ✅ ИСПРАВЛЕНО (Проблема #12): Используем специальный транзакционный метод
-     * insertUserAndAssistantMessages для атомарной вставки обоих сообщений.
+     * Теперь работает напрямую с репозиторием через Cloud API.
      */
     fun sendMessage(userMessage: String) {
         if (userMessage.isBlank() || _isStreaming.value) return
 
         viewModelScope.launch {
-            val cacheContext = cacheManager.getContextForClaude()
-            
-            if (cacheContext.isEmpty) {
-                _chatError.value = "⚠️ Cache is empty! Add files from Creator tab first."
-                return@launch
-            }
-            
-            if (!cacheContext.isActive) {
-                _chatError.value = "⏱️ Cache timer expired! Add files again to refresh."
-                return@launch
-            }
+            // Вставляем user message
+            val userId = chatDao.insert(ChatMessageEntity(
+                sessionId = sessionId,
+                role = MessageRole.USER,
+                content = userMessage
+            ))
 
-            // ✅ ИСПРАВЛЕНО: Используем специальный транзакционный метод
-            // Обе вставки гарантированно committed или обе откачены
-            val assistantId = chatDao.insertUserAndAssistantMessages(
-                userMessage = ChatMessageEntity(
-                    sessionId = sessionId,
-                    role = MessageRole.USER,
-                    content = userMessage,
-                    cachedFilesContext = cacheContext.filePaths
-                ),
-                assistantMessage = ChatMessageEntity(
-                    sessionId = sessionId,
-                    role = MessageRole.ASSISTANT,
-                    content = "",
-                    isStreaming = true,
-                    cachedFilesContext = cacheContext.filePaths
-                )
-            )
+            // Вставляем placeholder для assistant streaming
+            val assistantId = chatDao.insert(ChatMessageEntity(
+                sessionId = sessionId,
+                role = MessageRole.ASSISTANT,
+                content = "",
+                isStreaming = true
+            ))
 
-            // Читаем историю ПОСЛЕ транзакции (гарантированно видим новые сообщения)
-            val messages = buildMessagesForApi(userMessage, cacheContext)
+            // Читаем историю ПОСЛЕ вставки
+            val messages = buildMessagesForApi(userMessage)
 
             _isStreaming.value = true
             _currentStreamingText.value = ""
@@ -278,7 +137,7 @@ class AnalyzerViewModel @Inject constructor(
 
                 claudeClient.streamMessage(
                     messages = messages,
-                    systemPrompt = getSystemPrompt(cacheContext)
+                    systemPrompt = getSystemPrompt()
                 ).collect { result ->
                     when (result) {
                         is StreamingResult.Started -> { }
@@ -295,14 +154,11 @@ class AnalyzerViewModel @Inject constructor(
                             tokensUsed = result.usage?.let { it.inputTokens + it.outputTokens } ?: 0
                             _tokensUsedInSession.value += tokensUsed
                             
-                            // UPDATE после streaming (не критично для consistency)
                             chatDao.finishStreaming(assistantId, fullText, tokensUsed)
                         }
                         
                         is StreamingResult.Error -> {
                             _chatError.value = result.exception.message
-                            
-                            // UPDATE при ошибке
                             chatDao.markAsError(assistantId, result.exception.message ?: "Unknown error")
                         }
                     }
@@ -322,18 +178,11 @@ class AnalyzerViewModel @Inject constructor(
 
     /**
      * Построить список сообщений для API Claude.
-     * 
      * Читает последние 10 сообщений из БД для контекста.
-     * Благодаря использованию транзакции в sendMessage(),
-     * гарантированно видит только consistent state.
      */
-    private fun buildMessagesForApi(
-        userMessage: String,
-        cacheContext: CacheContext
-    ): List<ClaudeMessage> {
+    private fun buildMessagesForApi(userMessage: String): List<ClaudeMessage> {
         val messages = mutableListOf<ClaudeMessage>()
         
-        // Читаем историю из StateFlow (уже синхронизирован с БД через shareIn)
         val history = chatMessages.value
             .filter { it.role != MessageRole.SYSTEM && !it.isStreaming }
             .takeLast(10)
@@ -345,26 +194,13 @@ class AnalyzerViewModel @Inject constructor(
             ))
         }
 
-        val fullMessage = """
-${cacheContext.formattedContext}
-
-━━━ USER REQUEST ━━━
-$userMessage
-        """.trimIndent()
-        
-        messages.add(ClaudeMessage(role = "user", content = fullMessage))
+        messages.add(ClaudeMessage(role = "user", content = userMessage))
 
         return messages
     }
 
-    private fun getSystemPrompt(cacheContext: CacheContext): String = """
+    private fun getSystemPrompt(): String = """
 You are an expert Android developer assistant in OpusIDE.
-
-IMPORTANT CONTEXT RULES:
-1. You have access ONLY to the ${cacheContext.fileCount} files shown in the cached context above
-2. Do NOT assume or hallucinate about other files in the project
-3. If asked about files not in cache, inform the user to add them first
-4. Always reference specific line numbers and file paths from the cache
 
 Your capabilities:
 - Code review and bug detection
@@ -373,15 +209,13 @@ Your capabilities:
 - Explaining code logic
 - Fixing compilation errors
 - Suggesting improvements
+- Direct repository access through Cloud API
 
 Response format:
 - Be concise and specific
 - Use code blocks with language tags
-- Reference files by their paths from cache
+- Reference files by their paths
 - If suggesting changes, show the exact code
-
-Current cache: ${cacheContext.fileCount} files, ~${cacheContext.totalTokensEstimate} tokens
-Cache active: ${cacheContext.isActive}
     """.trimIndent()
 
     // ═══════════════════════════════════════════════════════════════════════════
