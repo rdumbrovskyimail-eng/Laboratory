@@ -79,7 +79,6 @@ val bottomNavItems = listOf(
  * - Сохранение Anthropic API ключа (Settings)
  * - Сохранение GitHub токена (Settings)
  * - Биометрическая аутентификация (Settings)
- * - Кеширование файлов с шифрованием (Analyzer)
  * - Чат с Claude (Analyzer) - т.к. требует API ключ
  * 
  * @param sensitiveFeatureDisabled флаг отключения чувствительных функций при root-доступе
