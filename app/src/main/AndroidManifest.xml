@@ -19,7 +19,7 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
     
-    <!-- ✅ ДОБАВЛЕНО: Android 13+ медиа разрешения -->
+    <!-- ✅ Android 13+ медиа разрешения -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     
@@ -38,6 +38,7 @@
         android:theme="@style/Theme.OpusIDE"
         android:enableOnBackInvokedCallback="true"
         android:requestLegacyExternalStorage="true"
+        android:networkSecurityConfig="@xml/network_security_config"
         tools:targetApi="36">
 
         <!-- Отключение автоматической инициализации WorkManager -->
