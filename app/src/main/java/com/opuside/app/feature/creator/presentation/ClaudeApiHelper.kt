@@ -192,14 +192,11 @@ class ClaudeRepository(private val apiKey: String) {
             retryOnServerErrors(maxRetries = 3)
             exponentialDelay()
         }
+        
+        // ✅ ИСПРАВЛЕНО: Ktor 3.x синтаксис для OkHttp engine
         engine {
             config {
                 retryOnConnectionFailure(true)
-                connectionPool(
-                    maxIdleConnections = 5,
-                    keepAliveDuration = 5,
-                    java.util.concurrent.TimeUnit.MINUTES
-                )
             }
         }
     }
@@ -235,9 +232,10 @@ class ClaudeRepository(private val apiKey: String) {
 
         } catch (e: HttpRequestTimeoutException) {
             onProgress(ClaudeResult.Error("⏰ Превышено время ожидания (60 мин). Проверьте соединение"))
-        } catch (e: kotlinx.io.IOException) {
+        } catch (e: java.io.IOException) {
             onProgress(ClaudeResult.Error("🌐 Проблема с сетью: ${e.message}"))
-        } catch (e: CancellationException) {
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // ✅ ИСПРАВЛЕНО: Явное указание kotlinx.coroutines.CancellationException
             throw e
         } catch (e: Exception) {
             onProgress(ClaudeResult.Error("❌ ${e.javaClass.simpleName}: ${e.message}"))
@@ -248,12 +246,10 @@ class ClaudeRepository(private val apiKey: String) {
         response: HttpResponse,
         onProgress: suspend (ClaudeResult) -> Unit
     ) {
-        // ✅ Увеличенные буферы для 100k output
         val fullResponse = StringBuilder(500_000)
         var inputTokens = 0
         var outputTokens = 0
         
-        // ✅ Throttling - обновляем UI не чаще 200мс
         var lastUpdateTime = System.currentTimeMillis()
         val throttleMs = 200L
 
@@ -265,7 +261,6 @@ class ClaudeRepository(private val apiKey: String) {
             if (!line.startsWith("data: ")) continue
             val data = line.removePrefix("data: ").trim()
             
-            // ✅ Правильная обработка [DONE]
             if (data.isEmpty() || data == "[DONE]") break
 
             try {
@@ -283,7 +278,6 @@ class ClaudeRepository(private val apiKey: String) {
                             fullResponse.append(text)
                         }
                         
-                        // ✅ Throttling: только значимые чанки
                         val now = System.currentTimeMillis()
                         if (text != null && text.length > 20 && now - lastUpdateTime > throttleMs) {
                             onProgress(
@@ -344,14 +338,11 @@ class ClaudeRepository(private val apiKey: String) {
 
     private fun calculateMaxTokens(messages: List<ClaudeMessage>): Int {
         val totalInputLength = messages.sumOf { it.content.length }
-        // ✅ Более точная оценка для русского текста и кода: /4.0
         val estimatedInputTokens = (totalInputLength / 4.0).toInt()
 
-        // ✅ Beta 1M context window (активируй в console.anthropic.com)
-        val contextLimit = 1_000_000  // Fallback: 200_000 для стандартного режима
+        val contextLimit = 1_000_000
         val maxOutput = minOf(128_000, contextLimit - estimatedInputTokens)
 
-        // ✅ Защита от нуля (для 200k input в стандартном режиме)
         return maxOf(1000, maxOutput).also {
             println("📊 Estimated input: $estimatedInputTokens tokens → Max output: $it")
         }
@@ -373,7 +364,7 @@ sealed class FileResult {
 
 class SecureFileManager(private val context: Context) {
 
-    private val maxFileSizeBytes = 5 * 1024 * 1024L // 5 МБ
+    private val maxFileSizeBytes = 5 * 1024 * 1024L
 
     suspend fun loadFileFromUri(
         uri: Uri,
@@ -382,7 +373,6 @@ class SecureFileManager(private val context: Context) {
         try {
             val contentResolver = context.contentResolver
             
-            // ✅ MIME-проверка: только текстовые файлы
             val mimeType = contentResolver.getType(uri) ?: ""
             if (!mimeType.startsWith("text/") && 
                 mimeType != "application/json" && 
@@ -405,7 +395,6 @@ class SecureFileManager(private val context: Context) {
                 )
             }
 
-            // ✅ Точное чтение по байтам
             val charBuffer = StringBuilder((fileSize / 2).toInt())
             var bytesReadTotal = 0L
 
@@ -417,13 +406,11 @@ class SecureFileManager(private val context: Context) {
                     bytesReadTotal += bytesRead
                     charBuffer.append(String(buffer, 0, bytesRead, Charsets.UTF_8))
                     
-                    // ✅ Точный прогресс
                     val progress = ((bytesReadTotal * 100) / fileSize).toInt().coerceIn(0, 100)
                     onProgress(progress)
                 }
             }
 
-            // ✅ Точная оценка токенов: /4.0 для Kotlin/русского
             val estimatedTokens = (charBuffer.length / 4.0).toInt()
 
             FileResult.Success(
@@ -491,9 +478,8 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
     private var conversationHistory = mutableListOf<ClaudeMessage>()
     private var currentJob: Job? = null
 
-    // ✅ Снижен порог для Large Mode
-    private val LARGE_FILE_THRESHOLD = 100_000  // токенов
-    private val BETA_MODE_THRESHOLD = 180_000   // требует beta 1M
+    private val LARGE_FILE_THRESHOLD = 100_000
+    private val BETA_MODE_THRESHOLD = 180_000
 
     fun initialize(context: Context) {
         secureStorage = SecureApiKeyStore(context)
@@ -595,7 +581,6 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                 userMessage = "${state.query}\n\n```kotlin\n${state.fileContent}\n```"
             }
 
-            // ✅ В Large File Mode НЕ сохраняем историю
             val messages = if (state.isLargeFileMode) {
                 listOf(ClaudeMessage("user", userMessage))
             } else {
@@ -636,7 +621,6 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                         }
                     }
                     is ClaudeResult.Success -> {
-                        // ✅ Сохраняем в историю только если НЕ Large Mode
                         if (!state.isLargeFileMode) {
                             conversationHistory.add(ClaudeMessage("assistant", result.response))
                         }
@@ -659,7 +643,6 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                             )
                         }
 
-                        // ✅ Сохранение с проверкой
                         fileManager.saveResponse(result.response)
                             .onSuccess { 
                                 println("✅ Saved to: ${it.absolutePath}")
@@ -717,7 +700,6 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
         super.onCleared()
         repository?.close()
         currentJob?.cancel()
-        // ✅ Только очистка данных, без System.gc()
         conversationHistory.clear()
         _uiState.update { it.copy(fileContent = "", response = "") }
     }
@@ -740,14 +722,12 @@ fun OptimizedResponseViewer(
 ) {
     val lines = remember(content) {
         val allLines = content.lines()
-        // ✅ Для 100k output: показываем последние 2000 строк
         val displayLines = if (allLines.size > 2000) {
             allLines.takeLast(2000)
         } else {
             allLines
         }
         
-        // ✅ Парсинг code blocks
         var inCodeBlock = false
         displayLines.mapIndexed { index, line ->
             if (line.trimStart().startsWith("```")) {
@@ -957,7 +937,7 @@ fun ClaudeHelperScreen(
                 }
             }
 
-            // ✅ Warning для Beta Mode
+            // WARNING CARDS
             if (uiState.needsBetaMode) {
                 Card(
                     colors = CardDefaults.cardColors(
