@@ -112,7 +112,11 @@ data class ContentBlock(
 )
 
 /**
- * Использование токенов.
+ * Использование токенов v2.1 (UPDATED)
+ * 
+ * ✅ НОВОЕ: Поддержка Prompt Caching
+ * - cache_creation_input_tokens: токены, добавленные в кеш
+ * - cache_read_input_tokens: токены, прочитанные из кеша (экономия 90%)
  */
 @Serializable
 data class Usage(
@@ -120,8 +124,42 @@ data class Usage(
     val inputTokens: Int,
     
     @SerialName("output_tokens")
-    val outputTokens: Int
-)
+    val outputTokens: Int,
+    
+    // ✅ НОВОЕ: Кеш-статистика
+    @SerialName("cache_creation_input_tokens")
+    val cacheCreationInputTokens: Int? = null,  // Токены, добавленные в кеш
+    
+    @SerialName("cache_read_input_tokens")
+    val cacheReadInputTokens: Int? = null  // Токены, прочитанные из кеша
+) {
+    /**
+     * ✅ НОВОЕ: Вычисляемые свойства
+     */
+    val totalTokens: Int
+        get() = inputTokens + outputTokens
+    
+    val hasCacheData: Boolean
+        get() = cacheCreationInputTokens != null || cacheReadInputTokens != null
+    
+    val cacheHitRate: Double
+        get() = if (inputTokens > 0 && cacheReadInputTokens != null) {
+            (cacheReadInputTokens.toDouble() / inputTokens) * 100
+        } else 0.0
+    
+    override fun toString(): String = buildString {
+        append("Usage(")
+        append("input=$inputTokens, ")
+        append("output=$outputTokens")
+        if (cacheReadInputTokens != null) {
+            append(", cached=$cacheReadInputTokens")
+        }
+        if (cacheCreationInputTokens != null) {
+            append(", created_cache=$cacheCreationInputTokens")
+        }
+        append(")")
+    }
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STREAMING EVENTS (SSE)
