@@ -487,8 +487,8 @@ class RepositoryAnalyzer @Inject constructor(
                         val cost = model.calculateCost(inputTokens, outputTokens, cachedInputTokens)
                         
                         chatDao.finishStreaming(
-                            messageId = assistantMsgId,
-                            content = fullResponse,
+                            id = assistantMsgId,
+                            finalContent = fullResponse,
                             tokensUsed = inputTokens + outputTokens
                         )
                         
