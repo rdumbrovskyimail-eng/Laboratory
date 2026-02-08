@@ -64,10 +64,6 @@ android {
             "GITHUB_GRAPHQL_URL",
             "\"https://api.github.com/graphql\""
         )
-
-        // APP CONSTANTS
-        buildConfigField("long", "CACHE_TIMEOUT_MS", "300000L")
-        buildConfigField("int", "MAX_CACHE_FILES", "20")
     }
 
     buildTypes.configureEach {
