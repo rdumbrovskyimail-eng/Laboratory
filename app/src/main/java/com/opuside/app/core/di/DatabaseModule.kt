@@ -3,6 +3,8 @@ package com.opuside.app.core.di
 import android.content.Context
 import androidx.room.Room
 import com.opuside.app.core.database.AppDatabase
+import com.opuside.app.core.database.MIGRATION_1_3
+import com.opuside.app.core.database.MIGRATION_2_3
 import com.opuside.app.core.database.dao.ChatDao
 import dagger.Module
 import dagger.Provides
@@ -12,7 +14,11 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 /**
- * Hilt модуль для базы данных Room.
+ * Hilt модуль для базы данных Room v3 (UPDATED)
+ * 
+ * ✅ ОБНОВЛЕНО:
+ * - Добавлены миграции MIGRATION_1_3 и MIGRATION_2_3
+ * - Сохранен fallbackToDestructiveMigration как запасной вариант
  * 
  * Предоставляет:
  * - AppDatabase instance
@@ -31,7 +37,13 @@ object DatabaseModule {
         AppDatabase::class.java,
         "opuside_database"
     )
-        // Простое пересоздание БД при несовпадении схемы
+        // ✅ ДОБАВЛЕНО: Миграции для версий 1→3 и 2→3
+        .addMigrations(
+            MIGRATION_1_3,  // Для пользователей с версией 1
+            MIGRATION_2_3   // Для пользователей с версией 2 (если такие есть)
+        )
+        
+        // ✅ СОХРАНЕНО: Fallback на случай если миграция не найдена
         // (допустимо, так как чаты не критичны)
         .fallbackToDestructiveMigration()
         
@@ -47,14 +59,16 @@ object DatabaseModule {
  * ИНСТРУКЦИЯ: Как создать новую миграцию
  * ═══════════════════════════════════════════════════════════════════════════════
  * 
+ * ✅ СОХРАНЕНО: Все инструкции без изменений
+ * 
  * 1. ИЗМЕНИТЬ СХЕМУ ENTITY:
  *    - Добавьте/измените колонки в @Entity классе
  *    - Обновите version в @Database аннотации
- *    Например: version = 1 → version = 2
+ *    Например: version = 3 → version = 4
  * 
- * 2. СОЗДАТЬ MIGRATION:
+ * 2. СОЗДАТЬ MIGRATION в AppDatabase.kt:
  *    ```kotlin
- *    private val MIGRATION_X_Y = object : Migration(X, Y) {
+ *    val MIGRATION_3_4 = object : Migration(3, 4) {
  *        override fun migrate(database: SupportSQLiteDatabase) {
  *            // SQL команды для миграции
  *            database.execSQL("ALTER TABLE ...")
@@ -65,7 +79,9 @@ object DatabaseModule {
  * 3. ДОБАВИТЬ В addMigrations():
  *    ```kotlin
  *    .addMigrations(
- *        MIGRATION_1_2  // ← Новая миграция
+ *        MIGRATION_1_3,
+ *        MIGRATION_2_3,
+ *        MIGRATION_3_4  // ← Новая миграция
  *    )
  *    ```
  * 
@@ -91,6 +107,13 @@ object DatabaseModule {
  *    - Создать новую таблицу с правильной схемой
  *    - Скопировать данные (INSERT INTO ... SELECT ...)
  *    - Удалить старую таблицу (DROP TABLE ...)
+ * 
+ * ═══════════════════════════════════════════════════════════════════════════════
+ * 
+ * ТЕКУЩЕЕ СОСТОЯНИЕ:
+ * - Версия БД: 3
+ * - Активные миграции: 1→3, 2→3
+ * - Fallback: Включен (удалит данные при неудаче миграции)
  * 
  * ═══════════════════════════════════════════════════════════════════════════════
  */
