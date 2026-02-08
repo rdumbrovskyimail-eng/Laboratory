@@ -43,7 +43,7 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ap
  * 3. ✅ Детальное логирование при инициализации
  */
 @AndroidEntryPoint
-class MainActivity : FragmentActivity() {  // ✅ ИСПРАВЛЕНО: FragmentActivity вместо ComponentActivity
+class MainActivity : FragmentActivity() {
 
     @Inject
     lateinit var claudeApiClient: ClaudeApiClient
@@ -311,7 +311,6 @@ fun RootStatusDialog(
                         Text("• API keys can be extracted from memory", style = MaterialTheme.typography.bodySmall)
                         Text("• Database files are readable by root apps", style = MaterialTheme.typography.bodySmall)
                         Text("• Encryption keys can be compromised", style = MaterialTheme.typography.bodySmall)
-                        Text("• Cache content is vulnerable", style = MaterialTheme.typography.bodySmall)
                     }
                     
                     Spacer(modifier = Modifier.height(8.dp))
@@ -350,7 +349,6 @@ fun RootStatusDialog(
                                 )
                             }
                             Text("• Secure API key storage", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            Text("• Encrypted file caching", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             Text("• Biometric authentication", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             Text("• Full app functionality", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                         }
