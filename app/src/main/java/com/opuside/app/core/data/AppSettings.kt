@@ -14,26 +14,12 @@ import javax.inject.Singleton
 
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "opuside_settings")
 
-// ✅ ИСПРАВЛЕНО: typealias на уровне файла, а не внутри класса
 typealias GitHubConfig = SecureSettingsDataStore.GitHubConfig
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (Проблема #11 - Network Spam on Tab Switch)
+ * AppSettings - центральное хранилище настроек приложения.
  * 
- * ПРОБЛЕМА:
- * ─────────
- * При переходе на вкладку Creator происходит спам сетевых запросов из-за того,
- * что каждое изменение в gitHubConfig Flow триггерит новую загрузку файлов.
- * 
- * РЕШЕНИЕ:
- * ────────
- * gitHubConfig теперь возвращает ХОЛОДНЫЙ Flow из secureSettings.
- * CreatorViewModel использует debounce + distinctUntilChanged для фильтрации.
- * 
- * ВАЖНО:
- * ──────
- * Этот класс НЕ изменен, потому что проблема была в CreatorViewModel.
- * Но добавлены комментарии для ясности.
+ * Работает напрямую с GitHub репозиторием через Cloud API.
  */
 @Singleton
 class AppSettings @Inject constructor(
@@ -43,9 +29,6 @@ class AppSettings @Inject constructor(
     private val dataStore = context.dataStore
 
     private object Keys {
-        val CACHE_TIMEOUT_MINUTES = intPreferencesKey("cache_timeout_minutes")
-        val MAX_CACHE_FILES = intPreferencesKey("max_cache_files")
-        val AUTO_CLEAR_CACHE = booleanPreferencesKey("auto_clear_cache")
         val DARK_THEME = booleanPreferencesKey("dark_theme")
         val EDITOR_FONT_SIZE = intPreferencesKey("editor_font_size")
         val SHOW_LINE_NUMBERS = booleanPreferencesKey("show_line_numbers")
@@ -75,10 +58,9 @@ class AppSettings @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ ВАЖНО: Это ХОЛОДНЫЙ Flow
+     * Холодный Flow с конфигурацией GitHub.
      * 
-     * Каждый вызов .collect {} создает новую подписку к DataStore.
-     * CreatorViewModel ДОЛЖЕН использовать:
+     * CreatorViewModel использует:
      * - debounce(500) для фильтрации быстрых изменений
      * - distinctUntilChanged() для игнорирования дубликатов
      * - collectLatest {} для отмены предыдущих запросов
@@ -100,48 +82,6 @@ class AppSettings @Inject constructor(
     suspend fun setClaudeModel(model: String) {
         dataStore.edit { it[Keys.CLAUDE_MODEL] = model }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE SETTINGS
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    val cacheTimeoutMinutes: Flow<Int> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.CACHE_TIMEOUT_MINUTES] ?: 5 }
-
-    val maxCacheFiles: Flow<Int> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.MAX_CACHE_FILES] ?: 20 }
-
-    val autoClearCache: Flow<Boolean> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { it[Keys.AUTO_CLEAR_CACHE] ?: true }
-
-    suspend fun setCacheSettings(timeoutMinutes: Int, maxFiles: Int, autoClear: Boolean) {
-        dataStore.edit { prefs ->
-            prefs[Keys.CACHE_TIMEOUT_MINUTES] = timeoutMinutes
-            prefs[Keys.MAX_CACHE_FILES] = maxFiles
-            prefs[Keys.AUTO_CLEAR_CACHE] = autoClear
-        }
-    }
-
-    data class CacheConfig(
-        val timeoutMinutes: Int,
-        val maxFiles: Int,
-        val autoClear: Boolean
-    ) {
-        val timeoutMs: Long get() = timeoutMinutes * 60 * 1000L
-    }
-
-    val cacheConfig: Flow<CacheConfig> = dataStore.data
-        .catch { emit(emptyPreferences()) }
-        .map { prefs ->
-            CacheConfig(
-                timeoutMinutes = prefs[Keys.CACHE_TIMEOUT_MINUTES] ?: 5,
-                maxFiles = prefs[Keys.MAX_CACHE_FILES] ?: 20,
-                autoClear = prefs[Keys.AUTO_CLEAR_CACHE] ?: true
-            )
-        }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // UI SETTINGS
@@ -179,7 +119,6 @@ class AppSettings @Inject constructor(
     }
 
     suspend fun clearGitHubConfig() {
-        // Очищаем только незашифрованные данные
         secureSettings.setGitHubConfig("", "", "main")
     }
     
