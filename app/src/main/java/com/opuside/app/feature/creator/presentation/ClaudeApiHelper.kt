@@ -430,7 +430,6 @@ class SecureFileManager(private val context: Context) {
         }
     }
 
-    // ✅ НОВОЕ: Сохранение ответа в TXT
     suspend fun saveResponseToTxt(content: String): Result<File> = withContext(Dispatchers.IO) {
         try {
             val downloadsDir = context.getExternalFilesDir(null)
@@ -450,7 +449,6 @@ class SecureFileManager(private val context: Context) {
         }
     }
 
-    // Старая функция для совместимости (сохраняет как .md)
     suspend fun saveResponse(content: String): Result<File> = withContext(Dispatchers.IO) {
         try {
             val downloadsDir = context.getExternalFilesDir(null)
@@ -489,7 +487,7 @@ data class ClaudeUiState(
     val estimatedTokens: Int = 0,
     val needsBetaMode: Boolean = false,
     val maxPossibleOutput: Int = 128_000,
-    val saveStatus: String = ""  // ✅ НОВОЕ: статус сохранения
+    val saveStatus: String = ""
 )
 
 @HiltViewModel
@@ -633,7 +631,7 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                 it.copy(
                     isLoading = true,
                     response = "",
-                    saveStatus = "",  // Сброс статуса сохранения
+                    saveStatus = "",
                     status = when {
                         state.needsBetaMode -> "🚀 Критический размер: output до ${state.maxPossibleOutput/1000}K"
                         state.isLargeFileMode -> "🚀 Large File Mode: без истории"
@@ -685,7 +683,6 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                             )
                         }
 
-                        // Автосохранение в MD (фоновое)
                         fileManager.saveResponse(result.response)
                             .onSuccess { 
                                 println("✅ Auto-saved MD to: ${it.absolutePath}")
@@ -712,7 +709,6 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
         }
     }
 
-    // ✅ НОВОЕ: Сохранение ответа в TXT
     fun saveResponseToTxt() {
         viewModelScope.launch {
             val response = _uiState.value.response
@@ -733,7 +729,6 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                     }
                     println("✅ Saved TXT to: ${file.absolutePath}")
                     
-                    // Сброс статуса через 3 секунды
                     delay(3000)
                     _uiState.update { it.copy(saveStatus = "") }
                 }
@@ -800,13 +795,10 @@ fun OptimizedResponseViewer(
     content: String,
     modifier: Modifier = Modifier
 ) {
-    // ✅ ОПТИМИЗАЦИЯ: Ленивый парсинг только при изменении контента
     val lines = remember(content) {
         val allLines = content.lines()
         
-        // ✅ УВЕЛИЧЕН ЛИМИТ: 15K строк (поддержка до 128K токенов)
         val displayLines = if (allLines.size > 15_000) {
-            // Показываем последние 15K строк
             allLines.takeLast(15_000)
         } else {
             allLines
@@ -823,24 +815,17 @@ fun OptimizedResponseViewer(
     
     val listState = rememberLazyListState()
     
-    // ✅ ОПТИМИЗАЦИЯ: Автоскролл только для небольших ответов
     LaunchedEffect(lines.size) {
-        // Скроллим только если ответ меньше 1000 строк
         if (lines.size in 10..1000) {
             listState.animateScrollToItem(maxOf(0, lines.size - 1))
         }
     }
     
-    // ✅ КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: SelectionContainer СНАРУЖИ LazyColumn
-    // Это убирает тысячи лишних виджетов и ускоряет рендеринг в 5-10 раз
     SelectionContainer {
         LazyColumn(
             state = listState,
-            modifier = modifier,
-            // ✅ ОПТИМИЗАЦИЯ: Отключаем overscroll для больших списков
-            flingBehavior = ScrollableDefaults.flingBehavior()
+            modifier = modifier
         ) {
-            // Показываем предупреждение для очень больших ответов
             if (lines.size > 8000) {
                 item {
                     Card(
@@ -863,18 +848,17 @@ fun OptimizedResponseViewer(
             
             items(
                 items = lines,
-                key = { it.index }  // ✅ Ключи для эффективного рендеринга
+                key = { it.index }
             ) { line ->
                 Text(
                     text = line.text,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = if (line.isCode) FontFamily.Monospace else FontFamily.Default,
-                        // ✅ ОПТИМИЗАЦИЯ: Уменьшен line height для компактности
                         lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.25f
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 0.5.dp)  // ✅ Уменьшен padding
+                        .padding(vertical = 0.5.dp)
                         .then(
                             if (line.isCode) {
                                 Modifier
@@ -1228,7 +1212,6 @@ fun ClaudeHelperScreen(
 
                         if (uiState.response.isNotEmpty()) {
                             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                // ✅ НОВОЕ: Кнопка сохранения в TXT
                                 IconButton(
                                     onClick = viewModel::saveResponseToTxt,
                                     enabled = !uiState.isLoading
@@ -1254,7 +1237,6 @@ fun ClaudeHelperScreen(
                         }
                     }
 
-                    // ✅ НОВОЕ: Статус сохранения
                     if (uiState.saveStatus.isNotEmpty()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
