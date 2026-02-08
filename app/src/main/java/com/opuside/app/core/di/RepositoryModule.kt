@@ -1,12 +1,8 @@
 package com.opuside.app.core.di
 
 import android.content.Context
-import com.opuside.app.core.cache.CacheRepository
 import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.database.dao.CacheDao
-import com.opuside.app.core.security.CacheEncryptionHelper
 import com.opuside.app.core.security.SecureSettingsDataStore
-import com.opuside.app.core.util.PersistentCacheManager
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -30,25 +26,4 @@ object RepositoryModule {
         @ApplicationContext context: Context,
         secureSettings: SecureSettingsDataStore
     ): AppSettings = AppSettings(context, secureSettings)
-
-    @Provides
-    @Singleton
-    fun provideCacheEncryptionHelper(
-        @ApplicationContext context: Context
-    ): CacheEncryptionHelper = CacheEncryptionHelper(context)
-
-    @Provides
-    @Singleton
-    fun provideCacheRepository(
-        cacheDao: CacheDao,
-        encryptionHelper: CacheEncryptionHelper
-    ): CacheRepository = CacheRepository(cacheDao, encryptionHelper)
-
-    @Provides
-    @Singleton
-    fun provideCacheManager(
-        @ApplicationContext context: Context,
-        cacheRepository: CacheRepository,
-        appSettings: AppSettings
-    ): PersistentCacheManager = PersistentCacheManager(context, cacheRepository, appSettings)
 }
