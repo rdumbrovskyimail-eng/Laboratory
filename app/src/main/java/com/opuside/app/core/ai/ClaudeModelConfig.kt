@@ -8,7 +8,12 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🤖 CLAUDE MODEL CONFIGURATION v2.1 (FIXED)
+ * 🤖 CLAUDE MODEL CONFIGURATION v2.2 (FINAL)
+ * 
+ * ✅ ИСПРАВЛЕНО:
+ * - Сохранены оригинальные модели
+ * - Добавлены helper методы для синхронизации с Settings
+ * - Thread-safe операции
  * 
  * Поддержка 3 моделей:
  * - Sonnet 4.5 (быстрая, $3/$15)
@@ -20,13 +25,6 @@ import java.util.concurrent.ConcurrentHashMap
  * ✅ Batch API (50% скидка)
  * ✅ Управление сеансами
  * ✅ Предупреждение о длинном контексте
- * 
- * ИСПРАВЛЕНИЯ v2.1:
- * ✅ Актуальные даты моделей
- * ✅ Валидация входных данных
- * ✅ Thread-safe операции
- * ✅ Логирование
- * ✅ Метрики производительности
  */
 object ClaudeModelConfig {
     
@@ -77,7 +75,7 @@ object ClaudeModelConfig {
         ),
         
         OPUS_4_6(
-            modelId = "claude-opus-4-6-20260115",  // ✅ ИСПРАВЛЕНО: актуальная дата
+            modelId = "claude-opus-4-6-20260115",
             displayName = "Opus 4.6",
             description = "Новейшая, для кодирования",
             inputPricePerM = 5.0,
@@ -91,13 +89,37 @@ object ClaudeModelConfig {
             emoji = "🚀"
         );
         
+        companion object {
+            /**
+             * ✅ НОВОЕ: Получить модель по ID
+             */
+            fun fromModelId(modelId: String): ClaudeModel? {
+                return entries.find { it.modelId == modelId }
+            }
+            
+            /**
+             * ✅ НОВОЕ: Список всех modelId для dropdown
+             */
+            fun getAllModelIds(): List<String> {
+                return entries.map { it.modelId }
+            }
+            
+            /**
+             * ✅ НОВОЕ: Список с отображаемыми именами для UI
+             */
+            fun getAllModelsWithNames(): List<Pair<String, String>> {
+                return entries.map { 
+                    it.modelId to "${it.emoji} ${it.displayName}"
+                }
+            }
+        }
+        
         fun calculateCost(
             inputTokens: Int,
             outputTokens: Int,
             cachedInputTokens: Int = 0,
             usdToEur: Double = 0.92
         ): ModelCost {
-            // ✅ НОВОЕ: Валидация входных данных
             require(inputTokens >= 0) { "Input tokens cannot be negative: $inputTokens" }
             require(outputTokens >= 0) { "Output tokens cannot be negative: $outputTokens" }
             require(cachedInputTokens >= 0) { "Cached tokens cannot be negative: $cachedInputTokens" }
@@ -106,7 +128,6 @@ object ClaudeModelConfig {
             }
             require(usdToEur > 0) { "USD to EUR rate must be positive: $usdToEur" }
             
-            // ✅ НОВОЕ: Логирование
             Log.d(TAG, "Calculating cost for ${this.displayName}: " +
                     "input=$inputTokens, output=$outputTokens, cached=$cachedInputTokens")
             
@@ -144,7 +165,6 @@ object ClaudeModelConfig {
                 cacheSavingsEUR = savingsUSD * usdToEur
             )
             
-            // ✅ НОВОЕ: Логирование результата
             Log.d(TAG, "Cost calculated: $${String.format("%.4f", totalCostUSD)} " +
                     "(€${String.format("%.4f", totalCostEUR)}), " +
                     "savings: ${String.format("%.1f", cost.savingsPercentage)}%")
@@ -174,7 +194,6 @@ object ClaudeModelConfig {
             (cacheSavingsUSD / (totalCostUSD + cacheSavingsUSD)) * 100
         } else 0.0
         
-        // ✅ НОВОЕ: Метрики
         val costPerToken: Double = if (totalTokens > 0) {
             totalCostUSD / totalTokens
         } else 0.0
@@ -193,7 +212,6 @@ object ClaudeModelConfig {
             )
         }
         
-        // ✅ НОВОЕ: Форматированный вывод для логов
         override fun toString(): String = buildString {
             append("ModelCost(")
             append("model=${model.displayName}, ")
@@ -215,7 +233,6 @@ object ClaudeModelConfig {
         var messageCount: Int = 0,
         var isActive: Boolean = true
     ) {
-        // ✅ НОВОЕ: Метрики производительности
         var cacheHitRate: Double = 0.0
             private set
         
@@ -264,7 +281,6 @@ object ClaudeModelConfig {
             get() = (model.longContextThreshold - totalInputTokens).coerceAtLeast(0)
         
         fun addMessage(inputTokens: Int, outputTokens: Int, cachedInputTokens: Int = 0) {
-            // ✅ НОВОЕ: Валидация
             require(inputTokens >= 0) { "Input tokens cannot be negative" }
             require(outputTokens >= 0) { "Output tokens cannot be negative" }
             require(cachedInputTokens >= 0) { "Cached tokens cannot be negative" }
@@ -274,7 +290,6 @@ object ClaudeModelConfig {
             totalCachedInputTokens += cachedInputTokens
             messageCount++
             
-            // ✅ НОВОЕ: Обновление метрик
             updateMetrics()
             
             Log.d(TAG, "Message added to session $sessionId: " +
@@ -291,7 +306,6 @@ object ClaudeModelConfig {
                     "cost=${currentCost.totalCostEUR}€")
         }
         
-        // ✅ НОВОЕ: Обновление метрик
         private fun updateMetrics() {
             cacheHitRate = if (totalInputTokens > 0) {
                 (totalCachedInputTokens.toDouble() / totalInputTokens) * 100
@@ -312,7 +326,6 @@ object ClaudeModelConfig {
             return formatter.format(instant)
         }
         
-        // ✅ НОВОЕ: Детальная статистика для UI
         fun getDetailedStats(): String = buildString {
             appendLine("📊 Session Statistics")
             appendLine()
@@ -342,7 +355,6 @@ object ClaudeModelConfig {
         }
     }
     
-    // ✅ НОВОЕ: Session Manager (thread-safe)
     object SessionManager {
         private const val TAG = "SessionManager"
         private val sessions = ConcurrentHashMap<String, ChatSession>()
@@ -391,7 +403,6 @@ object ClaudeModelConfig {
             return session.isApproachingLongContext
         }
         
-        // ✅ НОВОЕ: Очистка старых сеансов
         fun cleanupOldSessions(maxAge: Duration = Duration.ofDays(1)): Int {
             val now = Instant.now()
             var cleaned = 0
