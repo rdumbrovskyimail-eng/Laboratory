@@ -12,20 +12,22 @@ import com.opuside.app.core.database.entity.MessageRole
 import kotlinx.coroutines.flow.Flow
 
 /**
- * DAO для работы с историей чата.
+ * Chat DAO v2.1 (UPDATED)
  * 
- * Поддерживает:
- * - Сессии чата
- * - Streaming обновления
- * - Статистика использования токенов
+ * ✅ НОВОЕ:
+ * - Статистика сеанса
+ * - Поддержка кеш-токенов
+ * - Метрики производительности
  * 
- * ✅ ИСПРАВЛЕНО: Удален метод withTransaction, добавлен insertUserAndAssistantMessages
+ * ✅ СОХРАНЕНО:
+ * - Все существующие методы
+ * - Transaction для insertUserAndAssistantMessages
  */
 @Dao
 abstract class ChatDao {
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // QUERIES
+    // ✅ СУЩЕСТВУЮЩИЕ QUERIES (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
@@ -89,7 +91,75 @@ abstract class ChatDao {
     abstract suspend fun getRecentMessages(sessionId: String, limit: Int): List<ChatMessageEntity>
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // INSERT / UPDATE
+    // ✅ НОВЫЕ МЕТОДЫ для статистики сеанса
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ✅ НОВОЕ: Получить статистику сеанса
+     * Возвращает общее количество токенов и сообщений от ассистента
+     */
+    @Query("""
+        SELECT 
+            COALESCE(SUM(tokens_used), 0) as totalTokens,
+            COUNT(*) as messageCount
+        FROM chat_messages 
+        WHERE session_id = :sessionId 
+          AND role = 'ASSISTANT'
+          AND is_streaming = 0
+    """)
+    abstract suspend fun getSessionStats(sessionId: String): SessionStats
+
+    /**
+     * ✅ НОВОЕ: Получить количество сообщений пользователя в сеансе
+     */
+    @Query("""
+        SELECT COUNT(*) 
+        FROM chat_messages 
+        WHERE session_id = :sessionId 
+          AND role = 'USER'
+    """)
+    abstract suspend fun getUserMessageCount(sessionId: String): Int
+
+    /**
+     * ✅ НОВОЕ: Получить все уникальные sessionId
+     */
+    @Query("SELECT DISTINCT session_id FROM chat_messages")
+    abstract suspend fun getAllSessionIds(): List<String>
+
+    /**
+     * ✅ НОВОЕ: Удалить сообщения старше определенной даты
+     */
+    @Query("DELETE FROM chat_messages WHERE created_at < :timestamp")
+    abstract suspend fun deleteOlderThan(timestamp: Long): Int
+
+    /**
+     * ✅ НОВОЕ: Получить размер сеанса в байтах (примерно)
+     */
+    @Query("""
+        SELECT SUM(LENGTH(content)) 
+        FROM chat_messages 
+        WHERE session_id = :sessionId
+    """)
+    abstract suspend fun getSessionSizeBytes(sessionId: String): Long?
+
+    /**
+     * ✅ НОВОЕ: Получить суммарную статистику по всем полям
+     */
+    @Query("""
+        SELECT 
+            COALESCE(SUM(input_tokens), 0) as totalInputTokens,
+            COALESCE(SUM(output_tokens), 0) as totalOutputTokens,
+            COALESCE(SUM(cached_tokens), 0) as totalCachedTokens,
+            COUNT(*) as totalMessages
+        FROM chat_messages 
+        WHERE session_id = :sessionId 
+          AND role = 'ASSISTANT'
+          AND is_streaming = 0
+    """)
+    abstract suspend fun getDetailedSessionStats(sessionId: String): DetailedSessionStats
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ СУЩЕСТВУЮЩИЕ INSERT / UPDATE (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
@@ -130,7 +200,7 @@ abstract class ChatDao {
     abstract suspend fun markAsError(id: Long, errorMessage: String)
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // DELETE
+    // ✅ СУЩЕСТВУЮЩИЕ DELETE (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
@@ -172,18 +242,11 @@ abstract class ChatDao {
     abstract suspend fun trimOldSessions(keepSessions: Int)
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // TRANSACTIONS (✅ ИСПРАВЛЕНО)
+    // ✅ СУЩЕСТВУЮЩИЕ TRANSACTIONS (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ НОВОЕ: Атомарная вставка пары сообщений (user + assistant).
-     * 
-     * Используется в AnalyzerViewModel для гарантии целостности данных.
-     * Если crash произойдет во время вставки, обе операции откатятся.
-     * 
-     * @param userMessage Сообщение пользователя
-     * @param assistantMessage Placeholder для ответа ассистента
-     * @return ID вставленного сообщения ассистента
+     * ✅ СОХРАНЕНО: Атомарная вставка пары сообщений (user + assistant).
      */
     @Transaction
     open suspend fun insertUserAndAssistantMessages(
@@ -193,4 +256,40 @@ abstract class ChatDao {
         insert(userMessage)
         return insert(assistantMessage)
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ✅ НОВЫЕ DATA CLASSES для статистики
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * ✅ НОВОЕ: Базовая статистика сеанса
+ */
+data class SessionStats(
+    val totalTokens: Int,
+    val messageCount: Int
+) {
+    val averageTokensPerMessage: Int
+        get() = if (messageCount > 0) totalTokens / messageCount else 0
+}
+
+/**
+ * ✅ НОВОЕ: Детальная статистика сеанса с разбивкой по типам токенов
+ */
+data class DetailedSessionStats(
+    val totalInputTokens: Int,
+    val totalOutputTokens: Int,
+    val totalCachedTokens: Int,
+    val totalMessages: Int
+) {
+    val totalTokens: Int
+        get() = totalInputTokens + totalOutputTokens
+    
+    val cacheHitRate: Double
+        get() = if (totalInputTokens > 0) {
+            (totalCachedTokens.toDouble() / totalInputTokens) * 100
+        } else 0.0
+    
+    val averageTokensPerMessage: Int
+        get() = if (totalMessages > 0) totalTokens / totalMessages else 0
 }
