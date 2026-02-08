@@ -859,7 +859,7 @@ private fun InputBar(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ОСТАЛЬНЫЕ КОМПОНЕНТЫ (без изменений)
+// MESSAGE BUBBLE (✅ ИСПРАВЛЕНО)
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -887,7 +887,8 @@ private fun MessageBubble(message: ChatMessageEntity) {
                     style = MaterialTheme.typography.bodyMedium
                 )
                 
-                if (message.tokensUsed > 0) {
+                // ✅ ИСПРАВЛЕНО: добавлена проверка на null
+                if (message.tokensUsed != null && message.tokensUsed > 0) {
                     Spacer(Modifier.height(4.dp))
                     Text(
                         "${message.tokensUsed} tokens",
