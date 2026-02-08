@@ -1,24 +1,19 @@
 package com.opuside.app.core.network.anthropic
 
 import android.util.Log
-import com.opuside.app.BuildConfig
-import com.opuside.app.core.network.anthropic.model.ClaudeMessage
-import com.opuside.app.core.network.anthropic.model.ClaudeRequest
-import com.opuside.app.core.network.anthropic.model.ClaudeResponse
-import com.opuside.app.core.network.anthropic.model.StreamEvent
-import com.opuside.app.core.network.anthropic.model.Usage
-import com.opuside.app.core.network.anthropic.model.ClaudeErrorResponse
+import com.opuside.app.core.data.AppSettings
+import com.opuside.app.core.network.anthropic.model.*
 import com.opuside.app.core.security.SecureSettingsDataStore
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
-import io.ktor.client.statement.HttpResponse
-import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
+import io.ktor.client.statement.HttpResponse
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.utils.io.readUTF8Line
 import io.ktor.utils.io.cancel
 import kotlinx.coroutines.flow.Flow
@@ -27,33 +22,26 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.int
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Claude API Client v2.1 (UPDATED)
+ * Claude API Client v2.2 (FINAL)
  * 
- * ✅ ОБНОВЛЕНО:
- * - Поддержка выбора модели
- * - Prompt Caching
- * - Детальная статистика (Usage)
- * - Улучшенная обработка ошибок
- * - Сохранена интеграция с SecureSettingsDataStore
- * - Сохранены методы testConnection() и validateApiKey()
+ * ✅ ИСПРАВЛЕНО:
+ * - Убран BuildConfig (ANTHROPIC_API_KEY, CLAUDE_MODEL)
+ * - Добавлен AppSettings для получения модели
+ * - Улучшено логирование
+ * - Детальные сообщения об ошибках
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
     @Named("anthropic") private val httpClient: HttpClient,
     private val json: Json,
-    @Named("anthropicApiUrl") private val apiUrl: String = BuildConfig.ANTHROPIC_API_URL.ifBlank { 
-        "https://api.anthropic.com/v1/messages" 
-    },
-    private val secureSettings: SecureSettingsDataStore
+    @Named("anthropicApiUrl") private val apiUrl: String,
+    private val secureSettings: SecureSettingsDataStore,
+    private val appSettings: AppSettings
 ) {
     companion object {
         private const val TAG = "ClaudeApiClient"
@@ -64,37 +52,51 @@ class ClaudeApiClient @Inject constructor(
     }
 
     /**
-     * ✅ СОХРАНЕНО: Получает ключ из SecureSettingsDataStore (приоритет) или BuildConfig (fallback)
+     * ✅ ИСПРАВЛЕНО: Только SecureSettingsDataStore
      */
     private suspend fun getApiKey(): String {
-        // 1. Приоритет: SecureSettingsDataStore (как GitHub Token)
-        val keyFromStorage = secureSettings.getAnthropicApiKey().first()
-        if (keyFromStorage.isNotBlank()) {
-            Log.d(TAG, "✅ Using API key from SecureSettings")
-            return keyFromStorage
+        Log.d(TAG, "🔑 Retrieving API key from SecureSettings...")
+        
+        val key = secureSettings.getAnthropicApiKey().first()
+        
+        if (key.isBlank()) {
+            Log.e(TAG, "❌ ANTHROPIC_API_KEY is empty!")
+            throw IllegalStateException(
+                "ANTHROPIC_API_KEY not configured. Please set it in Settings → Claude API."
+            )
         }
-
-        // 2. Fallback: BuildConfig (для backward compatibility)
-        val keyFromBuildConfig = BuildConfig.ANTHROPIC_API_KEY.takeIf { it.isNotBlank() }
-        if (keyFromBuildConfig != null) {
-            Log.d(TAG, "⚠️ Using API key from BuildConfig (fallback)")
-            return keyFromBuildConfig
-        }
-
-        // 3. Оба пусты → ошибка
-        throw IllegalStateException(
-            "ANTHROPIC_API_KEY not configured. Please set it in Settings."
-        )
+        
+        Log.d(TAG, "✅ API key retrieved: ${key.take(10)}...")
+        return key
     }
 
     /**
-     * ✅ СОХРАНЕНО: Тест подключения к Claude API (для кнопки "Test Biometric Access")
+     * ✅ ИСПРАВЛЕНО: Test с детальным логированием
      */
     suspend fun testConnection(): Result<String> {
         return try {
-            val apiKey = getApiKey()
+            Log.d(TAG, "━".repeat(80))
+            Log.d(TAG, "🧪 TESTING CLAUDE API CONNECTION")
+            Log.d(TAG, "━".repeat(80))
             
-            Log.d(TAG, "🧪 Testing Claude API connection...")
+            val apiKey = try {
+                getApiKey()
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "❌ API key not configured: ${e.message}")
+                return Result.failure(ClaudeApiException(
+                    type = "configuration_error",
+                    message = e.message ?: "API key not configured"
+                ))
+            }
+            
+            Log.d(TAG, "  ├─ API URL: $apiUrl")
+            Log.d(TAG, "  ├─ API Key: ${apiKey.take(15)}...")
+            Log.d(TAG, "  └─ API Version: $API_VERSION")
+            
+            val model = appSettings.claudeModel.first().takeIf { it.isNotBlank() }
+                ?: "claude-sonnet-4-5-20250514"
+            
+            Log.d(TAG, "  └─ Test Model: $model")
             
             val testMessage = ClaudeMessage(
                 role = "user",
@@ -102,12 +104,14 @@ class ClaudeApiClient @Inject constructor(
             )
             
             val request = ClaudeRequest(
-                model = BuildConfig.CLAUDE_MODEL.ifBlank { "claude-sonnet-4-5-20250929" },
+                model = model,
                 maxTokens = 10,
                 messages = listOf(testMessage),
                 stream = false
             )
 
+            Log.d(TAG, "  ├─ Sending test request...")
+            
             val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
                 header("x-api-key", apiKey)
@@ -115,15 +119,26 @@ class ClaudeApiClient @Inject constructor(
                 setBody(request)
             }
 
+            Log.d(TAG, "  └─ Response status: ${response.status}")
+
             when (response.status) {
                 HttpStatusCode.OK -> {
                     val claudeResponse = response.body<ClaudeResponse>()
-                    Log.d(TAG, "✅ API connection successful!")
-                    Result.success("✅ Connected successfully!\nModel: ${claudeResponse.model}")
+                    Log.d(TAG, "━".repeat(80))
+                    Log.d(TAG, "✅ API CONNECTION SUCCESSFUL!")
+                    Log.d(TAG, "   Model: ${claudeResponse.model}")
+                    Log.d(TAG, "   Tokens: ${claudeResponse.usage.totalTokens}")
+                    Log.d(TAG, "━".repeat(80))
+                    
+                    Result.success(
+                        "✅ Connected successfully!\n" +
+                        "Model: ${claudeResponse.model}\n" +
+                        "Tokens used: ${claudeResponse.usage.totalTokens}"
+                    )
                 }
                 
                 HttpStatusCode.Unauthorized -> {
-                    Log.e(TAG, "❌ Invalid API key")
+                    Log.e(TAG, "❌ 401 UNAUTHORIZED - Invalid API key")
                     Result.failure(ClaudeApiException(
                         type = "authentication_error",
                         message = "Invalid API key. Please check your Anthropic API key in Settings."
@@ -132,10 +147,10 @@ class ClaudeApiClient @Inject constructor(
                 
                 HttpStatusCode.TooManyRequests -> {
                     val retryAfter = response.headers["Retry-After"]?.toIntOrNull()
-                    Log.e(TAG, "❌ Rate limit exceeded")
+                    Log.e(TAG, "❌ 429 RATE LIMIT - Retry after ${retryAfter}s")
                     Result.failure(ClaudeApiException(
                         type = "rate_limit_error",
-                        message = "Rate limit exceeded. Please try again in ${retryAfter ?: 60} seconds.",
+                        message = "Rate limit exceeded. Try again in ${retryAfter ?: 60}s.",
                         retryAfterSeconds = retryAfter
                     ))
                 }
@@ -148,7 +163,7 @@ class ClaudeApiClient @Inject constructor(
             }
             
         } catch (e: IllegalStateException) {
-            Log.e(TAG, "❌ ${e.message}")
+            Log.e(TAG, "❌ Configuration error: ${e.message}")
             Result.failure(ClaudeApiException(
                 type = "configuration_error",
                 message = e.message ?: "API key not configured"
@@ -163,9 +178,6 @@ class ClaudeApiClient @Inject constructor(
         }
     }
 
-    /**
-     * ✅ СОХРАНЕНО: Валидация наличия и корректности API ключа (для автозапуска)
-     */
     suspend fun validateApiKey(): Boolean {
         return try {
             val key = getApiKey()
@@ -184,27 +196,15 @@ class ClaudeApiClient @Inject constructor(
         }
     }
 
-    /**
-     * ✅ ОБНОВЛЕНО: Stream messages с поддержкой выбора модели и Prompt Caching
-     * 
-     * @param model ID модели Claude (например "claude-opus-4-6-20260115")
-     * @param messages Список сообщений
-     * @param systemPrompt Системный промпт (опционально)
-     * @param maxTokens Максимум токенов в ответе
-     * @param temperature Температура генерации (опционально)
-     * @param enableCaching Включить Prompt Caching (экономия 90%)
-     */
     fun streamMessage(
-        model: String,  // ✅ НОВОЕ: параметр модели
+        model: String,
         messages: List<ClaudeMessage>,
         systemPrompt: String? = null,
         maxTokens: Int = 4096,
         temperature: Double? = null,
-        enableCaching: Boolean = false  // ✅ НОВОЕ: кеширование
+        enableCaching: Boolean = false
     ): Flow<StreamingResult> = flow {
-        // ✅ ОБНОВЛЕНО: Поддержка кеширования в system prompt
         val systemContent = if (enableCaching && systemPrompt != null) {
-            // System prompt с кешированием (для второго и последующих сообщений)
             listOf(
                 mapOf(
                     "type" to "text",
@@ -217,10 +217,10 @@ class ClaudeApiClient @Inject constructor(
         }
 
         val request = ClaudeRequest(
-            model = model,  // ✅ НОВОЕ: используем переданную модель
+            model = model,
             maxTokens = maxTokens,
             messages = messages,
-            system = if (enableCaching) null else systemPrompt,  // ✅ ИЗМЕНЕНО
+            system = if (enableCaching) null else systemPrompt,
             stream = true,
             temperature = temperature
         )
@@ -237,10 +237,9 @@ class ClaudeApiClient @Inject constructor(
                 header("x-api-key", apiKey)
                 header("anthropic-version", API_VERSION)
                 if (enableCaching) {
-                    header("anthropic-beta", ANTHROPIC_BETA)  // ✅ НОВОЕ: beta header для кеширования
+                    header("anthropic-beta", ANTHROPIC_BETA)
                 }
                 
-                // ✅ НОВОЕ: Ручное создание JSON с cache_control
                 if (enableCaching && systemPrompt != null) {
                     val jsonBody = buildString {
                         append("{")
@@ -318,7 +317,6 @@ class ClaudeApiClient @Inject constructor(
                             }
                             
                             "message_delta" -> {
-                                // ✅ НОВОЕ: Парсим usage с кеш-статистикой
                                 event.usage?.let { totalUsage = it }
                                 event.delta?.stopReason?.let { reason ->
                                     emit(StreamingResult.StopReason(reason))
@@ -326,7 +324,6 @@ class ClaudeApiClient @Inject constructor(
                             }
                             
                             "message_stop" -> {
-                                // ✅ УЛУЧШЕНО: Логируем usage
                                 totalUsage?.let { usage ->
                                     Log.i(TAG, "Stream completed with usage: $usage")
                                 }
@@ -371,18 +368,15 @@ class ClaudeApiClient @Inject constructor(
         }
     }.cancellable()
 
-    /**
-     * ✅ ОБНОВЛЕНО: Send message с поддержкой выбора модели
-     */
     suspend fun sendMessage(
-        model: String,  // ✅ НОВОЕ: параметр модели
+        model: String,
         messages: List<ClaudeMessage>,
         systemPrompt: String? = null,
         maxTokens: Int = 4096,
         temperature: Double? = null
     ): Result<ClaudeResponse> {
         val request = ClaudeRequest(
-            model = model,  // ✅ НОВОЕ: используем переданную модель
+            model = model,
             maxTokens = maxTokens,
             messages = messages,
             system = systemPrompt,
@@ -446,7 +440,6 @@ class ClaudeApiClient @Inject constructor(
     }
 }
 
-// ✅ СОХРАНЕНО: StreamingResult без изменений
 sealed class StreamingResult {
     data class Started(val messageId: String) : StreamingResult()
     data class Delta(val text: String, val accumulated: String) : StreamingResult()
@@ -455,7 +448,6 @@ sealed class StreamingResult {
     data class Error(val exception: ClaudeApiException) : StreamingResult()
 }
 
-// ✅ СОХРАНЕНО: ClaudeApiException без изменений
 class ClaudeApiException(
     val type: String,
     message: String,
