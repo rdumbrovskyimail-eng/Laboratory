@@ -67,7 +67,7 @@ android {
     }
 
     buildTypes.configureEach {
-        buildConfigField("String", "CLAUDE_MODEL", "\"claude-opus-4-5-20251101\"")
+        buildConfigField("String", "CLAUDE_MODEL", "\"claude-opus-4-6-20260115\"")  // ✅ ОБНОВЛЕНО: новая модель
     }
 
     buildTypes {
@@ -117,12 +117,10 @@ android {
         }
     }
 
-    // Ускорение компиляции
     composeOptions {
         kotlinCompilerExtensionVersion = libs.versions.compose.compiler.get()
     }
 
-    // KSP для Room
     ksp {
         arg("room.schemaLocation", "$projectDir/schemas")
         arg("room.incremental", "true")
@@ -164,7 +162,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.kotlinx.datetime)
+    implementation(libs.kotlinx.datetime)  // ✅ УЖЕ ЕСТЬ - ОТЛИЧНО!
 
     // HILT
     implementation(libs.hilt.android)
