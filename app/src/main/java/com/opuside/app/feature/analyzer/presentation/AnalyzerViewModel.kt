@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.ai.ClaudeModelConfig
 import com.opuside.app.core.ai.RepositoryAnalyzer
+import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.ChatDao
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -16,19 +17,19 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v2.1 (UPDATED)
+ * Analyzer ViewModel v2.2 (FINAL)
  * 
- * ✅ НОВОЕ:
- * - Выбор модели
- * - Управление сеансами
- * - Детальная статистика
- * - Автоматическая очистка
+ * ✅ ИСПРАВЛЕНО:
+ * - Добавлен AppSettings для синхронизации с Settings
+ * - Загрузка модели при инициализации
+ * - Сохранение модели при смене
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
     private val repositoryAnalyzer: RepositoryAnalyzer,
     private val chatDao: ChatDao,
-    private val savedStateHandle: SavedStateHandle
+    private val savedStateHandle: SavedStateHandle,
+    private val appSettings: AppSettings
 ) : ViewModel() {
     
     companion object {
@@ -45,15 +46,12 @@ class AnalyzerViewModel @Inject constructor(
             savedStateHandle[KEY_SESSION_ID] = it
         }
     
-    // ✅ НОВОЕ: Выбранная модель
-    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.OPUS_4_6)
+    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.OPUS_4_5)
     val selectedModel: StateFlow<ClaudeModelConfig.ClaudeModel> = _selectedModel.asStateFlow()
     
-    // ✅ НОВОЕ: Текущий сеанс
     private val _currentSession = MutableStateFlow<ClaudeModelConfig.ChatSession?>(null)
     val currentSession: StateFlow<ClaudeModelConfig.ChatSession?> = _currentSession.asStateFlow()
     
-    // ✅ НОВОЕ: Включить кеширование
     private val _cachingEnabled = MutableStateFlow(true)
     val cachingEnabled: StateFlow<Boolean> = _cachingEnabled.asStateFlow()
     
@@ -83,12 +81,10 @@ class AnalyzerViewModel @Inject constructor(
     private val _chatError = MutableStateFlow<String?>(null)
     val chatError: StateFlow<String?> = _chatError.asStateFlow()
     
-    // ✅ ОБНОВЛЕНО: Статистика токенов теперь из сеанса
     val sessionTokens: StateFlow<ClaudeModelConfig.ModelCost?> = currentSession
         .map { it?.currentCost }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
     
-    // ✅ НОВОЕ: Предупреждение о длинном контексте
     val isApproachingLongContext: StateFlow<Boolean> = currentSession
         .map { it?.isApproachingLongContext ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
@@ -104,23 +100,41 @@ class AnalyzerViewModel @Inject constructor(
     init {
         Log.i(TAG, "AnalyzerViewModel initialized with sessionId: $sessionId")
         
-        // Создаем или восстанавливаем сеанс
         viewModelScope.launch {
+            // ✅ НОВОЕ: Загружаем модель из Settings
+            val savedModelId = appSettings.claudeModel.first()
+            Log.d(TAG, "Loading model from Settings: $savedModelId")
+            
+            val model = ClaudeModelConfig.ClaudeModel.fromModelId(savedModelId)
+                ?: ClaudeModelConfig.ClaudeModel.OPUS_4_5.also {
+                    Log.w(TAG, "Model not found, using default: ${it.displayName}")
+                }
+            
+            _selectedModel.value = model
+            Log.i(TAG, "✅ Model loaded: ${model.displayName} (${model.modelId})")
+            
+            // Создаем или восстанавливаем сеанс
             val existingSession = repositoryAnalyzer.getSession(sessionId)
             
             if (existingSession != null) {
                 Log.i(TAG, "Restored existing session: $sessionId")
                 _currentSession.value = existingSession
-                _selectedModel.value = existingSession.model
+                
+                // ✅ НОВОЕ: Проверяем совпадение модели
+                if (existingSession.model != model) {
+                    Log.w(TAG, "Session model mismatch! Session: ${existingSession.model}, Settings: $model")
+                    Log.i(TAG, "Starting new session with correct model...")
+                    startNewSession()
+                }
             } else {
                 Log.i(TAG, "Creating new session: $sessionId")
-                val newSession = repositoryAnalyzer.createSession(sessionId, _selectedModel.value)
+                val newSession = repositoryAnalyzer.createSession(sessionId, model)
                 _currentSession.value = newSession
             }
             
-            // Автоматическая очистка старых сеансов (раз в час)
+            // Автоочистка
             while (true) {
-                delay(3600_000) // 1 час
+                delay(3600_000)
                 val cleaned = repositoryAnalyzer.cleanupOldSessions()
                 if (cleaned > 0) {
                     Log.i(TAG, "Auto-cleanup: removed $cleaned old sessions")
@@ -138,7 +152,12 @@ class AnalyzerViewModel @Inject constructor(
         
         _selectedModel.value = model
         
-        // При смене модели начинаем новый сеанс
+        // ✅ НОВОЕ: Сохраняем в AppSettings
+        viewModelScope.launch {
+            appSettings.setClaudeModel(model.modelId)
+            Log.d(TAG, "✅ Model saved to Settings: ${model.modelId}")
+        }
+        
         startNewSession()
     }
     
@@ -155,21 +174,17 @@ class AnalyzerViewModel @Inject constructor(
         viewModelScope.launch {
             Log.i(TAG, "Starting new session")
             
-            // Завершаем текущий сеанс
             _currentSession.value?.let { session ->
                 repositoryAnalyzer.endSession(session.sessionId)
                 Log.i(TAG, "Ended session: ${session.sessionId}, cost: ${session.currentCost.totalCostEUR}€")
             }
             
-            // Создаем новый ID
             val newSessionId = UUID.randomUUID().toString()
             savedStateHandle[KEY_SESSION_ID] = newSessionId
             
-            // Создаем новый сеанс
             val newSession = repositoryAnalyzer.createSession(newSessionId, _selectedModel.value)
             _currentSession.value = newSession
             
-            // Сбрасываем состояние
             _selectedFiles.value = emptySet()
             _scanEstimate.value = null
             _chatError.value = null
@@ -204,7 +219,6 @@ class AnalyzerViewModel @Inject constructor(
         _selectedFiles.value = files
         Log.d(TAG, "Selected ${files.size} files")
         
-        // Автоматически обновляем оценку
         if (files.isNotEmpty()) {
             updateScanEstimate()
         } else {
@@ -298,7 +312,7 @@ class AnalyzerViewModel @Inject constructor(
                     }
                     
                     is RepositoryAnalyzer.AnalysisResult.Streaming -> {
-                        // Streaming обрабатывается автоматически через chatDao
+                        // Обрабатывается автоматически
                     }
                     
                     is RepositoryAnalyzer.AnalysisResult.Completed -> {
@@ -308,7 +322,6 @@ class AnalyzerViewModel @Inject constructor(
                         Log.i(TAG, "Scan completed: cost=${result.cost.totalCostEUR}€, " +
                                 "cache savings=${result.cost.savingsPercentage}%")
                         
-                        // Очищаем выбранные файлы после успешного сканирования
                         _selectedFiles.value = emptySet()
                         _scanEstimate.value = null
                     }
@@ -329,11 +342,9 @@ class AnalyzerViewModel @Inject constructor(
             return
         }
         
-        // Если файлы выбраны - используем scanSelectedFiles
         if (_selectedFiles.value.isNotEmpty()) {
             scanSelectedFiles(message)
         } else {
-            // Просто отправляем сообщение без сканирования
             viewModelScope.launch {
                 _isStreaming.value = true
                 _chatError.value = null
@@ -379,7 +390,6 @@ class AnalyzerViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         
-        // Завершаем сеанс при уничтожении ViewModel
         _currentSession.value?.let { session ->
             if (session.isActive) {
                 repositoryAnalyzer.endSession(session.sessionId)
