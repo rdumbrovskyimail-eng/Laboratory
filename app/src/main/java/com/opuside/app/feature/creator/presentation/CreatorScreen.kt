@@ -17,7 +17,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -28,11 +27,11 @@ import com.opuside.app.core.network.github.model.GitHubContent
 import com.opuside.app.core.ui.components.EditorConfig
 import com.opuside.app.core.ui.components.VirtualizedCodeEditor
 import com.opuside.app.core.util.detectLanguage
-import javax.swing.SwingUtilities
 
 @Composable
 fun CreatorScreen(
-    viewModel: CreatorViewModel = hiltViewModel()
+    viewModel: CreatorViewModel = hiltViewModel(),
+    onNavigateToClaudeHelper: () -> Unit
 ) {
     val currentOwner by viewModel.currentOwner.collectAsState()
     val currentRepo by viewModel.currentRepo.collectAsState()
@@ -111,7 +110,8 @@ fun CreatorScreen(
             onRefresh = viewModel::refresh,
             onNewFile = { showNewFileDialog = true },
             selectedFile = selectedFile,
-            onCloseFile = viewModel::closeFile
+            onCloseFile = viewModel::closeFile,
+            onOpenClaudeHelper = onNavigateToClaudeHelper
         )
 
         error?.let {
@@ -161,7 +161,8 @@ private fun TopBar(
     onRefresh: () -> Unit,
     onNewFile: () -> Unit,
     selectedFile: GitHubContent?,
-    onCloseFile: () -> Unit
+    onCloseFile: () -> Unit,
+    onOpenClaudeHelper: () -> Unit
 ) {
     Surface(tonalElevation = 2.dp) {
         Row(
@@ -182,7 +183,7 @@ private fun TopBar(
                 
                 // КНОПКА CLAUDE AI HELPER
                 Button(
-                    onClick = { openClaudeHelper() },
+                    onClick = onOpenClaudeHelper,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondary,
                         contentColor = MaterialTheme.colorScheme.onSecondary
@@ -225,9 +226,7 @@ private fun TopBar(
                 }
                 
                 // КНОПКА CLAUDE AI HELPER В РЕЖИМЕ БРАУЗЕРА
-                IconButton(
-                    onClick = { openClaudeHelper() }
-                ) {
+                IconButton(onClick = onOpenClaudeHelper) {
                     Icon(
                         Icons.Default.AutoAwesome,
                         "Claude AI Helper",
@@ -242,21 +241,6 @@ private fun TopBar(
                     Icon(Icons.Default.Add, "New file")
                 }
             }
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CLAUDE HELPER LAUNCHER
-// ═══════════════════════════════════════════════════════════════════════════════
-
-private fun openClaudeHelper() {
-    SwingUtilities.invokeLater {
-        try {
-            ClaudeApiHelper()
-        } catch (e: Exception) {
-            e.printStackTrace()
-            // Можно добавить обработку ошибки через Toast или SnackBar
         }
     }
 }
