@@ -6,7 +6,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 
 /**
- * ✅ НОВОЕ: ConfigImporter - импорт настроек из TXT файла
+ * ✅ ОЧИЩЕНО: ConfigImporter - импорт настроек из TXT файла
  * 
  * Формат файла:
  * ─────────────
@@ -19,11 +19,6 @@ import java.io.InputStreamReader
  * [Claude]
  * api_key=sk-ant-api03-xxxx
  * model=claude-sonnet-4-5-20250929
- * 
- * [Cache]
- * timeout_minutes=5
- * max_files=20
- * auto_clear=true
  */
 object ConfigImporter {
     
@@ -38,12 +33,7 @@ object ConfigImporter {
         
         // Claude
         val claudeApiKey: String? = null,
-        val claudeModel: String? = null,
-        
-        // Cache
-        val cacheTimeout: Int? = null,
-        val maxCacheFiles: Int? = null,
-        val autoClearCache: Boolean? = null
+        val claudeModel: String? = null
     ) {
         val isGitHubComplete: Boolean
             get() = !githubOwner.isNullOrBlank() && 
@@ -66,10 +56,6 @@ object ConfigImporter {
                 parts.add("✅ Claude API: Configured")
             } else {
                 parts.add("⚠️ Claude API: Missing")
-            }
-            
-            if (cacheTimeout != null) {
-                parts.add("✅ Cache: $cacheTimeout min, max $maxCacheFiles files")
             }
             
             return parts.joinToString("\n")
@@ -101,9 +87,6 @@ object ConfigImporter {
             android.util.Log.d(TAG, "   GitHub Token: ${if (config.githubToken != null) "[${config.githubToken.take(10)}...]" else "[MISSING]"}")
             android.util.Log.d(TAG, "   Claude API: ${if (config.claudeApiKey != null) "[${config.claudeApiKey.take(10)}...]" else "[MISSING]"}")
             android.util.Log.d(TAG, "   Claude Model: ${config.claudeModel ?: "[MISSING]"}")
-            android.util.Log.d(TAG, "   Cache Timeout: ${config.cacheTimeout ?: "[MISSING]"}")
-            android.util.Log.d(TAG, "   Max Files: ${config.maxCacheFiles ?: "[MISSING]"}")
-            android.util.Log.d(TAG, "   Auto Clear: ${config.autoClearCache ?: "[MISSING]"}")
             android.util.Log.d(TAG, "━".repeat(80))
             android.util.Log.d(TAG, "✅ IMPORT SUCCESSFUL")
             android.util.Log.d(TAG, "━".repeat(80))
@@ -153,12 +136,7 @@ object ConfigImporter {
             
             // Claude
             claudeApiKey = config["claude.api_key"],
-            claudeModel = config["claude.model"] ?: "claude-sonnet-4-5-20250929",
-            
-            // Cache
-            cacheTimeout = config["cache.timeout_minutes"]?.toIntOrNull() ?: 5,
-            maxCacheFiles = config["cache.max_files"]?.toIntOrNull() ?: 20,
-            autoClearCache = config["cache.auto_clear"]?.toBoolean() ?: true
+            claudeModel = config["claude.model"] ?: "claude-sonnet-4-5-20250929"
         )
     }
     
@@ -171,10 +149,7 @@ object ConfigImporter {
         githubBranch: String,
         githubToken: String,
         claudeApiKey: String,
-        claudeModel: String,
-        cacheTimeout: Int,
-        maxFiles: Int,
-        autoClear: Boolean
+        claudeModel: String
     ): String {
         return buildString {
             appendLine("# OpusIDE Configuration File")
@@ -189,11 +164,6 @@ object ConfigImporter {
             appendLine("[Claude]")
             appendLine("api_key=$claudeApiKey")
             appendLine("model=$claudeModel")
-            appendLine()
-            appendLine("[Cache]")
-            appendLine("timeout_minutes=$cacheTimeout")
-            appendLine("max_files=$maxFiles")
-            appendLine("auto_clear=$autoClear")
         }
     }
 }
