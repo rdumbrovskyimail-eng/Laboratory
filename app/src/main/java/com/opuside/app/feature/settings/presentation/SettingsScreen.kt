@@ -432,18 +432,32 @@ fun SettingsScreen(
                 Spacer(Modifier.height(8.dp))
                 
                 var modelExpanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(expanded = modelExpanded, onExpandedChange = { modelExpanded = it }) {
+                ExposedDropdownMenuBox(
+                    expanded = modelExpanded, 
+                    onExpandedChange = { modelExpanded = it }
+                ) {
                     OutlinedTextField(
                         value = claudeModelInput,
                         onValueChange = {},
                         readOnly = true,
                         label = { Text("Model") },
                         modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded) }
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded) },
+                        enabled = !sensitiveFeatureDisabled && isUnlocked
                     )
-                    ExposedDropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
-                        listOf("claude-opus-4-5-20251101", "claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001").forEach { model ->
-                            DropdownMenuItem(text = { Text(model) }, onClick = { viewModel.updateClaudeModel(model); modelExpanded = false })
+                    ExposedDropdownMenu(
+                        expanded = modelExpanded, 
+                        onDismissRequest = { modelExpanded = false }
+                    ) {
+                        // ✅ ИСПРАВЛЕНО: Используем модели из ClaudeModelConfig
+                        com.opuside.app.core.ai.ClaudeModelConfig.ClaudeModel.getAllModelsWithNames().forEach { (modelId, displayName) ->
+                            DropdownMenuItem(
+                                text = { Text(displayName) }, 
+                                onClick = { 
+                                    viewModel.updateClaudeModel(modelId)
+                                    modelExpanded = false 
+                                }
+                            )
                         }
                     }
                 }
