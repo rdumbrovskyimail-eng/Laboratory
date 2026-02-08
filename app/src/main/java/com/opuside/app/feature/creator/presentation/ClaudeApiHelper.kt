@@ -145,13 +145,13 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                     val sizeInKB = file.length() / 1024.0
                     val sizeInMB = sizeInKB / 1024.0
 
-                    // Opus 4.6: 1M token context (beta), ~200K reliable input ≈ 2.8MB
                     if (sizeInMB > 3.0) {
                         _status.value = "❌ Файл слишком большой (%.1f МБ, макс 3 МБ)".format(sizeInMB)
                         return@withContext
                     }
 
-                    val content = file.bufferedReader(Charsets.UTF_8, 131072).use { it.readText() }
+                    // ✅ ИСПРАВЛЕНО: убран второй параметр
+                    val content = file.bufferedReader(Charsets.UTF_8).use { it.readText() }
                     _fileContent.value = content
                     
                     val estimatedTokens = (content.length / 3.5).toInt()
@@ -210,17 +210,16 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                     val inputLength = userMessage.length
                     val estimatedInputTokens = (inputLength / 3.5).toInt()
 
-                    // Opus 4.6: 128K max output tokens (удвоено с 64K)
                     val adaptiveMaxTokens = when {
-                        estimatedInputTokens > 700_000 -> 64000   // Близко к лимиту
+                        estimatedInputTokens > 700_000 -> 64000
                         estimatedInputTokens > 500_000 -> 100000
-                        estimatedInputTokens > 300_000 -> 128000  // Максимум Opus 4.6
+                        estimatedInputTokens > 300_000 -> 128000
                         estimatedInputTokens > 150_000 -> 128000
-                        else -> 128000  // По умолчанию максимум
+                        else -> 128000
                     }
 
                     val request = ClaudeApiRequest(
-                        model = "claude-opus-4-6",  // ✅ ПРАВИЛЬНАЯ МОДЕЛЬ!
+                        model = "claude-opus-4-6",
                         max_tokens = adaptiveMaxTokens,
                         messages = conversationHistory.toList(),
                         stream = true
@@ -253,11 +252,10 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
 
                     val startUpload = System.currentTimeMillis()
                     
-                    connection.outputStream.use { output ->
-                        BufferedOutputStream(output, 131072).use { buffered ->
-                            buffered.write(bodyBytes)
-                            buffered.flush()
-                        }
+                    // ✅ ИСПРАВЛЕНО: BufferedOutputStream с правильным буфером
+                    BufferedOutputStream(connection.outputStream, 131072).use { buffered ->
+                        buffered.write(bodyBytes)
+                        buffered.flush()
                     }
 
                     val uploadTime = (System.currentTimeMillis() - startUpload) / 1000.0
@@ -274,7 +272,8 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                         var lastUpdateTime = System.currentTimeMillis()
                         var chunkCounter = 0
 
-                        connection.inputStream.bufferedReader(Charsets.UTF_8, 65536).useLines { lines ->
+                        // ✅ ИСПРАВЛЕНО: bufferedReader без второго параметра
+                        connection.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
                             for (line in lines) {
                                 if (!_isLoading.value) break
 
@@ -334,7 +333,7 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                                         }
                                     }
                                 } catch (e: Exception) {
-                                    // Пропускаем битые SSE
+                                    // Ignore
                                 }
                             }
                         }
