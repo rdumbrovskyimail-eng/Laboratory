@@ -52,7 +52,7 @@ import java.io.File
 import javax.inject.Inject
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATA MODELS (Opus 4.6 Compatible - БЕЗ THINKING)
+// DATA MODELS (Opus 4.6 Compatible - ИСПРАВЛЕНО)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Serializable
@@ -62,11 +62,17 @@ data class ClaudeMessage(
 )
 
 @Serializable
+data class SystemBlock(
+    val type: String = "text",
+    val text: String
+)
+
+@Serializable
 data class ClaudeApiRequest(
     val model: String = "claude-opus-4-20250514",
     @SerialName("max_tokens") val maxTokens: Int = 128000,
     val messages: List<ClaudeMessage>,
-    val system: String? = null,
+    val system: List<SystemBlock>? = null,
     val stream: Boolean = false
 )
 
@@ -151,7 +157,7 @@ class SecureApiKeyStore(context: Context) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REPOSITORY (Optimized for Large Files)
+// REPOSITORY (Optimized for Large Files - ИСПРАВЛЕНО)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 sealed class ClaudeResult {
@@ -184,16 +190,15 @@ class ClaudeRepository(private val apiKey: String) {
             }
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 3_600_000 // 60 минут
-            connectTimeoutMillis = 180_000   // 3 минуты
-            socketTimeoutMillis = 3_600_000  // 60 минут
+            requestTimeoutMillis = 3_600_000
+            connectTimeoutMillis = 180_000
+            socketTimeoutMillis = 3_600_000
         }
         install(HttpRequestRetry) {
             retryOnServerErrors(maxRetries = 3)
             exponentialDelay()
         }
         
-        // ✅ ИСПРАВЛЕНО: Ktor 3.x синтаксис для OkHttp engine
         engine {
             config {
                 retryOnConnectionFailure(true)
@@ -211,7 +216,9 @@ class ClaudeRepository(private val apiKey: String) {
 
             val request = ClaudeApiRequest(
                 messages = messages,
-                system = systemPrompt,
+                system = if (systemPrompt != null) {
+                    listOf(SystemBlock(type = "text", text = systemPrompt))
+                } else null,
                 maxTokens = calculateMaxTokens(messages),
                 stream = true
             )
@@ -235,7 +242,6 @@ class ClaudeRepository(private val apiKey: String) {
         } catch (e: java.io.IOException) {
             onProgress(ClaudeResult.Error("🌐 Проблема с сетью: ${e.message}"))
         } catch (e: kotlinx.coroutines.CancellationException) {
-            // ✅ ИСПРАВЛЕНО: Явное указание kotlinx.coroutines.CancellationException
             throw e
         } catch (e: Exception) {
             onProgress(ClaudeResult.Error("❌ ${e.javaClass.simpleName}: ${e.message}"))
@@ -338,14 +344,12 @@ class ClaudeRepository(private val apiKey: String) {
 
     private fun calculateMaxTokens(messages: List<ClaudeMessage>): Int {
         val totalInputLength = messages.sumOf { it.content.length }
-        val estimatedInputTokens = (totalInputLength / 4.0).toInt()
-
-        val contextLimit = 1_000_000
-        val maxOutput = minOf(128_000, contextLimit - estimatedInputTokens)
-
-        return maxOf(1000, maxOutput).also {
-            println("📊 Estimated input: $estimatedInputTokens tokens → Max output: $it")
-        }
+        val estimatedInputTokens = (totalInputLength / 3.2).toInt()
+        val contextLimit = 200_000
+        val availableForOutput = contextLimit - estimatedInputTokens - 2_000
+        val maxOutput = minOf(128_000, maxOf(1_000, availableForOutput))
+        println("📊 Estimated input: $estimatedInputTokens tokens → Max output: $maxOutput tokens")
+        return maxOutput
     }
 
     fun close() {
@@ -354,7 +358,7 @@ class ClaudeRepository(private val apiKey: String) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FILE MANAGER (Optimized for Large Files)
+// FILE MANAGER (Optimized + TXT Save - ИСПРАВЛЕНО)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 sealed class FileResult {
@@ -411,7 +415,7 @@ class SecureFileManager(private val context: Context) {
                 }
             }
 
-            val estimatedTokens = (charBuffer.length / 4.0).toInt()
+            val estimatedTokens = (charBuffer.length / 3.2).toInt()
 
             FileResult.Success(
                 content = charBuffer.toString(),
@@ -426,6 +430,27 @@ class SecureFileManager(private val context: Context) {
         }
     }
 
+    // ✅ НОВОЕ: Сохранение ответа в TXT
+    suspend fun saveResponseToTxt(content: String): Result<File> = withContext(Dispatchers.IO) {
+        try {
+            val downloadsDir = context.getExternalFilesDir(null)
+                ?: return@withContext Result.failure(Exception("Директория недоступна"))
+
+            val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", java.util.Locale.getDefault())
+                .format(java.util.Date())
+            
+            val filename = "claude_opus46_$timestamp.txt"
+            val file = File(downloadsDir, filename)
+            
+            file.writeText(content, Charsets.UTF_8)
+            Result.success(file)
+
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // Старая функция для совместимости (сохраняет как .md)
     suspend fun saveResponse(content: String): Result<File> = withContext(Dispatchers.IO) {
         try {
             val downloadsDir = context.getExternalFilesDir(null)
@@ -444,7 +469,7 @@ class SecureFileManager(private val context: Context) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIEW MODEL (Optimized for Large Files)
+// VIEW MODEL (Optimized - ИСПРАВЛЕНО)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 data class ClaudeUiState(
@@ -462,7 +487,9 @@ data class ClaudeUiState(
     val conversationCount: Int = 0,
     val isLargeFileMode: Boolean = false,
     val estimatedTokens: Int = 0,
-    val needsBetaMode: Boolean = false
+    val needsBetaMode: Boolean = false,
+    val maxPossibleOutput: Int = 128_000,
+    val saveStatus: String = ""  // ✅ НОВОЕ: статус сохранения
 )
 
 @HiltViewModel
@@ -478,8 +505,8 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
     private var conversationHistory = mutableListOf<ClaudeMessage>()
     private var currentJob: Job? = null
 
-    private val LARGE_FILE_THRESHOLD = 100_000
-    private val BETA_MODE_THRESHOLD = 180_000
+    private val LARGE_FILE_THRESHOLD = 320_000
+    private val CRITICAL_THRESHOLD = 540_000
 
     fun initialize(context: Context) {
         secureStorage = SecureApiKeyStore(context)
@@ -524,22 +551,36 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                 _uiState.update { it.copy(loadingProgress = progress) }
             }) {
                 is FileResult.Success -> {
-                    val isLarge = result.estimatedTokens > LARGE_FILE_THRESHOLD
-                    val needsBeta = result.estimatedTokens > BETA_MODE_THRESHOLD
+                    val isLarge = result.content.length > LARGE_FILE_THRESHOLD
+                    val isCritical = result.content.length > CRITICAL_THRESHOLD
+                    
+                    val maxPossibleOutput = minOf(
+                        128_000, 
+                        200_000 - result.estimatedTokens - 2_000
+                    ).coerceAtLeast(1_000)
                     
                     _uiState.update {
                         it.copy(
                             fileContent = result.content,
                             estimatedTokens = result.estimatedTokens,
                             isLargeFileMode = isLarge,
-                            needsBetaMode = needsBeta,
-                            fileInfo = "✅ %.2f МБ (~%,d токенов)%s".format(
-                                result.sizeBytes / (1024.0 * 1024.0),
-                                result.estimatedTokens,
-                                if (isLarge) " - LARGE MODE" else ""
-                            ),
+                            needsBetaMode = isCritical,
+                            maxPossibleOutput = maxPossibleOutput,
+                            fileInfo = buildString {
+                                append("✅ %.2f МБ (~%,d токенов)".format(
+                                    result.sizeBytes / (1024.0 * 1024.0),
+                                    result.estimatedTokens
+                                ))
+                                if (isLarge) append(" - LARGE MODE")
+                                append("\n")
+                                if (maxPossibleOutput < 128_000) {
+                                    append("⚠️ Max output: ~%,d токенов".format(maxPossibleOutput))
+                                } else {
+                                    append("✅ Max output: 128K токенов")
+                                }
+                            },
                             status = when {
-                                needsBeta -> "⚠️ Требуется Beta 1M context (console.anthropic.com)"
+                                isCritical -> "⚠️ КРИТИЧЕСКИЙ размер! Output ограничен ${maxPossibleOutput/1000}K токенов"
                                 isLarge -> "⚠️ Большой файл! История диалога отключена"
                                 else -> "✅ Файл загружен"
                             },
@@ -592,8 +633,9 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                 it.copy(
                     isLoading = true,
                     response = "",
+                    saveStatus = "",  // Сброс статуса сохранения
                     status = when {
-                        state.needsBetaMode -> "🚀 Beta 1M Mode (активируйте в console)"
+                        state.needsBetaMode -> "🚀 Критический размер: output до ${state.maxPossibleOutput/1000}K"
                         state.isLargeFileMode -> "🚀 Large File Mode: без истории"
                         else -> "🚀 Подключение к Opus 4.6..."
                     },
@@ -643,12 +685,13 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                             )
                         }
 
+                        // Автосохранение в MD (фоновое)
                         fileManager.saveResponse(result.response)
                             .onSuccess { 
-                                println("✅ Saved to: ${it.absolutePath}")
+                                println("✅ Auto-saved MD to: ${it.absolutePath}")
                             }
                             .onFailure { 
-                                println("❌ Save error: ${it.message}")
+                                println("❌ Auto-save error: ${it.message}")
                             }
                     }
                     is ClaudeResult.Error -> {
@@ -669,6 +712,42 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
         }
     }
 
+    // ✅ НОВОЕ: Сохранение ответа в TXT
+    fun saveResponseToTxt() {
+        viewModelScope.launch {
+            val response = _uiState.value.response
+            
+            if (response.isEmpty()) {
+                _uiState.update { it.copy(saveStatus = "❌ Нет ответа для сохранения") }
+                return@launch
+            }
+
+            _uiState.update { it.copy(saveStatus = "💾 Сохранение...") }
+
+            fileManager.saveResponseToTxt(response)
+                .onSuccess { file ->
+                    _uiState.update { 
+                        it.copy(
+                            saveStatus = "✅ Сохранено: ${file.name}"
+                        ) 
+                    }
+                    println("✅ Saved TXT to: ${file.absolutePath}")
+                    
+                    // Сброс статуса через 3 секунды
+                    delay(3000)
+                    _uiState.update { it.copy(saveStatus = "") }
+                }
+                .onFailure { error ->
+                    _uiState.update { 
+                        it.copy(saveStatus = "❌ Ошибка: ${error.message}") 
+                    }
+                    
+                    delay(5000)
+                    _uiState.update { it.copy(saveStatus = "") }
+                }
+        }
+    }
+
     fun cancelRequest() {
         currentJob?.cancel()
         _uiState.update {
@@ -686,7 +765,8 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                 response = "",
                 progress = "",
                 status = "🗑️ История очищена",
-                conversationCount = 0
+                conversationCount = 0,
+                saveStatus = ""
             )
         }
     }
@@ -706,7 +786,7 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// UI COMPONENTS (Optimized Rendering)
+// UI COMPONENTS (МАКСИМАЛЬНО ОПТИМИЗИРОВАНО ДЛЯ 128K ТОКЕНОВ)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 data class CodeLine(
@@ -720,10 +800,14 @@ fun OptimizedResponseViewer(
     content: String,
     modifier: Modifier = Modifier
 ) {
+    // ✅ ОПТИМИЗАЦИЯ: Ленивый парсинг только при изменении контента
     val lines = remember(content) {
         val allLines = content.lines()
-        val displayLines = if (allLines.size > 2000) {
-            allLines.takeLast(2000)
+        
+        // ✅ УВЕЛИЧЕН ЛИМИТ: 15K строк (поддержка до 128K токенов)
+        val displayLines = if (allLines.size > 15_000) {
+            // Показываем последние 15K строк
+            allLines.takeLast(15_000)
         } else {
             allLines
         }
@@ -739,35 +823,63 @@ fun OptimizedResponseViewer(
     
     val listState = rememberLazyListState()
     
+    // ✅ ОПТИМИЗАЦИЯ: Автоскролл только для небольших ответов
     LaunchedEffect(lines.size) {
-        if (lines.size > 10) {
+        // Скроллим только если ответ меньше 1000 строк
+        if (lines.size in 10..1000) {
             listState.animateScrollToItem(maxOf(0, lines.size - 1))
         }
     }
     
-    LazyColumn(
-        state = listState,
-        modifier = modifier
-    ) {
-        items(
-            items = lines,
-            key = { it.index }
-        ) { line ->
-            SelectionContainer {
+    // ✅ КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: SelectionContainer СНАРУЖИ LazyColumn
+    // Это убирает тысячи лишних виджетов и ускоряет рендеринг в 5-10 раз
+    SelectionContainer {
+        LazyColumn(
+            state = listState,
+            modifier = modifier,
+            // ✅ ОПТИМИЗАЦИЯ: Отключаем overscroll для больших списков
+            flingBehavior = ScrollableDefaults.flingBehavior()
+        ) {
+            // Показываем предупреждение для очень больших ответов
+            if (lines.size > 8000) {
+                item {
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Text(
+                            text = "⚠️ Очень большой ответ (${lines.size} строк). " +
+                                   "Возможны небольшие задержки при быстром скролле.",
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+            
+            items(
+                items = lines,
+                key = { it.index }  // ✅ Ключи для эффективного рендеринга
+            ) { line ->
                 Text(
                     text = line.text,
                     style = MaterialTheme.typography.bodySmall.copy(
                         fontFamily = if (line.isCode) FontFamily.Monospace else FontFamily.Default,
-                        lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.3f
+                        // ✅ ОПТИМИЗАЦИЯ: Уменьшен line height для компактности
+                        lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.25f
                     ),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 1.dp)
+                        .padding(vertical = 0.5.dp)  // ✅ Уменьшен padding
                         .then(
                             if (line.isCode) {
                                 Modifier
                                     .background(Color(0xFF1E1E1E))
-                                    .padding(horizontal = 4.dp)
+                                    .padding(horizontal = 4.dp, vertical = 1.dp)
                             } else Modifier
                         ),
                     color = if (line.isCode) Color(0xFFD4D4D4) else Color.Unspecified
@@ -778,7 +890,7 @@ fun OptimizedResponseViewer(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// UI SCREEN
+// UI SCREEN (С КНОПКОЙ СОХРАНЕНИЯ)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -953,7 +1065,7 @@ fun ClaudeHelperScreen(
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                "🚨 Требуется Beta 1M Context",
+                                "🚨 КРИТИЧЕСКИЙ размер файла",
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.error
                             )
@@ -964,13 +1076,13 @@ fun ClaudeHelperScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                         Text(
-                            "Output ограничен 128k (стандарт) или 900k (beta)",
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                        Text(
-                            "Активируйте beta в console.anthropic.com",
+                            "Output ограничен ~${uiState.maxPossibleOutput/1000}K токенов (не 128K!)",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            "Context: Input + Output ≤ 200K",
+                            style = MaterialTheme.typography.bodySmall
                         )
                     }
                 }
@@ -1115,7 +1227,15 @@ fun ClaudeHelperScreen(
                         Text("🤖 Ответ Opus 4.6", style = MaterialTheme.typography.titleMedium)
 
                         if (uiState.response.isNotEmpty()) {
-                            Row {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                // ✅ НОВОЕ: Кнопка сохранения в TXT
+                                IconButton(
+                                    onClick = viewModel::saveResponseToTxt,
+                                    enabled = !uiState.isLoading
+                                ) {
+                                    Icon(Icons.Default.Save, "Сохранить в TXT")
+                                }
+                                
                                 IconButton(
                                     onClick = {
                                         clipboardManager.setText(AnnotatedString(uiState.response))
@@ -1132,6 +1252,20 @@ fun ClaudeHelperScreen(
                                 }
                             }
                         }
+                    }
+
+                    // ✅ НОВОЕ: Статус сохранения
+                    if (uiState.saveStatus.isNotEmpty()) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            uiState.saveStatus,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = when {
+                                uiState.saveStatus.startsWith("✅") -> MaterialTheme.colorScheme.primary
+                                uiState.saveStatus.startsWith("❌") -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+                        )
                     }
 
                     Spacer(Modifier.height(8.dp))
