@@ -3,21 +3,21 @@ package com.opuside.app
 import android.app.Application
 import androidx.hilt.work.HiltWorkerFactory
 import androidx.work.Configuration
-import com.opuside.app.core.util.CacheNotificationHelper
 import com.opuside.app.core.util.CrashLogger
 import dagger.hilt.android.HiltAndroidApp
 import javax.inject.Inject
 
 /**
- * OpusIDE Application
+ * ✅ ОЧИЩЕНО: OpusIDE Application
  * 
  * Главный Application класс с Hilt dependency injection.
  * Инициализируется при старте приложения.
  * 
- * ✅ ИСПРАВЛЕНО: Добавлена поддержка Hilt Workers
- * Решает проблему №2 - FATAL: WorkerModule неполный
- * ✅ ИСПРАВЛЕНО: Проблема №14 (BUG #14) - Двойная инициализация WorkManager
- * ✅ ДОБАВЛЕНО: CrashLogger - автоматический перехват крашей
+ * ИЗМЕНЕНИЯ:
+ * - ✅ Удалена система локального кеша
+ * - ✅ CacheNotificationHelper удален
+ * - ✅ Сохранена поддержка Hilt Workers
+ * - ✅ Сохранен CrashLogger для диагностики
  */
 @HiltAndroidApp
 class OpusIDEApplication : Application(), Configuration.Provider {
@@ -32,11 +32,7 @@ class OpusIDEApplication : Application(), Configuration.Provider {
         
         super.onCreate()
         
-        // ✅ ДОБАВЛЕНО: Инициализация notification channel
-        // Решает проблему №7 - notifications не работают
-        CacheNotificationHelper.createNotificationChannel(this)
-        
-        // Инициализация будет добавлена позже:
+        // Инициализация для будущего:
         // - Timber для логирования
         // - Coil для изображений (если понадобится)
         // - Strict Mode для debug
@@ -63,7 +59,7 @@ class OpusIDEApplication : Application(), Configuration.Provider {
     }
 
     /**
-     * ✅ ДОБАВЛЕНО: Конфигурация WorkManager с HiltWorkerFactory
+     * ✅ Конфигурация WorkManager с HiltWorkerFactory
      * Позволяет Workers получать зависимости через DI
      * WorkManager инициализируется автоматически через Configuration.Provider
      */
