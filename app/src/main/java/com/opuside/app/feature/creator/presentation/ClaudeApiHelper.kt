@@ -1,6 +1,14 @@
 package com.opuside.app.feature.creator.presentation
 
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -10,29 +18,41 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import io.ktor.client.*
+import io.ktor.client.call.*
+import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.*
+import io.ktor.client.plugins.contentnegotiation.*
+import io.ktor.client.plugins.logging.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
+import io.ktor.utils.io.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
 import kotlinx.serialization.*
 import kotlinx.serialization.json.*
 import java.io.File
-import java.io.BufferedOutputStream
 import javax.inject.Inject
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATA MODELS
+// DATA MODELS (Opus 4.6 Compatible - БЕЗ THINKING)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Serializable
@@ -43,9 +63,10 @@ data class ClaudeMessage(
 
 @Serializable
 data class ClaudeApiRequest(
-    val model: String,
-    val max_tokens: Int,
+    val model: String = "claude-opus-4-20250514",
+    @SerialName("max_tokens") val maxTokens: Int = 128000,
     val messages: List<ClaudeMessage>,
+    val system: String? = null,
     val stream: Boolean = false
 )
 
@@ -62,367 +83,717 @@ data class ClaudeApiResponse(
     val role: String? = null,
     val content: List<ClaudeContentBlock>? = null,
     val model: String? = null,
-    val stop_reason: String? = null,
+    @SerialName("stop_reason") val stopReason: String? = null,
     val usage: ClaudeUsage? = null
 )
 
 @Serializable
 data class ClaudeUsage(
-    val input_tokens: Int? = null,
-    val output_tokens: Int? = null
+    @SerialName("input_tokens") val inputTokens: Int? = null,
+    @SerialName("output_tokens") val outputTokens: Int? = null
+)
+
+@Serializable
+data class ClaudeStreamEvent(
+    val type: String,
+    val message: ClaudeApiResponse? = null,
+    val delta: ClaudeDelta? = null,
+    val usage: ClaudeUsage? = null,
+    val error: ClaudeError? = null
+)
+
+@Serializable
+data class ClaudeDelta(
+    val type: String? = null,
+    val text: String? = null
+)
+
+@Serializable
+data class ClaudeError(
+    val type: String? = null,
+    val message: String? = null
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIEW MODEL
+// SECURE STORAGE
 // ═══════════════════════════════════════════════════════════════════════════════
+
+class SecureApiKeyStore(context: Context) {
+    private val masterKey = MasterKey.Builder(context)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
+
+    private val encryptedPrefs = EncryptedSharedPreferences.create(
+        context,
+        "claude_secure_prefs",
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+    )
+
+    fun saveApiKey(key: String) {
+        if (validateApiKey(key)) {
+            encryptedPrefs.edit().putString("api_key", key).apply()
+        }
+    }
+
+    fun getApiKey(): String {
+        return encryptedPrefs.getString("api_key", "") ?: ""
+    }
+
+    fun clearApiKey() {
+        encryptedPrefs.edit().remove("api_key").apply()
+    }
+
+    private fun validateApiKey(key: String): Boolean {
+        return key.startsWith("sk-ant-") && key.length > 20
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// REPOSITORY (Optimized for Large Files)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+sealed class ClaudeResult {
+    data class Success(val response: String, val usage: ClaudeUsage?) : ClaudeResult()
+    data class Streaming(val chunk: String, val totalResponse: String) : ClaudeResult()
+    data class Error(val message: String, val code: Int? = null) : ClaudeResult()
+    data object Loading : ClaudeResult()
+}
+
+class ClaudeRepository(private val apiKey: String) {
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        isLenient = true
+    }
+
+    private val client = HttpClient(OkHttp) {
+        install(ContentNegotiation) {
+            json(json)
+        }
+        install(Logging) {
+            level = LogLevel.INFO
+            logger = object : Logger {
+                override fun log(message: String) {
+                    if (!message.contains("sk-ant-")) {
+                        println("Ktor: $message")
+                    }
+                }
+            }
+        }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 3_600_000 // 60 минут
+            connectTimeoutMillis = 180_000   // 3 минуты
+            socketTimeoutMillis = 3_600_000  // 60 минут
+        }
+        install(HttpRequestRetry) {
+            retryOnServerErrors(maxRetries = 3)
+            exponentialDelay()
+        }
+        engine {
+            config {
+                retryOnConnectionFailure(true)
+                connectionPool(
+                    maxIdleConnections = 5,
+                    keepAliveDuration = 5,
+                    java.util.concurrent.TimeUnit.MINUTES
+                )
+            }
+        }
+    }
+
+    suspend fun sendMessage(
+        messages: List<ClaudeMessage>,
+        systemPrompt: String? = null,
+        onProgress: suspend (ClaudeResult) -> Unit
+    ) {
+        try {
+            onProgress(ClaudeResult.Loading)
+
+            val request = ClaudeApiRequest(
+                messages = messages,
+                system = systemPrompt,
+                maxTokens = calculateMaxTokens(messages),
+                stream = true
+            )
+
+            val response: HttpResponse = client.post("https://api.anthropic.com/v1/messages") {
+                header("x-api-key", apiKey)
+                header("anthropic-version", "2023-06-01")
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+
+            if (response.status.value !in 200..299) {
+                handleHttpError(response, onProgress)
+                return
+            }
+
+            handleStreamingResponse(response, onProgress)
+
+        } catch (e: HttpRequestTimeoutException) {
+            onProgress(ClaudeResult.Error("⏰ Превышено время ожидания (60 мин). Проверьте соединение"))
+        } catch (e: kotlinx.io.IOException) {
+            onProgress(ClaudeResult.Error("🌐 Проблема с сетью: ${e.message}"))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            onProgress(ClaudeResult.Error("❌ ${e.javaClass.simpleName}: ${e.message}"))
+        }
+    }
+
+    private suspend fun handleStreamingResponse(
+        response: HttpResponse,
+        onProgress: suspend (ClaudeResult) -> Unit
+    ) {
+        // ✅ Увеличенные буферы для 100k output
+        val fullResponse = StringBuilder(500_000)
+        var inputTokens = 0
+        var outputTokens = 0
+        
+        // ✅ Throttling - обновляем UI не чаще 200мс
+        var lastUpdateTime = System.currentTimeMillis()
+        val throttleMs = 200L
+
+        val channel: ByteReadChannel = response.bodyAsChannel()
+        
+        while (!channel.isClosedForRead) {
+            val line = channel.readUTF8Line() ?: break
+            
+            if (!line.startsWith("data: ")) continue
+            val data = line.removePrefix("data: ").trim()
+            
+            // ✅ Правильная обработка [DONE]
+            if (data.isEmpty() || data == "[DONE]") break
+
+            try {
+                val event = json.decodeFromString<ClaudeStreamEvent>(data)
+
+                when (event.type) {
+                    "message_start" -> {
+                        inputTokens = event.message?.usage?.inputTokens ?: 0
+                    }
+                    
+                    "content_block_delta" -> {
+                        val text = event.delta?.text
+                        
+                        if (text != null) {
+                            fullResponse.append(text)
+                        }
+                        
+                        // ✅ Throttling: только значимые чанки
+                        val now = System.currentTimeMillis()
+                        if (text != null && text.length > 20 && now - lastUpdateTime > throttleMs) {
+                            onProgress(
+                                ClaudeResult.Streaming(
+                                    chunk = text,
+                                    totalResponse = fullResponse.toString()
+                                )
+                            )
+                            lastUpdateTime = now
+                        }
+                    }
+                    
+                    "message_delta" -> {
+                        outputTokens = event.usage?.outputTokens ?: 0
+                    }
+                    
+                    "message_stop" -> {
+                        onProgress(
+                            ClaudeResult.Success(
+                                response = fullResponse.toString(),
+                                usage = ClaudeUsage(inputTokens, outputTokens)
+                            )
+                        )
+                    }
+                    
+                    "error" -> {
+                        val errorMsg = event.error?.message ?: "Неизвестная ошибка"
+                        onProgress(ClaudeResult.Error("API Error: $errorMsg"))
+                        break
+                    }
+                }
+            } catch (e: Exception) {
+                continue
+            }
+        }
+    }
+
+    private suspend fun handleHttpError(
+        response: HttpResponse,
+        onProgress: suspend (ClaudeResult) -> Unit
+    ) {
+        val errorBody = try {
+            response.bodyAsText()
+        } catch (e: Exception) {
+            "Не удалось прочитать тело ошибки"
+        }
+
+        val errorMessage = when (response.status.value) {
+            401 -> "❌ Неверный API ключ"
+            429 -> "❌ Превышен лимит запросов. Подождите"
+            413 -> "❌ Запрос слишком большой. Уменьшите файл"
+            500, 502, 503, 529 -> "❌ Сервер перегружен (${response.status.value})"
+            else -> "❌ HTTP ${response.status.value}:\n\n$errorBody"
+        }
+
+        onProgress(ClaudeResult.Error(errorMessage, response.status.value))
+    }
+
+    private fun calculateMaxTokens(messages: List<ClaudeMessage>): Int {
+        val totalInputLength = messages.sumOf { it.content.length }
+        // ✅ Более точная оценка для русского текста и кода: /4.0
+        val estimatedInputTokens = (totalInputLength / 4.0).toInt()
+
+        // ✅ Beta 1M context window (активируй в console.anthropic.com)
+        val contextLimit = 1_000_000  // Fallback: 200_000 для стандартного режима
+        val maxOutput = minOf(128_000, contextLimit - estimatedInputTokens)
+
+        // ✅ Защита от нуля (для 200k input в стандартном режиме)
+        return maxOf(1000, maxOutput).also {
+            println("📊 Estimated input: $estimatedInputTokens tokens → Max output: $it")
+        }
+    }
+
+    fun close() {
+        client.close()
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// FILE MANAGER (Optimized for Large Files)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+sealed class FileResult {
+    data class Success(val content: String, val sizeBytes: Long, val estimatedTokens: Int) : FileResult()
+    data class Error(val message: String) : FileResult()
+}
+
+class SecureFileManager(private val context: Context) {
+
+    private val maxFileSizeBytes = 5 * 1024 * 1024L // 5 МБ
+
+    suspend fun loadFileFromUri(
+        uri: Uri,
+        onProgress: (Int) -> Unit = {}
+    ): FileResult = withContext(Dispatchers.IO) {
+        try {
+            val contentResolver = context.contentResolver
+            
+            // ✅ MIME-проверка: только текстовые файлы
+            val mimeType = contentResolver.getType(uri) ?: ""
+            if (!mimeType.startsWith("text/") && 
+                mimeType != "application/json" && 
+                mimeType != "application/x-kotlin" &&
+                !mimeType.contains("kotlin") &&
+                !mimeType.contains("java")) {
+                return@withContext FileResult.Error(
+                    "❌ Только текстовые файлы (.txt, .kt, .json, .md и т.д.)\nПолучен: $mimeType"
+                )
+            }
+            
+            val fileSize = contentResolver.openFileDescriptor(uri, "r")?.use { descriptor ->
+                descriptor.statSize
+            } ?: 0L
+
+            if (fileSize > maxFileSizeBytes) {
+                val sizeMB = fileSize / (1024.0 * 1024.0)
+                return@withContext FileResult.Error(
+                    "❌ Файл слишком большой (%.2f МБ). Максимум: 5 МБ".format(sizeMB)
+                )
+            }
+
+            // ✅ Точное чтение по байтам
+            val charBuffer = StringBuilder((fileSize / 2).toInt())
+            var bytesReadTotal = 0L
+
+            contentResolver.openInputStream(uri)?.use { inputStream ->
+                val buffer = ByteArray(8192)
+                var bytesRead: Int
+                
+                while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    bytesReadTotal += bytesRead
+                    charBuffer.append(String(buffer, 0, bytesRead, Charsets.UTF_8))
+                    
+                    // ✅ Точный прогресс
+                    val progress = ((bytesReadTotal * 100) / fileSize).toInt().coerceIn(0, 100)
+                    onProgress(progress)
+                }
+            }
+
+            // ✅ Точная оценка токенов: /4.0 для Kotlin/русского
+            val estimatedTokens = (charBuffer.length / 4.0).toInt()
+
+            FileResult.Success(
+                content = charBuffer.toString(),
+                sizeBytes = fileSize,
+                estimatedTokens = estimatedTokens
+            )
+
+        } catch (e: OutOfMemoryError) {
+            FileResult.Error("❌ Недостаточно памяти. Закройте другие приложения и повторите")
+        } catch (e: Exception) {
+            FileResult.Error("❌ Ошибка чтения файла: ${e.message}")
+        }
+    }
+
+    suspend fun saveResponse(content: String): Result<File> = withContext(Dispatchers.IO) {
+        try {
+            val downloadsDir = context.getExternalFilesDir(null)
+                ?: return@withContext Result.failure(Exception("Директория недоступна"))
+
+            val filename = "opus46_${System.currentTimeMillis()}.md"
+            val file = File(downloadsDir, filename)
+            
+            file.writeText(content, Charsets.UTF_8)
+            Result.success(file)
+
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VIEW MODEL (Optimized for Large Files)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+data class ClaudeUiState(
+    val apiKey: String = "",
+    val fileUri: Uri? = null,
+    val fileContent: String = "",
+    val fileInfo: String = "",
+    val query: String = "",
+    val response: String = "",
+    val status: String = "Готов к работе",
+    val isLoading: Boolean = false,
+    val loadingProgress: Int = 0,
+    val progress: String = "",
+    val useSystemPrompt: Boolean = false,
+    val conversationCount: Int = 0,
+    val isLargeFileMode: Boolean = false,
+    val estimatedTokens: Int = 0,
+    val needsBetaMode: Boolean = false
+)
 
 @HiltViewModel
 class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
 
-    private val _apiKey = MutableStateFlow("")
-    val apiKey: StateFlow<String> = _apiKey
+    private val _uiState = MutableStateFlow(ClaudeUiState())
+    val uiState: StateFlow<ClaudeUiState> = _uiState.asStateFlow()
 
-    private val _filePath = MutableStateFlow("")
-    val filePath: StateFlow<String> = _filePath
-
-    private val _fileContent = MutableStateFlow("")
-    val fileContent: StateFlow<String> = _fileContent
-
-    private val _query = MutableStateFlow("")
-    val query: StateFlow<String> = _query
-
-    private val _response = MutableStateFlow("")
-    val response: StateFlow<String> = _response
-
-    private val _status = MutableStateFlow("Готов к работе")
-    val status: StateFlow<String> = _status
-
-    private val _isLoading = MutableStateFlow(false)
-    val isLoading: StateFlow<Boolean> = _isLoading
-
-    private val _progress = MutableStateFlow("")
-    val progress: StateFlow<String> = _progress
-
-    private val conversationHistory = mutableListOf<ClaudeMessage>()
-
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-    }
-
+    private lateinit var secureStorage: SecureApiKeyStore
+    private lateinit var fileManager: SecureFileManager
+    
+    private var repository: ClaudeRepository? = null
+    private var conversationHistory = mutableListOf<ClaudeMessage>()
     private var currentJob: Job? = null
 
-    fun setApiKey(key: String) {
-        _apiKey.value = key
+    // ✅ Снижен порог для Large Mode
+    private val LARGE_FILE_THRESHOLD = 100_000  // токенов
+    private val BETA_MODE_THRESHOLD = 180_000   // требует beta 1M
+
+    fun initialize(context: Context) {
+        secureStorage = SecureApiKeyStore(context)
+        fileManager = SecureFileManager(context)
+        
+        val savedKey = secureStorage.getApiKey()
+        if (savedKey.isNotEmpty()) {
+            _uiState.update { it.copy(apiKey = savedKey) }
+            initializeRepository(savedKey)
+        }
     }
 
-    fun setFilePath(path: String) {
-        _filePath.value = path
+    fun setApiKey(key: String) {
+        _uiState.update { it.copy(apiKey = key) }
+        
+        if (key.startsWith("sk-ant-") && key.length > 20) {
+            secureStorage.saveApiKey(key)
+            initializeRepository(key)
+            _uiState.update { it.copy(status = "✅ API ключ сохранен") }
+        }
     }
 
     fun setQuery(text: String) {
-        _query.value = text
+        _uiState.update { it.copy(query = text) }
     }
 
-    fun loadFile() {
+    fun toggleSystemPrompt() {
+        _uiState.update { it.copy(useSystemPrompt = !it.useSystemPrompt) }
+    }
+
+    fun loadFileFromUri(uri: Uri) {
         viewModelScope.launch {
-            try {
-                val path = _filePath.value.trim()
-                if (path.isEmpty()) {
-                    _status.value = "❌ Укажите путь к файлу"
-                    return@launch
-                }
+            _uiState.update { 
+                it.copy(
+                    status = "📂 Загрузка файла...", 
+                    fileUri = uri,
+                    loadingProgress = 0
+                ) 
+            }
 
-                _status.value = "📂 Загрузка файла..."
-
-                withContext(Dispatchers.IO) {
-                    val file = File(path)
-                    if (!file.exists()) {
-                        _status.value = "❌ Файл не найден: $path"
-                        return@withContext
-                    }
-
-                    val sizeInKB = file.length() / 1024.0
-                    val sizeInMB = sizeInKB / 1024.0
-
-                    if (sizeInMB > 3.0) {
-                        _status.value = "❌ Файл слишком большой (%.1f МБ, макс 3 МБ)".format(sizeInMB)
-                        return@withContext
-                    }
-
-                    // ✅ ИСПРАВЛЕНО: убран второй параметр
-                    val content = file.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    _fileContent.value = content
+            when (val result = fileManager.loadFileFromUri(uri) { progress ->
+                _uiState.update { it.copy(loadingProgress = progress) }
+            }) {
+                is FileResult.Success -> {
+                    val isLarge = result.estimatedTokens > LARGE_FILE_THRESHOLD
+                    val needsBeta = result.estimatedTokens > BETA_MODE_THRESHOLD
                     
-                    val estimatedTokens = (content.length / 3.5).toInt()
-                    _status.value = "✅ Загружен: ${file.name} (%.2f МБ, ~%,d токенов)".format(
-                        sizeInMB,
-                        estimatedTokens
-                    )
+                    _uiState.update {
+                        it.copy(
+                            fileContent = result.content,
+                            estimatedTokens = result.estimatedTokens,
+                            isLargeFileMode = isLarge,
+                            needsBetaMode = needsBeta,
+                            fileInfo = "✅ %.2f МБ (~%,d токенов)%s".format(
+                                result.sizeBytes / (1024.0 * 1024.0),
+                                result.estimatedTokens,
+                                if (isLarge) " - LARGE MODE" else ""
+                            ),
+                            status = when {
+                                needsBeta -> "⚠️ Требуется Beta 1M context (console.anthropic.com)"
+                                isLarge -> "⚠️ Большой файл! История диалога отключена"
+                                else -> "✅ Файл загружен"
+                            },
+                            loadingProgress = 100
+                        )
+                    }
                 }
+                is FileResult.Error -> {
+                    _uiState.update { 
+                        it.copy(
+                            status = result.message,
+                            fileContent = "",
+                            fileInfo = "",
+                            loadingProgress = 0
+                        ) 
+                    }
+                }
+            }
+        }
+    }
 
-            } catch (e: OutOfMemoryError) {
-                _status.value = "❌ Недостаточно памяти"
-            } catch (e: Exception) {
-                _status.value = "❌ Ошибка: ${e.message}"
+    fun sendQuery() {
+        if (repository == null) {
+            _uiState.update { it.copy(status = "❌ Сначала введите API ключ") }
+            return
+        }
+
+        if (_uiState.value.query.isBlank()) {
+            _uiState.update { it.copy(status = "❌ Введите запрос") }
+            return
+        }
+
+        currentJob?.cancel()
+        currentJob = viewModelScope.launch {
+            val state = _uiState.value
+            
+            var userMessage = state.query
+            if (state.fileContent.isNotEmpty()) {
+                userMessage = "${state.query}\n\n```kotlin\n${state.fileContent}\n```"
+            }
+
+            // ✅ В Large File Mode НЕ сохраняем историю
+            val messages = if (state.isLargeFileMode) {
+                listOf(ClaudeMessage("user", userMessage))
+            } else {
+                conversationHistory.add(ClaudeMessage("user", userMessage))
+                conversationHistory.toList()
+            }
+
+            _uiState.update {
+                it.copy(
+                    isLoading = true,
+                    response = "",
+                    status = when {
+                        state.needsBetaMode -> "🚀 Beta 1M Mode (активируйте в console)"
+                        state.isLargeFileMode -> "🚀 Large File Mode: без истории"
+                        else -> "🚀 Подключение к Opus 4.6..."
+                    },
+                    progress = if (state.useSystemPrompt) "📝 System Prompt" else ""
+                )
+            }
+
+            repository?.sendMessage(
+                messages = messages,
+                systemPrompt = if (state.useSystemPrompt) {
+                    "Think step-by-step before answering. Break down complex problems into smaller parts."
+                } else null
+            ) { result ->
+                when (result) {
+                    is ClaudeResult.Loading -> {
+                        _uiState.update { it.copy(status = "⚡ Отправка запроса...") }
+                    }
+                    is ClaudeResult.Streaming -> {
+                        _uiState.update {
+                            it.copy(
+                                response = result.totalResponse,
+                                status = "⚡ Получение ответа...",
+                                progress = "${result.totalResponse.length} символов"
+                            )
+                        }
+                    }
+                    is ClaudeResult.Success -> {
+                        // ✅ Сохраняем в историю только если НЕ Large Mode
+                        if (!state.isLargeFileMode) {
+                            conversationHistory.add(ClaudeMessage("assistant", result.response))
+                        }
+                        
+                        val usage = result.usage
+                        _uiState.update {
+                            it.copy(
+                                response = result.response,
+                                isLoading = false,
+                                status = "✅ Готово! In: %,d | Out: %,d токенов".format(
+                                    usage?.inputTokens ?: 0,
+                                    usage?.outputTokens ?: 0
+                                ),
+                                progress = if (state.isLargeFileMode) {
+                                    "Large Mode"
+                                } else {
+                                    "Сообщений: ${conversationHistory.size / 2}"
+                                },
+                                conversationCount = if (state.isLargeFileMode) 0 else conversationHistory.size / 2
+                            )
+                        }
+
+                        // ✅ Сохранение с проверкой
+                        fileManager.saveResponse(result.response)
+                            .onSuccess { 
+                                println("✅ Saved to: ${it.absolutePath}")
+                            }
+                            .onFailure { 
+                                println("❌ Save error: ${it.message}")
+                            }
+                    }
+                    is ClaudeResult.Error -> {
+                        if (!state.isLargeFileMode && conversationHistory.isNotEmpty()) {
+                            conversationHistory.removeAt(conversationHistory.size - 1)
+                        }
+                        
+                        _uiState.update {
+                            it.copy(
+                                response = result.message,
+                                isLoading = false,
+                                status = "❌ Ошибка"
+                            )
+                        }
+                    }
+                }
             }
         }
     }
 
     fun cancelRequest() {
         currentJob?.cancel()
-        currentJob = null
-        _isLoading.value = false
-        _status.value = "⛔ Отменено"
-    }
-
-    fun sendQuery() {
-        currentJob?.cancel()
-        currentJob = viewModelScope.launch {
-            try {
-                val key = _apiKey.value.trim()
-                if (key.isEmpty()) {
-                    _status.value = "❌ Введите API ключ"
-                    return@launch
-                }
-
-                val queryText = _query.value.trim()
-                if (queryText.isEmpty()) {
-                    _status.value = "❌ Введите запрос"
-                    return@launch
-                }
-
-                _isLoading.value = true
-                _response.value = ""
-                _progress.value = "Подготовка..."
-                _status.value = "🚀 Подключение к Opus 4.6..."
-
-                withContext(Dispatchers.IO) {
-                    var userMessage = queryText
-                    val fileContent = _fileContent.value.trim()
-
-                    if (fileContent.isNotEmpty()) {
-                        userMessage = "$queryText\n\n```kotlin\n$fileContent\n```"
-                    }
-
-                    conversationHistory.add(ClaudeMessage("user", userMessage))
-
-                    val inputLength = userMessage.length
-                    val estimatedInputTokens = (inputLength / 3.5).toInt()
-
-                    val adaptiveMaxTokens = when {
-                        estimatedInputTokens > 700_000 -> 64000
-                        estimatedInputTokens > 500_000 -> 100000
-                        estimatedInputTokens > 300_000 -> 128000
-                        estimatedInputTokens > 150_000 -> 128000
-                        else -> 128000
-                    }
-
-                    val request = ClaudeApiRequest(
-                        model = "claude-opus-4-6",
-                        max_tokens = adaptiveMaxTokens,
-                        messages = conversationHistory.toList(),
-                        stream = true
-                    )
-
-                    val requestBody = json.encodeToString(request)
-                    val bodyBytes = requestBody.toByteArray(Charsets.UTF_8)
-
-                    _status.value = "📦 Отправка: %.2f МБ (~%,d токенов)".format(
-                        bodyBytes.size / (1024.0 * 1024.0),
-                        estimatedInputTokens
-                    )
-
-                    val url = java.net.URL("https://api.anthropic.com/v1/messages")
-                    val connection = url.openConnection() as java.net.HttpURLConnection
-
-                    connection.requestMethod = "POST"
-                    connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    connection.setRequestProperty("x-api-key", key)
-                    connection.setRequestProperty("anthropic-version", "2023-06-01")
-                    connection.setRequestProperty("Accept", "text/event-stream")
-                    connection.setRequestProperty("Content-Length", bodyBytes.size.toString())
-                    
-                    connection.doOutput = true
-                    connection.doInput = true
-                    connection.useCaches = false
-                    connection.connectTimeout = 120_000
-                    connection.readTimeout = 1_800_000
-                    connection.setChunkedStreamingMode(65536)
-
-                    val startUpload = System.currentTimeMillis()
-                    
-                    // ✅ ИСПРАВЛЕНО: BufferedOutputStream с правильным буфером
-                    BufferedOutputStream(connection.outputStream, 131072).use { buffered ->
-                        buffered.write(bodyBytes)
-                        buffered.flush()
-                    }
-
-                    val uploadTime = (System.currentTimeMillis() - startUpload) / 1000.0
-                    _status.value = "✅ Отправлено за %.1f сек".format(uploadTime)
-
-                    val responseCode = connection.responseCode
-
-                    if (responseCode == 200) {
-                        _status.value = "⚡ Streaming ответа..."
-
-                        val fullResponse = StringBuilder(300000)
-                        var inputTokens = 0
-                        var outputTokens = 0
-                        var lastUpdateTime = System.currentTimeMillis()
-                        var chunkCounter = 0
-
-                        // ✅ ИСПРАВЛЕНО: bufferedReader без второго параметра
-                        connection.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines ->
-                            for (line in lines) {
-                                if (!_isLoading.value) break
-
-                                if (!line.startsWith("data: ")) continue
-                                val data = line.removePrefix("data: ").trim()
-                                if (data.isEmpty() || data == "[DONE]") continue
-
-                                try {
-                                    val event = json.parseToJsonElement(data).jsonObject
-                                    val type = event["type"]?.jsonPrimitive?.content
-
-                                    when (type) {
-                                        "message_start" -> {
-                                            val message = event["message"]?.jsonObject
-                                            val usage = message?.get("usage")?.jsonObject
-                                            inputTokens = usage?.get("input_tokens")?.jsonPrimitive?.int ?: 0
-                                            _status.value = "⚡ Streaming... In: %,d tok".format(inputTokens)
-                                            _progress.value = "In: %,d".format(inputTokens)
-                                        }
-
-                                        "content_block_delta" -> {
-                                            val delta = event["delta"]?.jsonObject
-                                            val text = delta?.get("text")?.jsonPrimitive?.content
-                                            if (text != null) {
-                                                fullResponse.append(text)
-                                                chunkCounter++
-
-                                                val now = System.currentTimeMillis()
-                                                if (now - lastUpdateTime > 50 || chunkCounter >= 10) {
-                                                    _response.value = fullResponse.toString()
-                                                    val currentTokens = (fullResponse.length / 3.5).toInt()
-                                                    _progress.value = "Out: %,d символов (~%,d tok)".format(
-                                                        fullResponse.length,
-                                                        currentTokens
-                                                    )
-                                                    lastUpdateTime = now
-                                                    chunkCounter = 0
-                                                }
-                                            }
-                                        }
-
-                                        "message_delta" -> {
-                                            val usage = event["usage"]?.jsonObject
-                                            outputTokens = usage?.get("output_tokens")?.jsonPrimitive?.int ?: 0
-                                        }
-
-                                        "message_stop" -> {
-                                            _response.value = fullResponse.toString()
-                                        }
-
-                                        "error" -> {
-                                            val error = event["error"]?.jsonObject
-                                            val errorType = error?.get("type")?.jsonPrimitive?.content
-                                            val errorMessage = error?.get("message")?.jsonPrimitive?.content
-                                            _response.value = "❌ API Error [$errorType]: $errorMessage"
-                                            _status.value = "❌ Ошибка API"
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    // Ignore
-                                }
-                            }
-                        }
-
-                        val responseText = fullResponse.toString()
-                        _response.value = responseText
-
-                        conversationHistory.add(ClaudeMessage("assistant", responseText))
-
-                        launch(Dispatchers.IO) {
-                            try {
-                                val downloadsDir = android.os.Environment
-                                    .getExternalStoragePublicDirectory(
-                                        android.os.Environment.DIRECTORY_DOWNLOADS
-                                    )
-                                val outputFile = File(
-                                    downloadsDir,
-                                    "opus46_${System.currentTimeMillis()}.md"
-                                )
-                                outputFile.writeText(responseText)
-                            } catch (e: Exception) {
-                                // Ignore
-                            }
-                        }
-
-                        val sizeKB = responseText.length / 1024.0
-                        _status.value = "✅ Готово! In:%,d Out:%,d (%.1f КБ)".format(
-                            inputTokens,
-                            outputTokens,
-                            sizeKB
-                        )
-                        _progress.value = "In:%,d Out:%,d".format(inputTokens, outputTokens)
-
-                    } else {
-                        val errorBody = try {
-                            connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "Нет деталей"
-                        } catch (e: Exception) {
-                            "Ошибка чтения"
-                        }
-
-                        _response.value = when (responseCode) {
-                            401 -> "❌ Неверный API ключ"
-                            429 -> "❌ Rate Limit. Подождите"
-                            413 -> "❌ Запрос слишком большой"
-                            500, 502, 503, 529 -> "❌ Перегрузка сервера ($responseCode)"
-                            else -> "❌ HTTP $responseCode:\n\n$errorBody"
-                        }
-                        _status.value = "❌ HTTP $responseCode"
-
-                        if (conversationHistory.isNotEmpty()) {
-                            conversationHistory.removeAt(conversationHistory.size - 1)
-                        }
-                    }
-                }
-
-            } catch (e: java.net.SocketTimeoutException) {
-                _response.value = "⏰ Таймаут"
-                _status.value = "⏰ Таймаут"
-                if (conversationHistory.isNotEmpty()) {
-                    conversationHistory.removeAt(conversationHistory.size - 1)
-                }
-            } catch (e: OutOfMemoryError) {
-                _response.value = "❌ Недостаточно памяти"
-                _status.value = "❌ OOM"
-                if (conversationHistory.isNotEmpty()) {
-                    conversationHistory.removeAt(conversationHistory.size - 1)
-                }
-            } catch (e: kotlinx.coroutines.CancellationException) {
-                _status.value = "⛔ Отменено"
-                if (conversationHistory.isNotEmpty()) {
-                    conversationHistory.removeAt(conversationHistory.size - 1)
-                }
-            } catch (e: Exception) {
-                _response.value = "❌ ${e.javaClass.simpleName}: ${e.message}"
-                _status.value = "❌ Ошибка"
-                if (conversationHistory.isNotEmpty()) {
-                    conversationHistory.removeAt(conversationHistory.size - 1)
-                }
-            } finally {
-                _isLoading.value = false
-            }
+        _uiState.update {
+            it.copy(
+                isLoading = false,
+                status = "⛔ Отменено"
+            )
         }
     }
 
     fun clearHistory() {
         conversationHistory.clear()
-        _response.value = ""
-        _progress.value = ""
-        _status.value = "🗑️ История очищена"
+        _uiState.update {
+            it.copy(
+                response = "",
+                progress = "",
+                status = "🗑️ История очищена",
+                conversationCount = 0
+            )
+        }
+    }
+
+    private fun initializeRepository(apiKey: String) {
+        repository?.close()
+        repository = ClaudeRepository(apiKey)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        repository?.close()
+        currentJob?.cancel()
+        // ✅ Только очистка данных, без System.gc()
+        conversationHistory.clear()
+        _uiState.update { it.copy(fileContent = "", response = "") }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UI COMPONENTS (Optimized Rendering)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+data class CodeLine(
+    val index: Int,
+    val text: String,
+    val isCode: Boolean
+)
+
+@Composable
+fun OptimizedResponseViewer(
+    content: String,
+    modifier: Modifier = Modifier
+) {
+    val lines = remember(content) {
+        val allLines = content.lines()
+        // ✅ Для 100k output: показываем последние 2000 строк
+        val displayLines = if (allLines.size > 2000) {
+            allLines.takeLast(2000)
+        } else {
+            allLines
+        }
+        
+        // ✅ Парсинг code blocks
+        var inCodeBlock = false
+        displayLines.mapIndexed { index, line ->
+            if (line.trimStart().startsWith("```")) {
+                inCodeBlock = !inCodeBlock
+            }
+            CodeLine(index, line, inCodeBlock)
+        }
+    }
+    
+    val listState = rememberLazyListState()
+    
+    LaunchedEffect(lines.size) {
+        if (lines.size > 10) {
+            listState.animateScrollToItem(maxOf(0, lines.size - 1))
+        }
+    }
+    
+    LazyColumn(
+        state = listState,
+        modifier = modifier
+    ) {
+        items(
+            items = lines,
+            key = { it.index }
+        ) { line ->
+            SelectionContainer {
+                Text(
+                    text = line.text,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = if (line.isCode) FontFamily.Monospace else FontFamily.Default,
+                        lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.3f
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 1.dp)
+                        .then(
+                            if (line.isCode) {
+                                Modifier
+                                    .background(Color(0xFF1E1E1E))
+                                    .padding(horizontal = 4.dp)
+                            } else Modifier
+                        ),
+                    color = if (line.isCode) Color(0xFFD4D4D4) else Color.Unspecified
+                )
+            }
+        }
     }
 }
 
@@ -430,27 +801,26 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
 // UI SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ClaudeHelperScreen(
     onBack: () -> Unit,
     viewModel: ClaudeHelperViewModel = viewModel()
 ) {
-    val apiKey by viewModel.apiKey.collectAsState()
-    val filePath by viewModel.filePath.collectAsState()
-    val fileContent by viewModel.fileContent.collectAsState()
-    val query by viewModel.query.collectAsState()
-    val response by viewModel.response.collectAsState()
-    val status by viewModel.status.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val progress by viewModel.progress.collectAsState()
-
+    val context = LocalContext.current
+    val uiState by viewModel.uiState.collectAsState()
     val clipboardManager = LocalClipboardManager.current
-    val scrollState = rememberScrollState()
 
-    LaunchedEffect(response) {
-        if (response.isNotEmpty() && isLoading) {
-            scrollState.animateScrollTo(scrollState.maxValue)
-        }
+    var showApiKey by remember { mutableStateOf(false) }
+    
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let { viewModel.loadFileFromUri(it) }
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.initialize(context)
     }
 
     Scaffold(
@@ -459,9 +829,9 @@ fun ClaudeHelperScreen(
                 title = {
                     Column {
                         Text("Claude Opus 4.6 🚀")
-                        if (progress.isNotEmpty()) {
+                        if (uiState.progress.isNotEmpty()) {
                             Text(
-                                progress,
+                                uiState.progress,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
                             )
@@ -484,26 +854,11 @@ fun ClaudeHelperScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .verticalScroll(scrollState)
-                .padding(16.dp),
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Card {
-                Column(Modifier.padding(16.dp)) {
-                    Text("🔑 API Ключ", style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = apiKey,
-                        onValueChange = viewModel::setApiKey,
-                        label = { Text("Anthropic API Key") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        placeholder = { Text("sk-ant-...") }
-                    )
-                }
-            }
-
+            // API KEY CARD
             Card {
                 Column(Modifier.padding(16.dp)) {
                     Row(
@@ -511,39 +866,89 @@ fun ClaudeHelperScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("📄 Файл (до 3 МБ)", style = MaterialTheme.typography.titleMedium)
+                        Text("🔑 API Ключ", style = MaterialTheme.typography.titleMedium)
+                        IconButton(onClick = { showApiKey = !showApiKey }) {
+                            Icon(
+                                if (showApiKey) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                "Показать/скрыть"
+                            )
+                        }
+                    }
+                    
+                    Spacer(Modifier.height(8.dp))
+                    
+                    OutlinedTextField(
+                        value = uiState.apiKey,
+                        onValueChange = viewModel::setApiKey,
+                        label = { Text("Anthropic API Key") },
+                        visualTransformation = if (showApiKey) {
+                            VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        placeholder = { Text("sk-ant-...") },
+                        isError = uiState.apiKey.isNotEmpty() && !uiState.apiKey.startsWith("sk-ant-")
+                    )
+                    
+                    if (uiState.apiKey.isNotEmpty() && !uiState.apiKey.startsWith("sk-ant-")) {
+                        Text(
+                            "⚠️ API ключ должен начинаться с sk-ant-",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            // FILE CARD
+            Card {
+                Column(Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("📄 Файл (до 5 МБ)", style = MaterialTheme.typography.titleMedium)
                         Button(
-                            onClick = viewModel::loadFile,
-                            enabled = !isLoading
+                            onClick = {
+                                filePickerLauncher.launch(arrayOf("*/*"))
+                            },
+                            enabled = !uiState.isLoading
                         ) {
                             Icon(Icons.Default.FileOpen, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
-                            Text("Загрузить")
+                            Text("Выбрать")
                         }
                     }
 
-                    Spacer(Modifier.height(8.dp))
-
-                    OutlinedTextField(
-                        value = filePath,
-                        onValueChange = viewModel::setFilePath,
-                        label = { Text("Путь к файлу") },
-                        placeholder = { Text("/storage/emulated/0/Download/code.kt") },
-                        modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
-                    )
-
-                    if (fileContent.isNotEmpty()) {
+                    if (uiState.loadingProgress > 0 && uiState.loadingProgress < 100) {
                         Spacer(Modifier.height(8.dp))
-                        val sizeMB = fileContent.length / (1024.0 * 1024.0)
-                        val tokens = (fileContent.length / 3.5).toInt()
+                        LinearProgressIndicator(
+                            progress = { uiState.loadingProgress / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Загрузка: ${uiState.loadingProgress}%",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+
+                    if (uiState.fileInfo.isNotEmpty()) {
+                        Spacer(Modifier.height(8.dp))
                         Card(
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                                containerColor = if (uiState.isLargeFileMode) {
+                                    MaterialTheme.colorScheme.errorContainer
+                                } else {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                }
                             )
                         ) {
                             Text(
-                                "✅ %.2f МБ (~%,d токенов)".format(sizeMB, tokens),
+                                uiState.fileInfo,
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.padding(8.dp)
                             )
@@ -552,19 +957,123 @@ fun ClaudeHelperScreen(
                 }
             }
 
+            // ✅ Warning для Beta Mode
+            if (uiState.needsBetaMode) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "🚨 Требуется Beta 1M Context",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "~${"%,d".format(uiState.estimatedTokens)} токенов input",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "Output ограничен 128k (стандарт) или 900k (beta)",
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Text(
+                            "Активируйте beta в console.anthropic.com",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            } else if (uiState.isLargeFileMode) {
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                "⚠️ Режим больших файлов",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                            Text(
+                                "~${"%,d".format(uiState.estimatedTokens)} токенов. История отключена.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "Ответ может занять 3-5 минут. Используйте Wi-Fi.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            // QUERY CARD
             Card {
                 Column(Modifier.padding(16.dp)) {
-                    Text("💬 Запрос", style = MaterialTheme.typography.titleMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("💬 Запрос", style = MaterialTheme.typography.titleMedium)
+                        
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(
+                                checked = uiState.useSystemPrompt,
+                                onCheckedChange = { viewModel.toggleSystemPrompt() },
+                                enabled = !uiState.isLoading
+                            )
+                            Text(
+                                "📝 Step-by-step",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
+                    }
+                    
+                    if (uiState.useSystemPrompt) {
+                        Text(
+                            "💡 Пошаговое рассуждение для сложных задач",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+                    
                     Spacer(Modifier.height(8.dp))
+                    
                     OutlinedTextField(
-                        value = query,
+                        value = uiState.query,
                         onValueChange = viewModel::setQuery,
                         label = { Text("Что нужно сделать?") },
-                        placeholder = { Text("Проанализируй код") },
+                        placeholder = { Text("Проанализируй код и предложи улучшения") },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(120.dp),
-                        maxLines = 10
+                        maxLines = 10,
+                        enabled = !uiState.isLoading
                     )
 
                     Spacer(Modifier.height(12.dp))
@@ -573,7 +1082,7 @@ fun ClaudeHelperScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        if (isLoading) {
+                        if (uiState.isLoading) {
                             Button(
                                 onClick = viewModel::cancelRequest,
                                 colors = ButtonDefaults.buttonColors(
@@ -592,7 +1101,8 @@ fun ClaudeHelperScreen(
                         } else {
                             Button(
                                 onClick = viewModel::sendQuery,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                enabled = uiState.query.isNotEmpty() && uiState.apiKey.startsWith("sk-ant-")
                             ) {
                                 Icon(Icons.Default.Send, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(8.dp))
@@ -602,14 +1112,19 @@ fun ClaudeHelperScreen(
 
                         OutlinedButton(
                             onClick = viewModel::clearHistory,
-                            enabled = !isLoading
+                            enabled = !uiState.isLoading && (uiState.conversationCount > 0 || uiState.response.isNotEmpty())
                         ) {
                             Icon(Icons.Default.Delete, null, Modifier.size(18.dp))
+                            if (uiState.conversationCount > 0) {
+                                Spacer(Modifier.width(4.dp))
+                                Text("(${uiState.conversationCount})")
+                            }
                         }
                     }
                 }
             }
 
+            // RESPONSE CARD
             Card {
                 Column(Modifier.padding(16.dp)) {
                     Row(
@@ -617,19 +1132,19 @@ fun ClaudeHelperScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("🤖 Ответ", style = MaterialTheme.typography.titleMedium)
+                        Text("🤖 Ответ Opus 4.6", style = MaterialTheme.typography.titleMedium)
 
-                        if (response.isNotEmpty()) {
+                        if (uiState.response.isNotEmpty()) {
                             Row {
                                 IconButton(
                                     onClick = {
-                                        clipboardManager.setText(AnnotatedString(response))
+                                        clipboardManager.setText(AnnotatedString(uiState.response))
                                     }
                                 ) {
                                     Icon(Icons.Default.ContentCopy, "Копировать")
                                 }
                                 
-                                if (isLoading) {
+                                if (uiState.isLoading) {
                                     CircularProgressIndicator(
                                         Modifier.size(24.dp),
                                         strokeWidth = 2.dp
@@ -641,37 +1156,32 @@ fun ClaudeHelperScreen(
 
                     Spacer(Modifier.height(8.dp))
 
-                    if (response.isEmpty() && !isLoading) {
+                    if (uiState.response.isEmpty() && !uiState.isLoading) {
                         Text(
                             "Ответ появится здесь...",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                         )
                     } else {
-                        SelectionContainer {
-                            Text(
-                                text = response,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
-                                    lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.3f
-                                ),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 150.dp, max = 800.dp)
-                                    .verticalScroll(rememberScrollState())
-                            )
-                        }
+                        OptimizedResponseViewer(
+                            content = uiState.response,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 600.dp)
+                        )
                     }
                 }
             }
 
+            // STATUS CARD
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = when {
-                        status.startsWith("✅") -> MaterialTheme.colorScheme.primaryContainer
-                        status.startsWith("❌") || status.startsWith("⏰") ->
+                        uiState.status.startsWith("✅") -> MaterialTheme.colorScheme.primaryContainer
+                        uiState.status.startsWith("❌") || uiState.status.startsWith("⏰") ->
                             MaterialTheme.colorScheme.errorContainer
-                        status.startsWith("⚡") -> MaterialTheme.colorScheme.tertiaryContainer
+                        uiState.status.startsWith("⚡") || uiState.status.startsWith("🚀") ->
+                            MaterialTheme.colorScheme.tertiaryContainer
                         else -> MaterialTheme.colorScheme.secondaryContainer
                     }
                 )
@@ -680,7 +1190,7 @@ fun ClaudeHelperScreen(
                     Modifier.padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (isLoading) {
+                    if (uiState.isLoading) {
                         CircularProgressIndicator(
                             Modifier.size(16.dp),
                             strokeWidth = 2.dp
@@ -688,7 +1198,7 @@ fun ClaudeHelperScreen(
                         Spacer(Modifier.width(8.dp))
                     }
                     Text(
-                        status,
+                        uiState.status,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
