@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.Flow
  * - Статистика сеанса
  * - Поддержка кеш-токенов
  * - Метрики производительности
+ * - Добавлен метод getMessages() (alias для observeSession)
  * 
  * ✅ СОХРАНЕНО:
  * - Все существующие методы
@@ -27,7 +28,7 @@ import kotlinx.coroutines.flow.Flow
 abstract class ChatDao {
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ СУЩЕСТВУЮЩИЕ QUERIES (без изменений)
+    // ✅ СУЩЕСТВУЮЩИЕ QUERIES
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
@@ -36,6 +37,12 @@ abstract class ChatDao {
      */
     @Query("SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY created_at ASC")
     abstract fun observeSession(sessionId: String): Flow<List<ChatMessageEntity>>
+
+    /**
+     * ✅ ДОБАВЛЕНО: Alias для observeSession (используется в AnalyzerViewModel)
+     */
+    @Query("SELECT * FROM chat_messages WHERE session_id = :sessionId ORDER BY created_at ASC")
+    abstract fun getMessages(sessionId: String): Flow<List<ChatMessageEntity>>
 
     /**
      * Получить все сообщения сессии (one-shot).
