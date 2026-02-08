@@ -138,11 +138,8 @@ fun OpusIDENavigation(
             }
             
             composable(Screen.Analyzer.route) {
-                // ✅ ОБНОВЛЕНО: Передаём флаг в Analyzer
-                // Analyzer должен показать warning если sensitiveFeatureDisabled = true
-                AnalyzerScreen(
-                    sensitiveFeatureDisabled = sensitiveFeatureDisabled
-                )
+                // ✅ ИСПРАВЛЕНО: AnalyzerScreen не принимает параметр sensitiveFeatureDisabled
+                AnalyzerScreen()
             }
             
             composable(Screen.Settings.route) {
