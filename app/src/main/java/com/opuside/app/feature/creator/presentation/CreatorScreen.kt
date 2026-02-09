@@ -30,8 +30,7 @@ import com.opuside.app.core.util.detectLanguage
 
 @Composable
 fun CreatorScreen(
-    viewModel: CreatorViewModel = hiltViewModel(),
-    onNavigateToClaudeHelper: () -> Unit
+    viewModel: CreatorViewModel = hiltViewModel()
 ) {
     val currentOwner by viewModel.currentOwner.collectAsState()
     val currentRepo by viewModel.currentRepo.collectAsState()
@@ -110,8 +109,7 @@ fun CreatorScreen(
             onRefresh = viewModel::refresh,
             onNewFile = { showNewFileDialog = true },
             selectedFile = selectedFile,
-            onCloseFile = viewModel::closeFile,
-            onOpenClaudeHelper = onNavigateToClaudeHelper
+            onCloseFile = viewModel::closeFile
         )
 
         error?.let {
@@ -161,8 +159,7 @@ private fun TopBar(
     onRefresh: () -> Unit,
     onNewFile: () -> Unit,
     selectedFile: GitHubContent?,
-    onCloseFile: () -> Unit,
-    onOpenClaudeHelper: () -> Unit
+    onCloseFile: () -> Unit
 ) {
     Surface(tonalElevation = 2.dp) {
         Row(
@@ -180,25 +177,6 @@ private fun TopBar(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f)
                 )
-                
-                // КНОПКА CLAUDE AI HELPER
-                Button(
-                    onClick = onOpenClaudeHelper,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondary,
-                        contentColor = MaterialTheme.colorScheme.onSecondary
-                    ),
-                    modifier = Modifier.padding(end = 8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.AutoAwesome,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("Claude AI")
-                }
-                
             } else {
                 if (canGoBack) {
                     IconButton(onClick = onBack) {
@@ -222,15 +200,6 @@ private fun TopBar(
                         text = if (path.isEmpty()) "/" else "/$path",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                
-                // КНОПКА CLAUDE AI HELPER В РЕЖИМЕ БРАУЗЕРА
-                IconButton(onClick = onOpenClaudeHelper) {
-                    Icon(
-                        Icons.Default.AutoAwesome,
-                        "Claude AI Helper",
-                        tint = MaterialTheme.colorScheme.secondary
                     )
                 }
                 
