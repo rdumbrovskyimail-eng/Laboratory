@@ -52,7 +52,7 @@ import java.io.File
 import javax.inject.Inject
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATA MODELS (FIXED FOR OPUS 4.6)
+// DATA MODELS (ИСПРАВЛЕНО)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Serializable
@@ -62,11 +62,17 @@ data class ClaudeMessage(
 )
 
 @Serializable
+data class SystemBlock(
+    val type: String = "text",
+    val text: String
+)
+
+@Serializable
 data class ClaudeApiRequest(
     val model: String = "claude-opus-4-20250514",
-    @SerialName("max_tokens") val maxTokens: Int = 32000, // FIXED: API limit is 32K, not 128K
+    @SerialName("max_tokens") val maxTokens: Int = 32000,
     val messages: List<ClaudeMessage>,
-    val system: String? = null, // FIXED: String, not List<SystemBlock>
+    val system: List<SystemBlock>? = null, // ИСПРАВЛЕНО: List<SystemBlock>
     val stream: Boolean = false
 )
 
@@ -151,7 +157,7 @@ class SecureApiKeyStore(context: Context) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REPOSITORY (FIXED)
+// REPOSITORY (ИСПРАВЛЕНО)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 sealed class ClaudeResult {
@@ -210,8 +216,10 @@ class ClaudeRepository(private val apiKey: String) {
 
             val request = ClaudeApiRequest(
                 messages = messages,
-                system = systemPrompt, // FIXED: Now just a String
-                maxTokens = 32000, // FIXED: Use constant 32K
+                system = if (systemPrompt != null) {
+                    listOf(SystemBlock(type = "text", text = systemPrompt)) // ИСПРАВЛЕНО
+                } else null,
+                maxTokens = 32000,
                 stream = true
             )
 
@@ -449,7 +457,7 @@ class SecureFileManager(private val context: Context) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIEW MODEL (FIXED)
+// VIEW MODEL
 // ═══════════════════════════════════════════════════════════════════════════════
 
 data class ClaudeUiState(
@@ -468,7 +476,7 @@ data class ClaudeUiState(
     val isLargeFileMode: Boolean = false,
     val estimatedTokens: Int = 0,
     val needsBetaMode: Boolean = false,
-    val maxPossibleOutput: Int = 32000, // FIXED: API limit is 32K
+    val maxPossibleOutput: Int = 32000,
     val saveStatus: String = ""
 )
 
@@ -485,8 +493,8 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
     private var conversationHistory = mutableListOf<ClaudeMessage>()
     private var currentJob: Job? = null
 
-    private val LARGE_FILE_THRESHOLD = 100_000 // ~30K tokens
-    private val CRITICAL_THRESHOLD = 160_000 // ~50K tokens
+    private val LARGE_FILE_THRESHOLD = 100_000
+    private val CRITICAL_THRESHOLD = 160_000
 
     fun initialize(context: Context) {
         secureStorage = SecureApiKeyStore(context)
@@ -534,9 +542,9 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                     val isLarge = result.content.length > LARGE_FILE_THRESHOLD
                     val isCritical = result.content.length > CRITICAL_THRESHOLD
                     
-                    val contextLimit = 200_000 // Claude context window
+                    val contextLimit = 200_000
                     val maxPossibleOutput = minOf(
-                        32000, // API limit
+                        32000,
                         contextLimit - result.estimatedTokens - 2_000
                     ).coerceAtLeast(1_000)
                     
