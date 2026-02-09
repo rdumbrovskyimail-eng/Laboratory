@@ -66,10 +66,6 @@ android {
         )
     }
 
-    buildTypes.configureEach {
-        buildConfigField("String", "CLAUDE_MODEL", "\"claude-opus-4-6-20260115\"")  // ✅ ОБНОВЛЕНО: новая модель
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -162,7 +158,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.kotlinx.datetime)  // ✅ УЖЕ ЕСТЬ - ОТЛИЧНО!
+    implementation(libs.kotlinx.datetime)
 
     // HILT
     implementation(libs.hilt.android)
