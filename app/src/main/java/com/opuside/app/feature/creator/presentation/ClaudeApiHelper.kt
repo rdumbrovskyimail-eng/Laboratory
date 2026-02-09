@@ -52,7 +52,7 @@ import java.io.File
 import javax.inject.Inject
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATA MODELS (Opus 4.6 Compatible - ИСПРАВЛЕНО)
+// DATA MODELS (FIXED FOR OPUS 4.6)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Serializable
@@ -62,17 +62,11 @@ data class ClaudeMessage(
 )
 
 @Serializable
-data class SystemBlock(
-    val type: String = "text",
-    val text: String
-)
-
-@Serializable
 data class ClaudeApiRequest(
     val model: String = "claude-opus-4-20250514",
-    @SerialName("max_tokens") val maxTokens: Int = 128000,
+    @SerialName("max_tokens") val maxTokens: Int = 32000, // FIXED: API limit is 32K, not 128K
     val messages: List<ClaudeMessage>,
-    val system: List<SystemBlock>? = null,
+    val system: String? = null, // FIXED: String, not List<SystemBlock>
     val stream: Boolean = false
 )
 
@@ -157,7 +151,7 @@ class SecureApiKeyStore(context: Context) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REPOSITORY (Optimized for Large Files - ИСПРАВЛЕНО)
+// REPOSITORY (FIXED)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 sealed class ClaudeResult {
@@ -216,10 +210,8 @@ class ClaudeRepository(private val apiKey: String) {
 
             val request = ClaudeApiRequest(
                 messages = messages,
-                system = if (systemPrompt != null) {
-                    listOf(SystemBlock(type = "text", text = systemPrompt))
-                } else null,
-                maxTokens = calculateMaxTokens(messages),
+                system = systemPrompt, // FIXED: Now just a String
+                maxTokens = 32000, // FIXED: Use constant 32K
                 stream = true
             )
 
@@ -342,23 +334,13 @@ class ClaudeRepository(private val apiKey: String) {
         onProgress(ClaudeResult.Error(errorMessage, response.status.value))
     }
 
-    private fun calculateMaxTokens(messages: List<ClaudeMessage>): Int {
-        val totalInputLength = messages.sumOf { it.content.length }
-        val estimatedInputTokens = (totalInputLength / 3.2).toInt()
-        val contextLimit = 200_000
-        val availableForOutput = contextLimit - estimatedInputTokens - 2_000
-        val maxOutput = minOf(128_000, maxOf(1_000, availableForOutput))
-        println("📊 Estimated input: $estimatedInputTokens tokens → Max output: $maxOutput tokens")
-        return maxOutput
-    }
-
     fun close() {
         client.close()
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FILE MANAGER (Optimized + TXT Save - ИСПРАВЛЕНО)
+// FILE MANAGER
 // ═══════════════════════════════════════════════════════════════════════════════
 
 sealed class FileResult {
@@ -467,7 +449,7 @@ class SecureFileManager(private val context: Context) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// VIEW MODEL (Optimized - ИСПРАВЛЕНО)
+// VIEW MODEL (FIXED)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 data class ClaudeUiState(
@@ -486,7 +468,7 @@ data class ClaudeUiState(
     val isLargeFileMode: Boolean = false,
     val estimatedTokens: Int = 0,
     val needsBetaMode: Boolean = false,
-    val maxPossibleOutput: Int = 128_000,
+    val maxPossibleOutput: Int = 32000, // FIXED: API limit is 32K
     val saveStatus: String = ""
 )
 
@@ -503,8 +485,8 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
     private var conversationHistory = mutableListOf<ClaudeMessage>()
     private var currentJob: Job? = null
 
-    private val LARGE_FILE_THRESHOLD = 320_000
-    private val CRITICAL_THRESHOLD = 540_000
+    private val LARGE_FILE_THRESHOLD = 100_000 // ~30K tokens
+    private val CRITICAL_THRESHOLD = 160_000 // ~50K tokens
 
     fun initialize(context: Context) {
         secureStorage = SecureApiKeyStore(context)
@@ -552,9 +534,10 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                     val isLarge = result.content.length > LARGE_FILE_THRESHOLD
                     val isCritical = result.content.length > CRITICAL_THRESHOLD
                     
+                    val contextLimit = 200_000 // Claude context window
                     val maxPossibleOutput = minOf(
-                        128_000, 
-                        200_000 - result.estimatedTokens - 2_000
+                        32000, // API limit
+                        contextLimit - result.estimatedTokens - 2_000
                     ).coerceAtLeast(1_000)
                     
                     _uiState.update {
@@ -571,10 +554,10 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
                                 ))
                                 if (isLarge) append(" - LARGE MODE")
                                 append("\n")
-                                if (maxPossibleOutput < 128_000) {
+                                if (maxPossibleOutput < 32000) {
                                     append("⚠️ Max output: ~%,d токенов".format(maxPossibleOutput))
                                 } else {
-                                    append("✅ Max output: 128K токенов")
+                                    append("✅ Max output: 32K токенов")
                                 }
                             },
                             status = when {
@@ -781,7 +764,7 @@ class ClaudeHelperViewModel @Inject constructor() : ViewModel() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// UI COMPONENTS (МАКСИМАЛЬНО ОПТИМИЗИРОВАНО ДЛЯ 128K ТОКЕНОВ)
+// UI COMPONENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 data class CodeLine(
@@ -874,7 +857,7 @@ fun OptimizedResponseViewer(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// UI SCREEN (С КНОПКОЙ СОХРАНЕНИЯ)
+// UI SCREEN
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -1060,7 +1043,7 @@ fun ClaudeHelperScreen(
                             style = MaterialTheme.typography.bodySmall
                         )
                         Text(
-                            "Output ограничен ~${uiState.maxPossibleOutput/1000}K токенов (не 128K!)",
+                            "Output ограничен ~${uiState.maxPossibleOutput/1000}K токенов (API max: 32K)",
                             style = MaterialTheme.typography.bodySmall,
                             fontWeight = FontWeight.Bold
                         )
