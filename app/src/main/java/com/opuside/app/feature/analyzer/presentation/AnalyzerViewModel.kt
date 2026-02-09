@@ -17,12 +17,19 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v2.2 (FINAL)
+ * Analyzer ViewModel v3.0 (AUTO-HAIKU + OPERATIONS LOG)
  * 
- * ✅ ИСПРАВЛЕНО:
- * - Добавлен AppSettings для синхронизации с Settings
- * - Загрузка модели при инициализации
- * - Сохранение модели при смене
+ * ✅ ОБНОВЛЕНО:
+ * - Operations Log (лог операций в UI)
+ * - Auto-Haiku (автоматический выбор Haiku для простых команд)
+ * - executeClaudeOperations() (парсинг + выполнение маркеров)
+ * - Toggles для Cache и Auto-Haiku
+ * 
+ * ✅ СОХРАНЕНО:
+ * - Синхронизация с AppSettings
+ * - Session management
+ * - File selection
+ * - Cost estimation
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -36,6 +43,25 @@ class AnalyzerViewModel @Inject constructor(
         private const val TAG = "AnalyzerViewModel"
         private const val KEY_SESSION_ID = "session_id"
     }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ НОВОЕ: OPERATIONS LOG
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    data class OperationLogItem(
+        val icon: String,
+        val message: String,
+        val timestamp: Long = System.currentTimeMillis(),
+        val type: OperationLogType = OperationLogType.INFO
+    )
+    
+    enum class OperationLogType { INFO, SUCCESS, ERROR, PROGRESS }
+    
+    private val _operationsLog = MutableStateFlow<List<OperationLogItem>>(emptyList())
+    val operationsLog: StateFlow<List<OperationLogItem>> = _operationsLog.asStateFlow()
+    
+    private val _autoHaikuEnabled = MutableStateFlow(true)
+    val autoHaikuEnabled: StateFlow<Boolean> = _autoHaikuEnabled.asStateFlow()
     
     // ═══════════════════════════════════════════════════════════════════════════
     // SESSION & MODEL
@@ -101,7 +127,7 @@ class AnalyzerViewModel @Inject constructor(
         Log.i(TAG, "AnalyzerViewModel initialized with sessionId: $sessionId")
         
         viewModelScope.launch {
-            // ✅ НОВОЕ: Загружаем модель из Settings
+            // Загружаем модель из Settings
             val savedModelId = appSettings.claudeModel.first()
             Log.d(TAG, "Loading model from Settings: $savedModelId")
             
@@ -120,7 +146,6 @@ class AnalyzerViewModel @Inject constructor(
                 Log.i(TAG, "Restored existing session: $sessionId")
                 _currentSession.value = existingSession
                 
-                // ✅ НОВОЕ: Проверяем совпадение модели
                 if (existingSession.model != model) {
                     Log.w(TAG, "Session model mismatch! Session: ${existingSession.model}, Settings: $model")
                     Log.i(TAG, "Starting new session with correct model...")
@@ -131,16 +156,57 @@ class AnalyzerViewModel @Inject constructor(
                 val newSession = repositoryAnalyzer.createSession(sessionId, model)
                 _currentSession.value = newSession
             }
-            
-            // Автоочистка
+        }
+        
+        // ✅ ИСПРАВЛЕНО: Автоочистка в отдельной корутине
+        viewModelScope.launch {
             while (true) {
                 delay(3600_000)
-                val cleaned = repositoryAnalyzer.cleanupOldSessions()
-                if (cleaned > 0) {
-                    Log.i(TAG, "Auto-cleanup: removed $cleaned old sessions")
+                try {
+                    val cleaned = repositoryAnalyzer.cleanupOldSessions()
+                    if (cleaned > 0) {
+                        Log.i(TAG, "Auto-cleanup: removed $cleaned old sessions")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Cleanup failed", e)
                 }
             }
         }
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ НОВОЕ: AUTO-HAIKU & OPERATIONS LOG HELPERS
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    fun toggleAutoHaiku() {
+        _autoHaikuEnabled.value = !_autoHaikuEnabled.value
+        addOperation("💨", "Auto-Haiku ${if (_autoHaikuEnabled.value) "включён" else "выключен"}")
+        Log.d(TAG, "Auto-Haiku ${if (_autoHaikuEnabled.value) "enabled" else "disabled"}")
+    }
+    
+    private fun addOperation(icon: String, message: String, type: OperationLogType = OperationLogType.INFO) {
+        _operationsLog.value = _operationsLog.value + OperationLogItem(icon, message, type = type)
+    }
+    
+    fun clearOperationsLog() {
+        _operationsLog.value = emptyList()
+    }
+    
+    /**
+     * Определяет, является ли запрос простой операцией (дерево, чтение, список)
+     * которую можно выполнить дешёвым Haiku вместо дорогого Opus
+     */
+    private fun isSimpleOperation(query: String): Boolean {
+        val lower = query.lowercase()
+        val simplePatterns = listOf(
+            "покажи дерево", "дерево файлов", "file tree", "show tree",
+            "список файлов", "list files", "ls ", "dir ",
+            "прочти файл", "прочитай", "read file", "cat ",
+            "покажи структуру", "show structure", "show files",
+            "что в папке", "содержимое папки", "what's in",
+            "покажи файл", "show file", "open file"
+        )
+        return simplePatterns.any { lower.contains(it) }
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
@@ -152,7 +218,6 @@ class AnalyzerViewModel @Inject constructor(
         
         _selectedModel.value = model
         
-        // ✅ НОВОЕ: Сохраняем в AppSettings
         viewModelScope.launch {
             appSettings.setClaudeModel(model.modelId)
             Log.d(TAG, "✅ Model saved to Settings: ${model.modelId}")
@@ -163,6 +228,11 @@ class AnalyzerViewModel @Inject constructor(
     
     fun toggleCaching() {
         _cachingEnabled.value = !_cachingEnabled.value
+        addOperation(
+            "📦", 
+            "Cache ${if (_cachingEnabled.value) "включён" else "выключен"}",
+            OperationLogType.INFO
+        )
         Log.d(TAG, "Caching ${if (_cachingEnabled.value) "enabled" else "disabled"}")
     }
     
@@ -188,6 +258,8 @@ class AnalyzerViewModel @Inject constructor(
             _selectedFiles.value = emptySet()
             _scanEstimate.value = null
             _chatError.value = null
+            
+            addOperation("🔄", "Новый сеанс: ${_selectedModel.value.displayName}", OperationLogType.SUCCESS)
             
             Log.i(TAG, "New session created: $newSessionId with ${_selectedModel.value.displayName}")
         }
@@ -275,21 +347,12 @@ class AnalyzerViewModel @Inject constructor(
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // CHAT OPERATIONS
+    // ✅ НОВОЕ: CHAT OPERATIONS (Auto-Haiku + Operations Execution)
     // ═══════════════════════════════════════════════════════════════════════════
     
-    fun scanSelectedFiles(userQuery: String) {
-        val files = _selectedFiles.value.toList()
-        
-        if (files.isEmpty()) {
-            _chatError.value = "No files selected"
-            Log.w(TAG, "Scan attempted with no files selected")
-            return
-        }
-        
-        if (userQuery.isBlank()) {
-            _chatError.value = "Query cannot be empty"
-            Log.w(TAG, "Scan attempted with empty query")
+    fun sendMessage(message: String) {
+        if (message.isBlank()) {
+            _chatError.value = "Message cannot be empty"
             return
         }
         
@@ -297,30 +360,48 @@ class AnalyzerViewModel @Inject constructor(
             _isStreaming.value = true
             _chatError.value = null
             
-            Log.i(TAG, "Starting scan: ${files.size} files, model=${_selectedModel.value.displayName}")
+            // ✅ Auto-Haiku: определяем простые операции
+            val useModel = if (_autoHaikuEnabled.value && isSimpleOperation(message)) {
+                addOperation("💨", "Auto-Haiku: простая операция", OperationLogType.INFO)
+                ClaudeModelConfig.ClaudeModel.HAIKU_4_5
+            } else {
+                _selectedModel.value
+            }
+            
+            addOperation("📤", "Отправка: ${message.take(50)}...", OperationLogType.PROGRESS)
             
             repositoryAnalyzer.scanFiles(
                 sessionId = sessionId,
-                filePaths = files,
-                userQuery = userQuery,
-                model = _selectedModel.value,
+                filePaths = _selectedFiles.value.toList(),
+                userQuery = message,
+                model = useModel,
                 enableCaching = _cachingEnabled.value
             ).collect { result ->
                 when (result) {
                     is RepositoryAnalyzer.AnalysisResult.Loading -> {
-                        Log.d(TAG, "Loading: ${result.message}")
+                        addOperation("⏳", result.message, OperationLogType.PROGRESS)
                     }
                     
                     is RepositoryAnalyzer.AnalysisResult.Streaming -> {
-                        // Обрабатывается автоматически
+                        // Стриминг обрабатывается через chatDao автоматически
                     }
                     
                     is RepositoryAnalyzer.AnalysisResult.Completed -> {
                         _isStreaming.value = false
                         _currentSession.value = result.session
                         
-                        Log.i(TAG, "Scan completed: cost=${result.cost.totalCostEUR}€, " +
-                                "cache savings=${result.cost.savingsPercentage}%")
+                        addOperation(
+                            "✅", 
+                            "Ответ получен (${result.cost.totalTokens} tokens, €${String.format("%.4f", result.cost.totalCostEUR)})", 
+                            OperationLogType.SUCCESS
+                        )
+                        
+                        // ✅ ПАРСИМ ОПЕРАЦИИ ИЗ ОТВЕТА CLAUDE
+                        val operations = repositoryAnalyzer.parseOperations(result.text)
+                        if (operations.isNotEmpty()) {
+                            addOperation("🔧", "Обнаружено ${operations.size} операций", OperationLogType.INFO)
+                            executeClaudeOperations(operations)
+                        }
                         
                         _selectedFiles.value = emptySet()
                         _scanEstimate.value = null
@@ -329,44 +410,36 @@ class AnalyzerViewModel @Inject constructor(
                     is RepositoryAnalyzer.AnalysisResult.Error -> {
                         _isStreaming.value = false
                         _chatError.value = result.message
-                        Log.e(TAG, "Scan error: ${result.message}")
+                        addOperation("❌", "Ошибка: ${result.message}", OperationLogType.ERROR)
                     }
                 }
             }
         }
     }
     
-    fun sendMessage(message: String) {
-        if (message.isBlank()) {
-            _chatError.value = "Message cannot be empty"
-            return
-        }
-        
-        if (_selectedFiles.value.isNotEmpty()) {
-            scanSelectedFiles(message)
-        } else {
-            viewModelScope.launch {
-                _isStreaming.value = true
-                _chatError.value = null
-                
-                repositoryAnalyzer.scanFiles(
-                    sessionId = sessionId,
-                    filePaths = emptyList(),
-                    userQuery = message,
-                    model = _selectedModel.value,
-                    enableCaching = _cachingEnabled.value
-                ).collect { result ->
-                    when (result) {
-                        is RepositoryAnalyzer.AnalysisResult.Completed -> {
-                            _isStreaming.value = false
-                            _currentSession.value = result.session
-                        }
-                        is RepositoryAnalyzer.AnalysisResult.Error -> {
-                            _isStreaming.value = false
-                            _chatError.value = result.message
-                        }
-                        else -> {}
-                    }
+    private fun executeClaudeOperations(operations: List<RepositoryAnalyzer.ParsedOperation>) {
+        viewModelScope.launch {
+            for (op in operations) {
+                val opName = when (op.type) {
+                    RepositoryAnalyzer.OperationType.CREATE_FILE -> "📝 Создаю файл: ${op.path}"
+                    RepositoryAnalyzer.OperationType.EDIT_FILE -> "✏️ Редактирую: ${op.path}"
+                    RepositoryAnalyzer.OperationType.DELETE_FILE -> "🗑️ Удаляю: ${op.path}"
+                    RepositoryAnalyzer.OperationType.CREATE_FOLDER -> "📁 Создаю папку: ${op.path}"
+                }
+                addOperation("⚙️", opName, OperationLogType.PROGRESS)
+            }
+            
+            val results = repositoryAnalyzer.executeOperations(
+                sessionId = sessionId,
+                operations = operations
+            )
+            
+            results.forEachIndexed { index, result ->
+                val op = operations[index]
+                result.onSuccess {
+                    addOperation("✅", "Готово: ${op.path}", OperationLogType.SUCCESS)
+                }.onFailure { e ->
+                    addOperation("❌", "Ошибка ${op.path}: ${e.message}", OperationLogType.ERROR)
                 }
             }
         }
