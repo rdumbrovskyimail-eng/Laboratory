@@ -29,36 +29,54 @@ jobs:
         java-version: '21'
         cache: 'gradle'
         
+    # ============================================================
+    # 🔥 ВРЕМЕННО: ПОЛНАЯ ОЧИСТКА КЕШЕЙ
+    # ============================================================
+    - name: 🔥 Clear ALL caches (TEMPORARY)
+      run: |
+        echo "🗑️ Removing all Gradle caches..."
+        rm -rf ~/.gradle/caches
+        rm -rf ~/.gradle/wrapper
+        rm -rf ~/.gradle/daemon
+        rm -rf ~/.konan
+        rm -rf .gradle
+        rm -rf build
+        rm -rf app/build
+        echo "✅ All caches cleared"
+    # ============================================================
+        
     - name: Setup Gradle
       uses: gradle/actions/setup-gradle@v4
       with:
         cache-read-only: false
         gradle-home-cache-cleanup: true
         
-    - name: Cache Gradle & Kotlin
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.gradle/caches
-          ~/.gradle/wrapper
-          ~/.gradle/daemon
-          ~/.konan
-          .gradle
-        key: ${{ runner.os }}-gradle-fast-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
-        restore-keys: |
-          ${{ runner.os }}-gradle-fast-
-          ${{ runner.os }}-gradle-
+    # ЗАКОММЕНТИРОВАНО: Кеширование отключено временно
+    # - name: Cache Gradle & Kotlin
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       ~/.gradle/caches
+    #       ~/.gradle/wrapper
+    #       ~/.gradle/daemon
+    #       ~/.konan
+    #       .gradle
+    #     key: ${{ runner.os }}-gradle-fast-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties', '**/libs.versions.toml') }}
+    #     restore-keys: |
+    #       ${{ runner.os }}-gradle-fast-
+    #       ${{ runner.os }}-gradle-
     
-    - name: Cache build outputs
-      uses: actions/cache@v4
-      with:
-        path: |
-          app/build/intermediates
-          app/build/tmp
-          build/kotlin
-        key: ${{ runner.os }}-build-fast-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-build-fast-
+    # ЗАКОММЕНТИРОВАНО: Кеширование отключено временно
+    # - name: Cache build outputs
+    #   uses: actions/cache@v4
+    #   with:
+    #     path: |
+    #       app/build/intermediates
+    #       app/build/tmp
+    #       build/kotlin
+    #     key: ${{ runner.os }}-build-fast-${{ github.sha }}
+    #     restore-keys: |
+    #       ${{ runner.os }}-build-fast-
         
     - name: Grant execute permission
       run: chmod +x gradlew
