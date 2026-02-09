@@ -675,3 +675,4 @@ private fun ChatMessageBubble(
             )
         }
     }
+    }
