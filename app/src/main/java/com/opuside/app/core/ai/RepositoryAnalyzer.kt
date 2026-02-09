@@ -23,6 +23,7 @@ import javax.inject.Singleton
  * - Поддержка чата БЕЗ файлов (чистый диалог)
  * - Парсинг операций из ответа Claude
  * - Выполнение операций (create/edit/delete/folder)
+ * - Параметр maxTokens для ECO/MAX режима
  * 
  * ✅ СОХРАНЕНЫ все фичи:
  * - Выборочное сканирование (MAX_FILES_PER_SCAN)
@@ -360,7 +361,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ НОВОЕ: FILE SCANNING (поддержка чата БЕЗ файлов)
+    // ✅ FILE SCANNING (поддержка чата БЕЗ файлов + параметр maxTokens)
     // ═══════════════════════════════════════════════════════════════════════════
 
     suspend fun scanFiles(
@@ -368,15 +369,15 @@ class RepositoryAnalyzer @Inject constructor(
         filePaths: List<String>,
         userQuery: String,
         model: ClaudeModelConfig.ClaudeModel,
-        enableCaching: Boolean = true
+        enableCaching: Boolean = true,
+        maxTokens: Int = 8192  // ✅ НОВЫЙ ПАРАМЕТР для ECO/MAX режима
     ): Flow<AnalysisResult> = flow {
         try {
             require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
-            // ✅ filePaths может быть пустым для чат-режима без файлов
             require(userQuery.isNotBlank()) { "User query cannot be blank" }
             
             Log.i(TAG, "Starting scan: session=$sessionId, files=${filePaths.size}, " +
-                    "model=${model.displayName}, caching=$enableCaching")
+                    "model=${model.displayName}, caching=$enableCaching, maxTokens=$maxTokens")
             
             // Получаем или создаем сеанс
             val session = getSession(sessionId) ?: createSession(sessionId, model).also {
@@ -416,7 +417,7 @@ class RepositoryAnalyzer @Inject constructor(
                     emit(AnalysisResult.Error("No files could be loaded"))
                     return@flow
                 }
-            } // end if (filePaths.isNotEmpty())
+            }
             
             emit(AnalysisResult.Loading("Preparing context..."))
             val context = if (fileContents.isNotEmpty()) buildFileContext(fileContents) else ""
@@ -452,7 +453,7 @@ class RepositoryAnalyzer @Inject constructor(
                 model = model.modelId,
                 messages = listOf(ClaudeMessage("user", userMessage)),
                 systemPrompt = systemPrompt,
-                maxTokens = 8192,
+                maxTokens = maxTokens,  // ✅ ИСПОЛЬЗУЕМ ПАРАМЕТР
                 enableCaching = enableCaching && session.messageCount > 0
             ).collect { result ->
                 when (result) {
@@ -521,7 +522,6 @@ class RepositoryAnalyzer @Inject constructor(
         }
     }
 
-    // ✅ НОВОЕ: Системный промпт с операционными маркерами
     private fun buildSystemPrompt(): String = """
 You are an expert Android/Kotlin developer assistant with FULL access to a GitHub repository via API.
 
@@ -586,7 +586,7 @@ Please analyze the provided files and respond to the user's query.
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ НОВОЕ: PARSE AND EXECUTE OPERATIONS FROM CLAUDE RESPONSE
+    // ✅ PARSE AND EXECUTE OPERATIONS FROM CLAUDE RESPONSE
     // ═══════════════════════════════════════════════════════════════════════════
 
     data class ParsedOperation(
@@ -655,14 +655,12 @@ Please analyze the provided files and respond to the user's query.
                     createFile(sessionId, op.path, op.content, "Create ${op.path} via Claude")
                 }
                 OperationType.EDIT_FILE -> {
-                    // Для EDIT нужен SHA текущего файла
                     try {
                         val currentFile = gitHubClient.getFileContent(op.path).getOrThrow()
                         val sha = currentFile.sha
                         val oldContent = gitHubClient.getFileContentDecoded(op.path).getOrElse { "" }
                         editFile(sessionId, op.path, oldContent, op.content, sha, "Edit ${op.path} via Claude")
                     } catch (e: Exception) {
-                        // Если файл не существует — создаём
                         Log.w(TAG, "File ${op.path} not found for edit, creating instead")
                         createFile(sessionId, op.path, op.content, "Create ${op.path} via Claude")
                     }
@@ -677,7 +675,6 @@ Please analyze the provided files and respond to the user's query.
                     }
                 }
                 OperationType.CREATE_FOLDER -> {
-                    // GitHub не поддерживает пустые папки — создаём .gitkeep
                     createFile(sessionId, "${op.path}/.gitkeep", "", "Create folder ${op.path} via Claude")
                 }
             }
@@ -688,7 +685,7 @@ Please analyze the provided files and respond to the user's query.
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ FILE OPERATIONS (без изменений)
+    // ✅ FILE OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
     suspend fun createFile(
