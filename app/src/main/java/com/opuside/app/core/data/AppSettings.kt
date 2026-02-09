@@ -77,7 +77,7 @@ class AppSettings @Inject constructor(
 
     val claudeModel: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
-        .map { it[Keys.CLAUDE_MODEL] ?: "claude-opus-4-5-20251101" }
+        .map { it[Keys.CLAUDE_MODEL] ?: "claude-opus-4-5-20250514" }
 
     suspend fun setClaudeModel(model: String) {
         dataStore.edit { it[Keys.CLAUDE_MODEL] = model }
