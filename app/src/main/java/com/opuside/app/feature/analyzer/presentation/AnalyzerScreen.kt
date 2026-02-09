@@ -404,25 +404,34 @@ fun AnalyzerScreen(
     }
     
     // ===== ДИАЛОГИ =====
+    
+    // ✅ ИСПРАВЛЕНО: LazyColumn вместо Column — теперь все 8 моделей видны с прокруткой
     if (showModelDialog) {
         AlertDialog(
             onDismissRequest = { showModelDialog = false },
             title = { Text("Выбрать модель") },
             text = {
-                Column {
-                    ClaudeModelConfig.ClaudeModel.entries.forEach { model ->
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 480.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(ClaudeModelConfig.ClaudeModel.entries.toList()) { model ->
                         val isSelected = model == selectedModel
+                        // ⚠️ Предупреждение для дорогих моделей
+                        val isExpensive = model == ClaudeModelConfig.ClaudeModel.OPUS_4_1 ||
+                                          model == ClaudeModelConfig.ClaudeModel.OPUS_4
                         Surface(
                             onClick = {
                                 viewModel.selectModel(model)
                                 showModelDialog = false
                             },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
+                            modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
-                                    else MaterialTheme.colorScheme.surface,
+                            color = when {
+                                isSelected -> MaterialTheme.colorScheme.primaryContainer
+                                isExpensive -> Color(0xFFFFF3E0) // лёгкий оранжевый фон для дорогих
+                                else -> MaterialTheme.colorScheme.surface
+                            },
                             tonalElevation = if (isSelected) 4.dp else 0.dp
                         ) {
                             Row(
@@ -432,11 +441,21 @@ fun AnalyzerScreen(
                                 Text(model.emoji, fontSize = 20.sp)
                                 Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text(
-                                        model.displayName,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp
-                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            model.displayName,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp
+                                        )
+                                        if (isExpensive) {
+                                            Spacer(Modifier.width(6.dp))
+                                            Text(
+                                                "⚠️ 3×",
+                                                fontSize = 10.sp,
+                                                color = Color(0xFFE65100)
+                                            )
+                                        }
+                                    }
                                     Text(
                                         model.description,
                                         fontSize = 12.sp,
@@ -445,7 +464,8 @@ fun AnalyzerScreen(
                                     Text(
                                         "$${model.inputPricePerM}/$${model.outputPricePerM} per 1M tokens",
                                         fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = if (isExpensive) Color(0xFFE65100)
+                                                else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                                 if (isSelected) {
@@ -675,4 +695,4 @@ private fun ChatMessageBubble(
             )
         }
     }
-    }
+}
