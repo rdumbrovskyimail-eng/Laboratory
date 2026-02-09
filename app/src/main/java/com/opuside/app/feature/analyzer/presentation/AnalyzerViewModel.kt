@@ -24,6 +24,9 @@ import javax.inject.Inject
  * - Auto-Haiku (автоматический выбор Haiku для простых команд)
  * - executeClaudeOperations() (парсинг + выполнение маркеров)
  * - Toggles для Cache и Auto-Haiku
+ * - ИСПРАВЛЕНО: sessionId теперь dynamic (ПРОБЛЕМА A)
+ * - ИСПРАВЛЕНО: while(true) в отдельной корутине (BUG-1)
+ * - ИСПРАВЛЕНО: getTotalCost() теперь работает с Map (CRASH-2)
  * 
  * ✅ СОХРАНЕНО:
  * - Синхронизация с AppSettings
@@ -67,10 +70,13 @@ class AnalyzerViewModel @Inject constructor(
     // SESSION & MODEL
     // ═══════════════════════════════════════════════════════════════════════════
     
-    private val sessionId: String = savedStateHandle.get<String>(KEY_SESSION_ID)
+    // ✅ ПРОБЛЕМА A FIX: sessionId теперь var для динамического обновления
+    private var _sessionId: String = savedStateHandle.get<String>(KEY_SESSION_ID)
         ?: UUID.randomUUID().toString().also {
             savedStateHandle[KEY_SESSION_ID] = it
         }
+    
+    private val sessionId: String get() = _sessionId
     
     private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.OPUS_4_5)
     val selectedModel: StateFlow<ClaudeModelConfig.ClaudeModel> = _selectedModel.asStateFlow()
@@ -99,7 +105,10 @@ class AnalyzerViewModel @Inject constructor(
     // CHAT
     // ═══════════════════════════════════════════════════════════════════════════
     
-    val messages: Flow<List<ChatMessageEntity>> = chatDao.getMessages(sessionId)
+    // ✅ ПРОБЛЕМА A FIX: messages Flow теперь динамически подписывается на текущий sessionId
+    private val _messagesSessionId = MutableStateFlow(sessionId)
+    val messages: Flow<List<ChatMessageEntity>> = _messagesSessionId
+        .flatMapLatest { id -> chatDao.getMessages(id) }
     
     private val _isStreaming = MutableStateFlow(false)
     val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
@@ -126,6 +135,7 @@ class AnalyzerViewModel @Inject constructor(
     init {
         Log.i(TAG, "AnalyzerViewModel initialized with sessionId: $sessionId")
         
+        // Инициализация модели и сессии
         viewModelScope.launch {
             // Загружаем модель из Settings
             val savedModelId = appSettings.claudeModel.first()
@@ -158,10 +168,10 @@ class AnalyzerViewModel @Inject constructor(
             }
         }
         
-        // ✅ ИСПРАВЛЕНО: Автоочистка в отдельной корутине
+        // ✅ BUG-1 FIX: Автоочистка в отдельной корутине
         viewModelScope.launch {
             while (true) {
-                delay(3600_000)
+                delay(3600_000) // 1 час
                 try {
                     val cleaned = repositoryAnalyzer.cleanupOldSessions()
                     if (cleaned > 0) {
@@ -251,6 +261,12 @@ class AnalyzerViewModel @Inject constructor(
             
             val newSessionId = UUID.randomUUID().toString()
             savedStateHandle[KEY_SESSION_ID] = newSessionId
+            
+            // ✅ ПРОБЛЕМА A FIX: Обновляем _sessionId
+            _sessionId = newSessionId
+            
+            // ✅ ПРОБЛЕМА A FIX: Обновляем messages Flow
+            _messagesSessionId.value = newSessionId
             
             val newSession = repositoryAnalyzer.createSession(newSessionId, _selectedModel.value)
             _currentSession.value = newSession
