@@ -93,10 +93,10 @@ class ClaudeApiClient @Inject constructor(
             Log.d(TAG, "  ├─ API Key: ${apiKey.take(15)}...")
             Log.d(TAG, "  └─ API Version: $API_VERSION")
             
-            val model = appSettings.claudeModel.first().takeIf { it.isNotBlank() }
-                ?: "claude-sonnet-4-5-20250514"
+            // ✅ Всегда тестируем на Haiku — самая дешёвая модель ($0.80/1M vs $5/1M)
+            val model = "claude-haiku-4-5-20251001"
             
-            Log.d(TAG, "  └─ Test Model: $model")
+            Log.d(TAG, "  └─ Test Model: $model (Haiku — для экономии)")
             
             val testMessage = ClaudeMessage(
                 role = "user",
