@@ -17,22 +17,13 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v3.0 (AUTO-HAIKU + OPERATIONS LOG)
+ * Analyzer ViewModel v4.0 (ECO/MAX OUTPUT MODE)
  * 
  * ✅ ОБНОВЛЕНО:
- * - Operations Log (лог операций в UI)
- * - Auto-Haiku (автоматический выбор Haiku для простых команд)
- * - executeClaudeOperations() (парсинг + выполнение маркеров)
- * - Toggles для Cache и Auto-Haiku
- * - ИСПРАВЛЕНО: sessionId теперь dynamic (ПРОБЛЕМА A)
- * - ИСПРАВЛЕНО: while(true) в отдельной корутине (BUG-1)
- * - ИСПРАВЛЕНО: getTotalCost() теперь работает с Map (CRASH-2)
- * 
- * ✅ СОХРАНЕНО:
- * - Синхронизация с AppSettings
- * - Session management
- * - File selection
- * - Cost estimation
+ * - ECO/MAX toggle для output токенов
+ * - ECO (🟢): 8192 output — экономия rate limits
+ * - MAX (🔴): maxOutputTokens модели — полная мощность
+ * - getEffectiveMaxTokens() для передачи в API
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -48,7 +39,7 @@ class AnalyzerViewModel @Inject constructor(
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ НОВОЕ: OPERATIONS LOG
+    // OPERATIONS LOG
     // ═══════════════════════════════════════════════════════════════════════════
     
     data class OperationLogItem(
@@ -67,10 +58,17 @@ class AnalyzerViewModel @Inject constructor(
     val autoHaikuEnabled: StateFlow<Boolean> = _autoHaikuEnabled.asStateFlow()
     
     // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ НОВОЕ: ECO / MAX OUTPUT MODE
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    /** true = ECO (🟢 8K output), false = MAX (🔴 модельный максимум) */
+    private val _ecoOutputMode = MutableStateFlow(true)
+    val ecoOutputMode: StateFlow<Boolean> = _ecoOutputMode.asStateFlow()
+    
+    // ═══════════════════════════════════════════════════════════════════════════
     // SESSION & MODEL
     // ═══════════════════════════════════════════════════════════════════════════
     
-    // ✅ ПРОБЛЕМА A FIX: sessionId теперь var для динамического обновления
     private var _sessionId: String = savedStateHandle.get<String>(KEY_SESSION_ID)
         ?: UUID.randomUUID().toString().also {
             savedStateHandle[KEY_SESSION_ID] = it
@@ -78,7 +76,7 @@ class AnalyzerViewModel @Inject constructor(
     
     private val sessionId: String get() = _sessionId
     
-    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.getDefault()) // ✅ ИЗМЕНЕНО: было OPUS_4_5
+    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.getDefault())
     val selectedModel: StateFlow<ClaudeModelConfig.ClaudeModel> = _selectedModel.asStateFlow()
     
     private val _currentSession = MutableStateFlow<ClaudeModelConfig.ChatSession?>(null)
@@ -105,7 +103,6 @@ class AnalyzerViewModel @Inject constructor(
     // CHAT
     // ═══════════════════════════════════════════════════════════════════════════
     
-    // ✅ ПРОБЛЕМА A FIX: messages Flow теперь динамически подписывается на текущий sessionId
     private val _messagesSessionId = MutableStateFlow(sessionId)
     val messages: Flow<List<ChatMessageEntity>> = _messagesSessionId
         .flatMapLatest { id -> chatDao.getMessages(id) }
@@ -135,21 +132,18 @@ class AnalyzerViewModel @Inject constructor(
     init {
         Log.i(TAG, "AnalyzerViewModel initialized with sessionId: $sessionId")
         
-        // Инициализация модели и сессии
         viewModelScope.launch {
-            // Загружаем модель из Settings
             val savedModelId = appSettings.claudeModel.first()
             Log.d(TAG, "Loading model from Settings: $savedModelId")
             
             val model = ClaudeModelConfig.ClaudeModel.fromModelId(savedModelId)
-                ?: ClaudeModelConfig.ClaudeModel.getDefault().also { // ✅ ИЗМЕНЕНО: было OPUS_4_5
+                ?: ClaudeModelConfig.ClaudeModel.getDefault().also {
                     Log.w(TAG, "Model not found, using default: ${it.displayName}")
                 }
             
             _selectedModel.value = model
             Log.i(TAG, "✅ Model loaded: ${model.displayName} (${model.modelId})")
             
-            // Создаем или восстанавливаем сеанс
             val existingSession = repositoryAnalyzer.getSession(sessionId)
             
             if (existingSession != null) {
@@ -157,8 +151,7 @@ class AnalyzerViewModel @Inject constructor(
                 _currentSession.value = existingSession
                 
                 if (existingSession.model != model) {
-                    Log.w(TAG, "Session model mismatch! Session: ${existingSession.model}, Settings: $model")
-                    Log.i(TAG, "Starting new session with correct model...")
+                    Log.w(TAG, "Session model mismatch! Starting new session...")
                     startNewSession()
                 }
             } else {
@@ -168,15 +161,12 @@ class AnalyzerViewModel @Inject constructor(
             }
         }
         
-        // ✅ BUG-1 FIX: Автоочистка в отдельной корутине
         viewModelScope.launch {
             while (true) {
-                delay(3600_000) // 1 час
+                delay(3600_000)
                 try {
                     val cleaned = repositoryAnalyzer.cleanupOldSessions()
-                    if (cleaned > 0) {
-                        Log.i(TAG, "Auto-cleanup: removed $cleaned old sessions")
-                    }
+                    if (cleaned > 0) Log.i(TAG, "Auto-cleanup: removed $cleaned old sessions")
                 } catch (e: Exception) {
                     Log.e(TAG, "Cleanup failed", e)
                 }
@@ -185,7 +175,38 @@ class AnalyzerViewModel @Inject constructor(
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ НОВОЕ: AUTO-HAIKU & OPERATIONS LOG HELPERS
+    // ECO / MAX OUTPUT MODE
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    fun toggleOutputMode() {
+        _ecoOutputMode.value = !_ecoOutputMode.value
+        val model = _selectedModel.value
+        val effectiveTokens = model.getEffectiveOutputTokens(_ecoOutputMode.value)
+        val modeName = if (_ecoOutputMode.value) "ECO 🟢" else "MAX 🔴"
+        addOperation(
+            if (_ecoOutputMode.value) "🟢" else "🔴",
+            "Output: $modeName (${"%,d".format(effectiveTokens)} tok, ${model.displayName})",
+            OperationLogType.INFO
+        )
+        Log.d(TAG, "Output mode: $modeName, effective tokens: $effectiveTokens for ${model.displayName}")
+    }
+    
+    /**
+     * Получить текущий эффективный лимит output для выбранной модели
+     */
+    fun getEffectiveMaxTokens(): Int {
+        return _selectedModel.value.getEffectiveOutputTokens(_ecoOutputMode.value)
+    }
+    
+    /**
+     * Получить эффективный лимит output для конкретной модели (для Auto-Haiku)
+     */
+    fun getEffectiveMaxTokens(model: ClaudeModelConfig.ClaudeModel): Int {
+        return model.getEffectiveOutputTokens(_ecoOutputMode.value)
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // AUTO-HAIKU & OPERATIONS LOG HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
     
     fun toggleAutoHaiku() {
@@ -202,10 +223,6 @@ class AnalyzerViewModel @Inject constructor(
         _operationsLog.value = emptyList()
     }
     
-    /**
-     * Определяет, является ли запрос простой операцией (дерево, чтение, список)
-     * которую можно выполнить дешёвым Haiku вместо дорогого Opus
-     */
     private fun isSimpleOperation(query: String): Boolean {
         val lower = query.lowercase()
         val simplePatterns = listOf(
@@ -261,11 +278,7 @@ class AnalyzerViewModel @Inject constructor(
             
             val newSessionId = UUID.randomUUID().toString()
             savedStateHandle[KEY_SESSION_ID] = newSessionId
-            
-            // ✅ ПРОБЛЕМА A FIX: Обновляем _sessionId
             _sessionId = newSessionId
-            
-            // ✅ ПРОБЛЕМА A FIX: Обновляем messages Flow
             _messagesSessionId.value = newSessionId
             
             val newSession = repositoryAnalyzer.createSession(newSessionId, _selectedModel.value)
@@ -306,12 +319,7 @@ class AnalyzerViewModel @Inject constructor(
     fun selectFiles(files: Set<String>) {
         _selectedFiles.value = files
         Log.d(TAG, "Selected ${files.size} files")
-        
-        if (files.isNotEmpty()) {
-            updateScanEstimate()
-        } else {
-            _scanEstimate.value = null
-        }
+        if (files.isNotEmpty()) updateScanEstimate() else _scanEstimate.value = null
     }
     
     fun addFile(filePath: String) {
@@ -323,12 +331,7 @@ class AnalyzerViewModel @Inject constructor(
     fun removeFile(filePath: String) {
         _selectedFiles.value = _selectedFiles.value - filePath
         Log.d(TAG, "Removed file: $filePath")
-        
-        if (_selectedFiles.value.isNotEmpty()) {
-            updateScanEstimate()
-        } else {
-            _scanEstimate.value = null
-        }
+        if (_selectedFiles.value.isNotEmpty()) updateScanEstimate() else _scanEstimate.value = null
     }
     
     fun clearSelectedFiles() {
@@ -345,16 +348,12 @@ class AnalyzerViewModel @Inject constructor(
                 return@launch
             }
             
-            Log.d(TAG, "Updating scan estimate for ${files.size} files")
-            
             repositoryAnalyzer.estimateScanCost(
                 filePaths = files,
                 model = _selectedModel.value,
                 sessionId = sessionId
             ).onSuccess { estimate ->
                 _scanEstimate.value = estimate
-                Log.d(TAG, "Scan estimate: ${estimate.cost.totalCostEUR}€, " +
-                        "will trigger long context: ${estimate.willTriggerLongContext}")
             }.onFailure { error ->
                 Log.e(TAG, "Failed to estimate scan cost", error)
                 _chatError.value = error.message
@@ -363,7 +362,7 @@ class AnalyzerViewModel @Inject constructor(
     }
     
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ НОВОЕ: CHAT OPERATIONS (Auto-Haiku + Operations Execution)
+    // CHAT OPERATIONS (Auto-Haiku + ECO/MAX output)
     // ═══════════════════════════════════════════════════════════════════════════
     
     fun sendMessage(message: String) {
@@ -376,7 +375,7 @@ class AnalyzerViewModel @Inject constructor(
             _isStreaming.value = true
             _chatError.value = null
             
-            // ✅ Auto-Haiku: определяем простые операции
+            // Auto-Haiku: определяем простые операции
             val useModel = if (_autoHaikuEnabled.value && isSimpleOperation(message)) {
                 addOperation("💨", "Auto-Haiku: простая операция", OperationLogType.INFO)
                 ClaudeModelConfig.ClaudeModel.HAIKU_4_5
@@ -384,13 +383,18 @@ class AnalyzerViewModel @Inject constructor(
                 _selectedModel.value
             }
             
-            addOperation("📤", "Отправка: ${message.take(50)}...", OperationLogType.PROGRESS)
+            // ✅ НОВОЕ: ECO/MAX output tokens
+            val maxTokens = getEffectiveMaxTokens(useModel)
+            val modeName = if (_ecoOutputMode.value) "ECO" else "MAX"
+            
+            addOperation("📤", "Отправка ($modeName ${"%,d".format(maxTokens)} tok): ${message.take(40)}...", OperationLogType.PROGRESS)
             
             repositoryAnalyzer.scanFiles(
                 sessionId = sessionId,
                 filePaths = _selectedFiles.value.toList(),
                 userQuery = message,
                 model = useModel,
+                maxTokens = maxTokens, // ✅ передаём ECO или MAX лимит
                 enableCaching = _cachingEnabled.value
             ).collect { result ->
                 when (result) {
@@ -399,7 +403,7 @@ class AnalyzerViewModel @Inject constructor(
                     }
                     
                     is RepositoryAnalyzer.AnalysisResult.Streaming -> {
-                        // Стриминг обрабатывается через chatDao автоматически
+                        // Стриминг обрабатывается через chatDao
                     }
                     
                     is RepositoryAnalyzer.AnalysisResult.Completed -> {
@@ -408,11 +412,10 @@ class AnalyzerViewModel @Inject constructor(
                         
                         addOperation(
                             "✅", 
-                            "Ответ получен (${result.cost.totalTokens} tokens, €${String.format("%.4f", result.cost.totalCostEUR)})", 
+                            "Ответ (${result.cost.totalTokens} tok, €${String.format("%.4f", result.cost.totalCostEUR)})", 
                             OperationLogType.SUCCESS
                         )
                         
-                        // ✅ ПАРСИМ ОПЕРАЦИИ ИЗ ОТВЕТА CLAUDE
                         val operations = repositoryAnalyzer.parseOperations(result.text)
                         if (operations.isNotEmpty()) {
                             addOperation("🔧", "Обнаружено ${operations.size} операций", OperationLogType.INFO)
@@ -478,14 +481,12 @@ class AnalyzerViewModel @Inject constructor(
     
     override fun onCleared() {
         super.onCleared()
-        
         _currentSession.value?.let { session ->
             if (session.isActive) {
                 repositoryAnalyzer.endSession(session.sessionId)
                 Log.i(TAG, "Session ended on ViewModel cleared: ${session.sessionId}")
             }
         }
-        
         Log.i(TAG, "AnalyzerViewModel cleared")
     }
 }
