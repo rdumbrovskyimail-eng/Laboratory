@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -53,9 +54,21 @@ fun AnalyzerScreen(
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
+    
+    // Отслеживаем видимость клавиатуры для автоскролла чата
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val imeVisible = imeBottomPx > 0
     
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
+            chatListState.animateScrollToItem(messages.size - 1)
+        }
+    }
+    
+    // Когда клавиатура появляется — скроллим чат вниз
+    LaunchedEffect(imeVisible) {
+        if (imeVisible && messages.isNotEmpty()) {
             chatListState.animateScrollToItem(messages.size - 1)
         }
     }
@@ -130,7 +143,9 @@ fun AnalyzerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .imePadding() // ← КЛЮЧЕВОЕ: поднимает контент над клавиатурой
         ) {
+            // ===== OPERATIONS LOG (верхняя панель) =====
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -231,11 +246,13 @@ fun AnalyzerScreen(
                 thickness = 2.dp
             )
             
+            // ===== ЧАТ + ВВОД (нижняя часть) =====
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.72f)
             ) {
+                // Ошибка
                 AnimatedVisibility(visible = chatError != null) {
                     Surface(
                         modifier = Modifier
@@ -266,6 +283,7 @@ fun AnalyzerScreen(
                     }
                 }
                 
+                // Список сообщений
                 LazyColumn(
                     state = chatListState,
                     modifier = Modifier
@@ -308,6 +326,7 @@ fun AnalyzerScreen(
                     }
                 }
                 
+                // ===== ПОЛЕ ВВОДА =====
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = Color(0xFF1C2128),
@@ -384,6 +403,7 @@ fun AnalyzerScreen(
         }
     }
     
+    // ===== ДИАЛОГИ =====
     if (showModelDialog) {
         AlertDialog(
             onDismissRequest = { showModelDialog = false },
@@ -655,4 +675,3 @@ private fun ChatMessageBubble(
             )
         }
     }
-}
