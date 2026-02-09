@@ -8,45 +8,44 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🤖 CLAUDE MODEL CONFIGURATION v4.0 (ALL 8 MODELS)
+ * 🤖 CLAUDE MODEL CONFIGURATION v5.0 (ALL 8 MODELS + ECO/MAX OUTPUT)
  * 
- * ✅ ОБНОВЛЕНО (2026-02-09):
- * - Все 8 моделей из Anthropic Console с правильными ID и ценами
- * - Правильные model ID для каждой модели
- * - Актуальные цены из docs.anthropic.com
+ * ✅ ОБНОВЛЕНО (2026-02-10):
+ * - contextWindow: макс контекстное окно (input + output)
+ * - maxOutputTokens: предел выходных токенов каждой модели
+ * - ECO_OUTPUT_TOKENS: экономный режим (8192 для всех)
+ * - getEffectiveOutputTokens(ecoMode): выбор между ECO и MAX
  * 
- * Модели (в порядке от новейшей к старой):
- * 1. Opus 4.6       (claude-opus-4-6)             — $5/$25,  newest, best for coding
- * 2. Opus 4.5       (claude-opus-4-5-20251101)     — $5/$25,  powerful & efficient
- * 3. Opus 4.1       (claude-opus-4-1-20250805)     — $15/$75, specialized reasoning
- * 4. Opus 4         (claude-opus-4-20250514)        — $15/$75, original opus 4
- * 5. Sonnet 4.5     (claude-sonnet-4-5-20250929)    — $3/$15,  smart & efficient
- * 6. Sonnet 4       (claude-sonnet-4-20250514)      — $3/$15,  balanced workhorse
- * 7. Haiku 4.5      (claude-haiku-4-5-20251001)     — $1/$5,   fast for daily tasks
- * 8. Haiku 3        (claude-3-haiku-20240307)        — $0.25/$1.25, fastest & cheapest
- * 
- * Оптимизации:
- * ✅ Prompt Caching (90% экономия на cache hits)
- * ✅ Auto-Haiku (экономия на простых задачах)
- * ✅ Batch API (50% скидка)
- * ✅ Управление сеансами (thread-safe)
- * ✅ Предупреждение о длинном контексте
+ * Лимиты по моделям (из docs.anthropic.com):
+ * 1. Opus 4.6   — context: 200K (1M beta), max output: 128,000
+ * 2. Opus 4.5   — context: 200K,           max output: 64,000
+ * 3. Opus 4.1   — context: 200K,           max output: 64,000
+ * 4. Opus 4     — context: 200K,           max output: 64,000
+ * 5. Sonnet 4.5 — context: 200K (1M beta), max output: 64,000
+ * 6. Sonnet 4   — context: 200K (1M beta), max output: 64,000
+ * 7. Haiku 4.5  — context: 200K,           max output: 64,000
+ * 8. Haiku 3    — context: 200K,           max output: 4,096
  */
 object ClaudeModelConfig {
     
     private const val TAG = "ClaudeModelConfig"
     
+    /** ECO mode: экономный лимит output для всех моделей */
+    const val ECO_OUTPUT_TOKENS = 8192
+    
     enum class ClaudeModel(
         val modelId: String,
         val displayName: String,
         val description: String,
+        val contextWindow: Int,
+        val maxOutputTokens: Int,
         val inputPricePerM: Double,
         val outputPricePerM: Double,
         val longInputPricePerM: Double,
         val longOutputPricePerM: Double,
         val cachedInputPricePerM: Double,
         val longContextThreshold: Int,
-        val maxTokens: Int,
+        val supportsLongContext1M: Boolean,
         val speedRating: Int,
         val emoji: String
     ) {
@@ -58,13 +57,15 @@ object ClaudeModelConfig {
             modelId = "claude-opus-4-6",
             displayName = "Opus 4.6",
             description = "Новейшая, лучшая для кодирования",
+            contextWindow = 200_000,
+            maxOutputTokens = 128_000,
             inputPricePerM = 5.0,
             outputPricePerM = 25.0,
             longInputPricePerM = 10.0,
             longOutputPricePerM = 37.5,
             cachedInputPricePerM = 0.50,
             longContextThreshold = 200_000,
-            maxTokens = 1_000_000,
+            supportsLongContext1M = true,
             speedRating = 3,
             emoji = "🚀"
         ),
@@ -73,13 +74,15 @@ object ClaudeModelConfig {
             modelId = "claude-opus-4-5-20251101",
             displayName = "Opus 4.5",
             description = "Мощная и эффективная",
+            contextWindow = 200_000,
+            maxOutputTokens = 64_000,
             inputPricePerM = 5.0,
             outputPricePerM = 25.0,
             longInputPricePerM = 10.0,
             longOutputPricePerM = 37.5,
             cachedInputPricePerM = 0.50,
             longContextThreshold = 200_000,
-            maxTokens = 1_000_000,
+            supportsLongContext1M = false,
             speedRating = 3,
             emoji = "🔥"
         ),
@@ -88,13 +91,15 @@ object ClaudeModelConfig {
             modelId = "claude-opus-4-1-20250805",
             displayName = "Opus 4.1",
             description = "Специализированная для reasoning",
+            contextWindow = 200_000,
+            maxOutputTokens = 64_000,
             inputPricePerM = 15.0,
             outputPricePerM = 75.0,
             longInputPricePerM = 30.0,
             longOutputPricePerM = 112.5,
             cachedInputPricePerM = 1.50,
             longContextThreshold = 200_000,
-            maxTokens = 200_000,
+            supportsLongContext1M = false,
             speedRating = 2,
             emoji = "🧠"
         ),
@@ -103,13 +108,15 @@ object ClaudeModelConfig {
             modelId = "claude-opus-4-20250514",
             displayName = "Opus 4",
             description = "Оригинальная Opus 4",
+            contextWindow = 200_000,
+            maxOutputTokens = 64_000,
             inputPricePerM = 15.0,
             outputPricePerM = 75.0,
             longInputPricePerM = 30.0,
             longOutputPricePerM = 112.5,
             cachedInputPricePerM = 1.50,
             longContextThreshold = 200_000,
-            maxTokens = 200_000,
+            supportsLongContext1M = false,
             speedRating = 2,
             emoji = "💎"
         ),
@@ -122,13 +129,15 @@ object ClaudeModelConfig {
             modelId = "claude-sonnet-4-5-20250929",
             displayName = "Sonnet 4.5",
             description = "Умная и эффективная",
+            contextWindow = 200_000,
+            maxOutputTokens = 64_000,
             inputPricePerM = 3.0,
             outputPricePerM = 15.0,
             longInputPricePerM = 6.0,
             longOutputPricePerM = 22.5,
             cachedInputPricePerM = 0.30,
             longContextThreshold = 200_000,
-            maxTokens = 1_000_000,
+            supportsLongContext1M = true,
             speedRating = 5,
             emoji = "⚡"
         ),
@@ -137,13 +146,15 @@ object ClaudeModelConfig {
             modelId = "claude-sonnet-4-20250514",
             displayName = "Sonnet 4",
             description = "Сбалансированная рабочая лошадка",
+            contextWindow = 200_000,
+            maxOutputTokens = 64_000,
             inputPricePerM = 3.0,
             outputPricePerM = 15.0,
             longInputPricePerM = 6.0,
             longOutputPricePerM = 22.5,
             cachedInputPricePerM = 0.30,
             longContextThreshold = 200_000,
-            maxTokens = 1_000_000,
+            supportsLongContext1M = true,
             speedRating = 5,
             emoji = "✨"
         ),
@@ -156,13 +167,15 @@ object ClaudeModelConfig {
             modelId = "claude-haiku-4-5-20251001",
             displayName = "Haiku 4.5",
             description = "Быстрая для ежедневных задач",
+            contextWindow = 200_000,
+            maxOutputTokens = 64_000,
             inputPricePerM = 1.0,
             outputPricePerM = 5.0,
             longInputPricePerM = 2.0,
             longOutputPricePerM = 7.5,
             cachedInputPricePerM = 0.10,
             longContextThreshold = 200_000,
-            maxTokens = 200_000,
+            supportsLongContext1M = false,
             speedRating = 8,
             emoji = "💨"
         ),
@@ -170,45 +183,55 @@ object ClaudeModelConfig {
         HAIKU_3(
             modelId = "claude-3-haiku-20240307",
             displayName = "Haiku 3",
-            description = "Самая быстрая и дешёвая",
+            description = "Самая быстрая и дешёвая (max 4K output)",
+            contextWindow = 200_000,
+            maxOutputTokens = 4_096,
             inputPricePerM = 0.25,
             outputPricePerM = 1.25,
             longInputPricePerM = 0.25,
             longOutputPricePerM = 1.25,
             cachedInputPricePerM = 0.03,
             longContextThreshold = 200_000,
-            maxTokens = 200_000,
+            supportsLongContext1M = false,
             speedRating = 10,
             emoji = "🪶"
         );
         
+        /**
+         * Получить эффективный лимит output токенов
+         * ECO mode (true)  → 8192 (или maxOutputTokens если он меньше, как у Haiku 3)
+         * MAX mode (false)  → maxOutputTokens модели
+         */
+        fun getEffectiveOutputTokens(ecoMode: Boolean): Int {
+            return if (ecoMode) {
+                minOf(ECO_OUTPUT_TOKENS, maxOutputTokens)
+            } else {
+                maxOutputTokens
+            }
+        }
+        
+        /**
+         * Максимум входных токенов с учётом зарезервированного output
+         */
+        fun getMaxInputTokens(ecoMode: Boolean): Int {
+            return contextWindow - getEffectiveOutputTokens(ecoMode)
+        }
+        
         companion object {
-            /**
-             * Получить модель по ID
-             */
             fun fromModelId(modelId: String): ClaudeModel? {
                 return entries.find { it.modelId == modelId }
             }
             
-            /**
-             * Список всех modelId для dropdown
-             */
             fun getAllModelIds(): List<String> {
                 return entries.map { it.modelId }
             }
             
-            /**
-             * Список с отображаемыми именами для UI
-             */
             fun getAllModelsWithNames(): List<Pair<String, String>> {
                 return entries.map { 
                     it.modelId to "${it.emoji} ${it.displayName} — \$${it.inputPricePerM}/\$${it.outputPricePerM}"
                 }
             }
             
-            /**
-             * Модель по умолчанию
-             */
             fun getDefault(): ClaudeModel = OPUS_4_6
         }
         
@@ -435,6 +458,8 @@ object ClaudeModelConfig {
             appendLine()
             appendLine("**Session ID:** ${sessionId.take(8)}...")
             appendLine("**Model:** ${model.displayName} ${model.emoji}")
+            appendLine("**Context:** ${"%,d".format(model.contextWindow)} tok")
+            appendLine("**Max Output:** ${"%,d".format(model.maxOutputTokens)} tok")
             appendLine("**Started:** $startTimeFormatted")
             if (endTime != null) {
                 appendLine("**Ended:** $endTimeFormatted")
@@ -463,10 +488,7 @@ object ClaudeModelConfig {
         private const val TAG = "SessionManager"
         private val sessions = ConcurrentHashMap<String, ChatSession>()
         
-        fun createSession(
-            sessionId: String,
-            model: ClaudeModel
-        ): ChatSession {
+        fun createSession(sessionId: String, model: ClaudeModel): ChatSession {
             return sessions.getOrPut(sessionId) {
                 ChatSession(
                     sessionId = sessionId,
@@ -478,26 +500,18 @@ object ClaudeModelConfig {
             }
         }
         
-        fun getSession(sessionId: String): ChatSession? {
-            return sessions[sessionId]
-        }
+        fun getSession(sessionId: String): ChatSession? = sessions[sessionId]
         
         fun endSession(sessionId: String): ChatSession? {
             val session = sessions.remove(sessionId)
             session?.end()
-            if (session != null) {
-                Log.i(TAG, "Ended session: $sessionId")
-            }
+            if (session != null) Log.i(TAG, "Ended session: $sessionId")
             return session
         }
         
-        fun getAllActiveSessions(): List<ChatSession> {
-            return sessions.values.filter { it.isActive }
-        }
+        fun getAllActiveSessions(): List<ChatSession> = sessions.values.filter { it.isActive }
         
-        fun getAllSessions(): List<ChatSession> {
-            return sessions.values.toList()
-        }
+        fun getAllSessions(): List<ChatSession> = sessions.values.toList()
         
         fun shouldStartNewSession(sessionId: String): Boolean {
             val session = sessions[sessionId] ?: return false
@@ -512,11 +526,9 @@ object ClaudeModelConfig {
                 if (!session.isActive) {
                     val endTime = session.endTime ?: now
                     val age = Duration.between(endTime, now)
-                    
                     if (age > maxAge) {
                         sessions.remove(session.sessionId)
                         cleaned++
-                        Log.d(TAG, "Cleaned up old inactive session: ${session.sessionId} (age: ${age.toHours()}h)")
                     }
                 } else {
                     val age = Duration.between(session.startTime, now)
@@ -524,15 +536,11 @@ object ClaudeModelConfig {
                         session.end()
                         sessions.remove(session.sessionId)
                         cleaned++
-                        Log.d(TAG, "Cleaned up stale active session: ${session.sessionId} (age: ${age.toHours()}h)")
                     }
                 }
             }
             
-            if (cleaned > 0) {
-                Log.i(TAG, "Cleaned up $cleaned old sessions")
-            }
-            
+            if (cleaned > 0) Log.i(TAG, "Cleaned up $cleaned old sessions")
             return cleaned
         }
         
@@ -543,9 +551,7 @@ object ClaudeModelConfig {
             return sessionList
                 .groupBy { it.model }
                 .mapValues { (_, modelSessions) ->
-                    modelSessions
-                        .map { it.currentCost }
-                        .reduce { acc, cost -> acc + cost }
+                    modelSessions.map { it.currentCost }.reduce { acc, cost -> acc + cost }
                 }
         }
         
