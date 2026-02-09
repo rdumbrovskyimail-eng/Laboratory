@@ -45,6 +45,7 @@ fun AnalyzerScreen(
     val operationsLog by viewModel.operationsLog.collectAsState()
     val autoHaikuEnabled by viewModel.autoHaikuEnabled.collectAsState()
     val sessionTokens by viewModel.sessionTokens.collectAsState()
+    val ecoOutputMode by viewModel.ecoOutputMode.collectAsState()
     
     var userInput by remember { mutableStateOf("") }
     var showModelDialog by remember { mutableStateOf(false) }
@@ -143,7 +144,7 @@ fun AnalyzerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .imePadding() // ← КЛЮЧЕВОЕ: поднимает контент над клавиатурой
+                .imePadding()
         ) {
             // ===== OPERATIONS LOG (верхняя панель) =====
             Box(
@@ -173,6 +174,22 @@ fun AnalyzerScreen(
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            // ✅ ECO / MAX индикатор
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(if (ecoOutputMode) accentGreen else accentRed)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                if (ecoOutputMode) "ECO" else "MAX",
+                                color = if (ecoOutputMode) accentGreen else accentRed,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Spacer(Modifier.width(6.dp))
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
@@ -181,12 +198,12 @@ fun AnalyzerScreen(
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                "Cache ${if (cachingEnabled) "ON" else "OFF"}",
+                                "Cache",
                                 color = textSecondary,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(6.dp))
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
@@ -195,12 +212,12 @@ fun AnalyzerScreen(
                             )
                             Spacer(Modifier.width(4.dp))
                             Text(
-                                "Haiku ${if (autoHaikuEnabled) "ON" else "OFF"}",
+                                "Haiku",
                                 color = textSecondary,
                                 fontSize = 10.sp,
                                 fontFamily = FontFamily.Monospace
                             )
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(6.dp))
                             IconButton(
                                 onClick = { viewModel.clearOperationsLog() },
                                 modifier = Modifier.size(20.dp)
@@ -337,15 +354,30 @@ fun AnalyzerScreen(
                             .padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // ✅ НОВОЕ: Кнопка ECO/MAX
+                        IconButton(
+                            onClick = { viewModel.toggleOutputMode() },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .clip(CircleShape)
+                                        .background(if (ecoOutputMode) accentGreen else accentRed)
+                                )
+                            }
+                        }
+                        
                         OutlinedTextField(
                             value = userInput,
                             onValueChange = { userInput = it },
                             modifier = Modifier.weight(1f),
                             placeholder = { 
                                 Text(
-                                    "Сообщение для Claude...",
+                                    if (ecoOutputMode) "ECO 🟢 8K output..." else "MAX 🔴 ${"%,d".format(selectedModel.maxOutputTokens)} output...",
                                     color = textSecondary,
-                                    fontSize = 14.sp
+                                    fontSize = 13.sp
                                 ) 
                             },
                             colors = OutlinedTextFieldDefaults.colors(
@@ -405,7 +437,6 @@ fun AnalyzerScreen(
     
     // ===== ДИАЛОГИ =====
     
-    // ✅ ИСПРАВЛЕНО: LazyColumn вместо Column — теперь все 8 моделей видны с прокруткой
     if (showModelDialog) {
         AlertDialog(
             onDismissRequest = { showModelDialog = false },
@@ -417,7 +448,6 @@ fun AnalyzerScreen(
                 ) {
                     items(ClaudeModelConfig.ClaudeModel.entries.toList()) { model ->
                         val isSelected = model == selectedModel
-                        // ⚠️ Предупреждение для дорогих моделей
                         val isExpensive = model == ClaudeModelConfig.ClaudeModel.OPUS_4_1 ||
                                           model == ClaudeModelConfig.ClaudeModel.OPUS_4
                         Surface(
@@ -429,7 +459,7 @@ fun AnalyzerScreen(
                             shape = RoundedCornerShape(8.dp),
                             color = when {
                                 isSelected -> MaterialTheme.colorScheme.primaryContainer
-                                isExpensive -> Color(0xFFFFF3E0) // лёгкий оранжевый фон для дорогих
+                                isExpensive -> Color(0xFFFFF3E0)
                                 else -> MaterialTheme.colorScheme.surface
                             },
                             tonalElevation = if (isSelected) 4.dp else 0.dp
