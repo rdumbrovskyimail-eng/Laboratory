@@ -26,7 +26,7 @@ import kotlinx.serialization.Serializable
 data class ClaudeRequest(
     @EncodeDefault
     @SerialName("model")
-    val model: String = "claude-opus-4-5-20250514",
+    val model: String = "claude-opus-4-6", // ✅ ИЗМЕНЕНО: было "claude-opus-4-5-20250514"
 
     @EncodeDefault
     @SerialName("max_tokens")
