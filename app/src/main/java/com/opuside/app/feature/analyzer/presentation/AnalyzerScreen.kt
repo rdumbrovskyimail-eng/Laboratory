@@ -29,11 +29,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.ai.ClaudeModelConfig
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
-import kotlinx.coroutines.launch
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ANALYZER SCREEN v3.0 — DUAL PANEL (Operations Log + Streaming Chat)
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,24 +52,20 @@ fun AnalyzerScreen(
     
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
     
-    // Авто-скролл при новых сообщениях
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             chatListState.animateScrollToItem(messages.size - 1)
         }
     }
     
-    // Авто-скролл лога операций
     LaunchedEffect(operationsLog.size) {
         if (operationsLog.isNotEmpty()) {
             opsListState.animateScrollToItem(operationsLog.size - 1)
         }
     }
     
-    // Тёмные цвета для терминального стиля
     val terminalBg = Color(0xFF0D1117)
     val terminalSurface = Color(0xFF161B22)
     val terminalBorder = Color(0xFF30363D)
@@ -87,7 +78,6 @@ fun AnalyzerScreen(
     
     Scaffold(
         topBar = {
-            // ═══ TOP BAR ═══
             TopAppBar(
                 title = {
                     Column {
@@ -113,19 +103,15 @@ fun AnalyzerScreen(
                     }
                 },
                 actions = {
-                    // Кнопка экономии
                     IconButton(onClick = { showEconomySheet = true }) {
                         Icon(Icons.Default.Savings, "Economy", tint = accentGreen)
                     }
-                    // Кнопка модели
                     IconButton(onClick = { showModelDialog = true }) {
                         Icon(Icons.Default.Psychology, "Model")
                     }
-                    // Кнопка статистики сеанса
                     IconButton(onClick = { showSessionStats = true }) {
                         Icon(Icons.Default.Analytics, "Stats")
                     }
-                    // Новый сеанс
                     IconButton(onClick = { viewModel.startNewSession() }) {
                         Icon(Icons.Default.RestartAlt, "New Session")
                     }
@@ -145,9 +131,6 @@ fun AnalyzerScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            // ═══════════════════════════════════════════════════════════════
-            // ВЕРХНЯЯ ПАНЕЛЬ — OPERATIONS LOG (30% высоты)
-            // ═══════════════════════════════════════════════════════════════
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -155,7 +138,6 @@ fun AnalyzerScreen(
                     .background(terminalSurface)
             ) {
                 Column {
-                    // Заголовок панели
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -176,7 +158,6 @@ fun AnalyzerScreen(
                             )
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Индикатор Cache
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
@@ -191,7 +172,6 @@ fun AnalyzerScreen(
                                 fontFamily = FontFamily.Monospace
                             )
                             Spacer(Modifier.width(8.dp))
-                            // Индикатор Auto-Haiku
                             Box(
                                 modifier = Modifier
                                     .size(8.dp)
@@ -206,7 +186,6 @@ fun AnalyzerScreen(
                                 fontFamily = FontFamily.Monospace
                             )
                             Spacer(Modifier.width(8.dp))
-                            // Очистить лог
                             IconButton(
                                 onClick = { viewModel.clearOperationsLog() },
                                 modifier = Modifier.size(20.dp)
@@ -221,7 +200,6 @@ fun AnalyzerScreen(
                         }
                     }
                     
-                    // Лог операций
                     if (operationsLog.isEmpty()) {
                         Box(
                             modifier = Modifier.fillMaxSize(),
@@ -248,21 +226,16 @@ fun AnalyzerScreen(
                 }
             }
             
-            // Разделитель
             HorizontalDivider(
                 color = terminalBorder,
                 thickness = 2.dp
             )
             
-            // ═══════════════════════════════════════════════════════════════
-            // НИЖНЯЯ ПАНЕЛЬ — STREAMING CHAT (70% высоты)
-            // ═══════════════════════════════════════════════════════════════
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(0.72f)
             ) {
-                // Ошибка
                 AnimatedVisibility(visible = chatError != null) {
                     Surface(
                         modifier = Modifier
@@ -293,7 +266,6 @@ fun AnalyzerScreen(
                     }
                 }
                 
-                // Сообщения чата
                 LazyColumn(
                     state = chatListState,
                     modifier = Modifier
@@ -313,7 +285,6 @@ fun AnalyzerScreen(
                         )
                     }
                     
-                    // Индикатор стриминга
                     if (isStreaming) {
                         item {
                             Row(
@@ -337,7 +308,6 @@ fun AnalyzerScreen(
                     }
                 }
                 
-                // ═══ INPUT BAR ═══
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     color = Color(0xFF1C2128),
@@ -386,7 +356,6 @@ fun AnalyzerScreen(
                         
                         Spacer(Modifier.width(8.dp))
                         
-                        // Send button
                         FilledIconButton(
                             onClick = {
                                 if (userInput.isNotBlank() && !isStreaming) {
@@ -415,9 +384,6 @@ fun AnalyzerScreen(
         }
     }
     
-    // ═══ DIALOGS ═══
-    
-    // Model Selection Dialog
     if (showModelDialog) {
         AlertDialog(
             onDismissRequest = { showModelDialog = false },
@@ -478,14 +444,12 @@ fun AnalyzerScreen(
         )
     }
     
-    // Economy Settings Sheet
     if (showEconomySheet) {
         AlertDialog(
             onDismissRequest = { showEconomySheet = false },
             title = { Text("💰 Экономия API") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Prompt Caching
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -507,7 +471,6 @@ fun AnalyzerScreen(
                     
                     HorizontalDivider()
                     
-                    // Auto-Haiku
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -529,7 +492,6 @@ fun AnalyzerScreen(
                     
                     HorizontalDivider()
                     
-                    // Статистика экономии
                     sessionTokens?.let { cost ->
                         if (cost.savingsPercentage > 0) {
                             Surface(
@@ -557,7 +519,6 @@ fun AnalyzerScreen(
         )
     }
     
-    // Session Stats Dialog
     if (showSessionStats) {
         AlertDialog(
             onDismissRequest = { showSessionStats = false },
@@ -583,10 +544,6 @@ fun AnalyzerScreen(
         )
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// COMPONENTS
-// ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun OperationLogRow(
@@ -664,7 +621,6 @@ private fun ChatMessageBubble(
             .padding(vertical = 4.dp),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
-        // Метка роли
         Text(
             when {
                 isUser -> "👤 You"
