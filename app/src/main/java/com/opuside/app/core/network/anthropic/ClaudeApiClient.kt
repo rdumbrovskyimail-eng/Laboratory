@@ -1,6 +1,7 @@
 package com.opuside.app.core.network.anthropic
 
 import android.util.Log
+import com.opuside.app.core.ai.ClaudeModelConfig
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.anthropic.model.*
 import com.opuside.app.core.security.SecureSettingsDataStore
@@ -27,9 +28,11 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Claude API Client v2.3 (FIX)
+ * Claude API Client v2.4 (SELECTED MODEL TEST)
  *
  * ✅ ИСПРАВЛЕНО:
+ * - testConnection() теперь тестирует ВЫБРАННУЮ модель из Settings
+ * - Показывает displayName и цены в результате теста
  * - Убран BuildConfig (ANTHROPIC_API_KEY, CLAUDE_MODEL)
  * - Добавлен AppSettings для получения модели
  * - Улучшено логирование
@@ -74,9 +77,10 @@ class ClaudeApiClient @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО v2.3: testConnection
-     * - ClaudeRequest без null-полей (temperature, system, etc. не попадают в JSON)
-     * - Тест всегда на Haiku для экономии
+     * ✅ ОБНОВЛЕНО v2.4: testConnection теперь тестирует ВЫБРАННУЮ модель
+     * - Читает модель из AppSettings (выбранную пользователем)
+     * - Показывает displayName, emoji и цены в результате
+     * - Если модель не найдена в enum, тестирует по сырому modelId
      */
     suspend fun testConnection(): Result<String> {
         return try {
@@ -99,10 +103,12 @@ class ClaudeApiClient @Inject constructor(
             Log.d(TAG, "  ├─ API Key: ${apiKey.take(8)}***")
             Log.d(TAG, "  └─ API Version: $API_VERSION")
 
-            // ✅ Всегда тестируем на Haiku — самая дешёвая модель ($0.80/1M vs $5/1M)
-            val model = "claude-haiku-4-5-20251001"
+            // ✅ ИЗМЕНЕНО: Тестируем ВЫБРАННУЮ модель из Settings
+            val savedModelId = appSettings.claudeModel.first()
+            val modelConfig = ClaudeModelConfig.ClaudeModel.fromModelId(savedModelId)
+            val model = savedModelId // используем сырой ID для API запроса
 
-            Log.d(TAG, "  └─ Test Model: $model (Haiku — для экономии)")
+            Log.d(TAG, "  └─ Test Model: $model (${modelConfig?.displayName ?: "unknown"} ${modelConfig?.emoji ?: ""})")
 
             val testMessage = ClaudeMessage(
                 role = "user",
@@ -140,9 +146,18 @@ class ClaudeApiClient @Inject constructor(
                     Log.d(TAG, "   Tokens: ${claudeResponse.usage.totalTokens}")
                     Log.d(TAG, "━".repeat(80))
 
+                    // ✅ ИЗМЕНЕНО: Показываем displayName, emoji и цены
+                    val displayInfo = if (modelConfig != null) {
+                        "${modelConfig.emoji} ${modelConfig.displayName}\n" +
+                        "Price: \$${modelConfig.inputPricePerM}/\$${modelConfig.outputPricePerM} per 1M tokens"
+                    } else {
+                        claudeResponse.model
+                    }
+
                     Result.success(
                         "✅ Connected successfully!\n" +
-                        "Model: ${claudeResponse.model}\n" +
+                        "Model: $displayInfo\n" +
+                        "API Model ID: ${claudeResponse.model}\n" +
                         "Tokens used: ${claudeResponse.usage.totalTokens}"
                     )
                 }
