@@ -14,6 +14,12 @@ import java.util.concurrent.ConcurrentHashMap
  * - Добавлена Haiku 4.5 (мгновенная, $0.80/$4)
  * - Исправлен Opus 4.6 modelId
  * - 4 модели в порядке скорости
+ * - ИСПРАВЛЕНЫ критические баги:
+ *   * CRASH-2: getTotalCost() теперь поддерживает разные модели
+ *   * CRASH-3: createSession() TOCTOU race condition
+ *   * CRASH-4: endSession() TOCTOU race condition
+ *   * BUG-2: ChatSession методы thread-safe
+ *   * LEAK-1: cleanupOldSessions() чистит зависшие активные сессии
  * 
  * Поддержка 4 моделей:
  * - Haiku 4.5 (мгновенная, $0.80/$4)
@@ -259,6 +265,9 @@ object ClaudeModelConfig {
         var averageTokensPerMessage: Int = 0
             private set
         
+        // ✅ НОВОЕ: Кеш для currentCost (PERF-1 fix)
+        private var _cachedCost: ModelCost? = null
+        
         val duration: Long
             get() = (endTime ?: Instant.now()).epochSecond - startTime.epochSecond
         
@@ -282,11 +291,11 @@ object ClaudeModelConfig {
             get() = endTime?.let { formatInstant(it) }
         
         val currentCost: ModelCost
-            get() = model.calculateCost(
+            get() = _cachedCost ?: model.calculateCost(
                 inputTokens = totalInputTokens,
                 outputTokens = totalOutputTokens,
                 cachedInputTokens = totalCachedInputTokens
-            )
+            ).also { _cachedCost = it }
         
         val isApproachingLongContext: Boolean
             get() = totalInputTokens > (model.longContextThreshold * 0.8)
@@ -297,6 +306,8 @@ object ClaudeModelConfig {
         val remainingTokensBeforeLongContext: Int
             get() = (model.longContextThreshold - totalInputTokens).coerceAtLeast(0)
         
+        // ✅ BUG-2 FIX: Thread-safe addMessage
+        @Synchronized
         fun addMessage(inputTokens: Int, outputTokens: Int, cachedInputTokens: Int = 0) {
             require(inputTokens >= 0) { "Input tokens cannot be negative" }
             require(outputTokens >= 0) { "Output tokens cannot be negative" }
@@ -307,6 +318,9 @@ object ClaudeModelConfig {
             totalCachedInputTokens += cachedInputTokens
             messageCount++
             
+            // Invalidate cost cache
+            _cachedCost = null
+            
             updateMetrics()
             
             Log.d(TAG, "Message added to session $sessionId: " +
@@ -314,6 +328,8 @@ object ClaudeModelConfig {
                     "total messages=$messageCount")
         }
         
+        // ✅ BUG-2 FIX: Thread-safe end
+        @Synchronized
         fun end() {
             isActive = false
             endTime = Instant.now()
@@ -376,35 +392,34 @@ object ClaudeModelConfig {
         private const val TAG = "SessionManager"
         private val sessions = ConcurrentHashMap<String, ChatSession>()
         
+        // ✅ CRASH-3 FIX: Использовать getOrPut для атомарности
         fun createSession(
             sessionId: String,
             model: ClaudeModel
         ): ChatSession {
-            if (sessions.containsKey(sessionId)) {
-                Log.w(TAG, "Session $sessionId already exists, returning existing")
-                return sessions[sessionId]!!
+            return sessions.getOrPut(sessionId) {
+                ChatSession(
+                    sessionId = sessionId,
+                    model = model,
+                    startTime = Instant.now()
+                ).also {
+                    Log.i(TAG, "Created new session: $sessionId with model ${model.displayName}")
+                }
             }
-            
-            val session = ChatSession(
-                sessionId = sessionId,
-                model = model,
-                startTime = Instant.now()
-            )
-            sessions[sessionId] = session
-            
-            Log.i(TAG, "Created new session: $sessionId with model ${model.displayName}")
-            return session
         }
         
         fun getSession(sessionId: String): ChatSession? {
             return sessions[sessionId]
         }
         
+        // ✅ CRASH-4 FIX: Атомарное remove + end
         fun endSession(sessionId: String): ChatSession? {
-            return sessions[sessionId]?.apply {
-                end()
-                sessions.remove(sessionId)
+            val session = sessions.remove(sessionId)
+            session?.end()
+            if (session != null) {
+                Log.i(TAG, "Ended session: $sessionId")
             }
+            return session
         }
         
         fun getAllActiveSessions(): List<ChatSession> {
@@ -420,6 +435,7 @@ object ClaudeModelConfig {
             return session.isApproachingLongContext
         }
         
+        // ✅ LEAK-1 FIX: Чистим также зависшие активные сессии старше 24 часов
         fun cleanupOldSessions(maxAge: Duration = Duration.ofDays(1)): Int {
             val now = Instant.now()
             var cleaned = 0
@@ -432,7 +448,16 @@ object ClaudeModelConfig {
                     if (age > maxAge) {
                         sessions.remove(session.sessionId)
                         cleaned++
-                        Log.d(TAG, "Cleaned up old session: ${session.sessionId} (age: ${age.toHours()}h)")
+                        Log.d(TAG, "Cleaned up old inactive session: ${session.sessionId} (age: ${age.toHours()}h)")
+                    }
+                } else {
+                    // Чистим "зависшие" активные сессии старше 24 часов
+                    val age = Duration.between(session.startTime, now)
+                    if (age > Duration.ofHours(24)) {
+                        session.end()
+                        sessions.remove(session.sessionId)
+                        cleaned++
+                        Log.d(TAG, "Cleaned up stale active session: ${session.sessionId} (age: ${age.toHours()}h)")
                     }
                 }
             }
@@ -444,13 +469,18 @@ object ClaudeModelConfig {
             return cleaned
         }
         
-        fun getTotalCost(): ModelCost? {
-            val allSessions = sessions.values.toList()
-            if (allSessions.isEmpty()) return null
+        // ✅ CRASH-2 FIX: getTotalCost теперь возвращает Map по моделям
+        fun getTotalCost(): Map<ClaudeModel, ModelCost>? {
+            val sessionList = sessions.values.toList()
+            if (sessionList.isEmpty()) return null
             
-            return allSessions
-                .map { it.currentCost }
-                .reduce { acc, cost -> acc + cost }
+            return sessionList
+                .groupBy { it.model }
+                .mapValues { (_, modelSessions) ->
+                    modelSessions
+                        .map { it.currentCost }
+                        .reduce { acc, cost -> acc + cost }
+                }
         }
         
         fun clear() {
