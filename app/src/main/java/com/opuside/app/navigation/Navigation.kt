@@ -26,7 +26,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.opuside.app.feature.analyzer.presentation.AnalyzerScreen
 import com.opuside.app.feature.creator.presentation.CreatorScreen
-import com.opuside.app.feature.creator.presentation.ClaudeHelperScreen
 import com.opuside.app.feature.settings.presentation.SettingsScreen
 import com.opuside.app.core.security.SecureSettingsDataStore
 
@@ -74,7 +73,7 @@ val bottomNavItems = listOf(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * ✅ ОБНОВЛЕНО: Добавлен параметр sensitiveFeatureDisabled для Root Detection
+ * ✅ ОБНОВЛЕНО v3.0: Удалён ClaudeHelper route
  * 
  * Когда sensitiveFeatureDisabled = true, следующие функции должны быть отключены:
  * - Сохранение Anthropic API ключа (Settings)
@@ -94,39 +93,35 @@ fun OpusIDENavigation(
 
     Scaffold(
         bottomBar = {
-            // Скрываем bottom bar на экране Claude Helper
-            val currentRoute = currentDestination?.route
-            if (currentRoute != "claude_helper") {
-                NavigationBar {
-                    bottomNavItems.forEach { screen ->
-                        val selected = currentDestination?.hierarchy?.any { 
-                            it.route == screen.route 
-                        } == true
+            NavigationBar {
+                bottomNavItems.forEach { screen ->
+                    val selected = currentDestination?.hierarchy?.any { 
+                        it.route == screen.route 
+                    } == true
 
-                        NavigationBarItem(
-                            icon = {
-                                Icon(
-                                    imageVector = if (selected) screen.selectedIcon 
-                                                 else screen.unselectedIcon,
-                                    contentDescription = screen.title
-                                )
-                            },
-                            label = { Text(screen.title) },
-                            selected = selected,
-                            onClick = {
-                                navController.navigate(screen.route) {
-                                    // Избегаем дублирования в back stack
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    // Избегаем нескольких копий одного экрана
-                                    launchSingleTop = true
-                                    // Восстанавливаем состояние при повторном выборе
-                                    restoreState = true
+                    NavigationBarItem(
+                        icon = {
+                            Icon(
+                                imageVector = if (selected) screen.selectedIcon 
+                                             else screen.unselectedIcon,
+                                contentDescription = screen.title
+                            )
+                        },
+                        label = { Text(screen.title) },
+                        selected = selected,
+                        onClick = {
+                            navController.navigate(screen.route) {
+                                // Избегаем дублирования в back stack
+                                popUpTo(navController.graph.findStartDestination().id) {
+                                    saveState = true
                                 }
+                                // Избегаем нескольких копий одного экрана
+                                launchSingleTop = true
+                                // Восстанавливаем состояние при повторном выборе
+                                restoreState = true
                             }
-                        )
-                    }
+                        }
+                    )
                 }
             }
         }
@@ -137,34 +132,16 @@ fun OpusIDENavigation(
             modifier = Modifier.padding(innerPadding)
         ) {
             composable(Screen.Creator.route) {
-                // ✅ Creator работает нормально даже при root
-                // (GitHub API не требует локального хранения чувствительных данных)
-                CreatorScreen(
-                    onNavigateToClaudeHelper = {
-                        navController.navigate("claude_helper")
-                    }
-                )
+                CreatorScreen()
             }
             
             composable(Screen.Analyzer.route) {
-                // ✅ ИСПРАВЛЕНО: AnalyzerScreen не принимает параметр sensitiveFeatureDisabled
                 AnalyzerScreen()
             }
             
             composable(Screen.Settings.route) {
-                // ✅ ОБНОВЛЕНО: Передаём флаг в Settings
-                // Settings должны заблокировать поля API ключей если sensitiveFeatureDisabled = true
                 SettingsScreen(
                     sensitiveFeatureDisabled = sensitiveFeatureDisabled
-                )
-            }
-            
-            // ✅ НОВЫЙ МАРШРУТ: Claude Helper Screen
-            composable("claude_helper") {
-                ClaudeHelperScreen(
-                    onBack = {
-                        navController.popBackStack()
-                    }
                 )
             }
         }
