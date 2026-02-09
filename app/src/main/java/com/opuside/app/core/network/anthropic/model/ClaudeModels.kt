@@ -14,7 +14,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ClaudeRequest(
     @SerialName("model")
-    val model: String = "claude-opus-4-5-20251101",
+    val model: String = "claude-opus-4-5-20250514",
     
     @SerialName("max_tokens")
     val maxTokens: Int = 4096,
