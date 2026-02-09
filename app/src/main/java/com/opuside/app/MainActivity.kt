@@ -209,7 +209,7 @@ class MainActivity : FragmentActivity() {
                 android.util.Log.d("MainActivity", "  │  │  ├─ Owner: ${gitHubConfig.owner}")
                 android.util.Log.d("MainActivity", "  │  │  ├─ Repo: ${gitHubConfig.repo}")
                 android.util.Log.d("MainActivity", "  │  │  ├─ Branch: ${gitHubConfig.branch}")
-                android.util.Log.d("MainActivity", "  │  │  └─ Token: [${gitHubConfig.token.take(10)}...]")
+                android.util.Log.d("MainActivity", "  │  │  └─ Token: [configured, length: ${gitHubConfig.token.length}]")
                 android.util.Log.d("MainActivity", "  │  └─ ✅ Configuration complete")
                 true
             } else {
