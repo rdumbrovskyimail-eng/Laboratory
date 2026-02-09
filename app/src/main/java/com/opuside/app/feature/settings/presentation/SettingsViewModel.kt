@@ -64,7 +64,7 @@ class SettingsViewModel @Inject constructor(
     private val _anthropicKeyInput = MutableStateFlow("")
     val anthropicKeyInput: StateFlow<String> = _anthropicKeyInput.asStateFlow()
 
-    private val _claudeModelInput = MutableStateFlow("claude-opus-4-5-20251101")
+    private val _claudeModelInput = MutableStateFlow("claude-opus-4-5-20250514")
     val claudeModelInput: StateFlow<String> = _claudeModelInput.asStateFlow()
 
     private val _claudeStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
@@ -159,7 +159,7 @@ class SettingsViewModel @Inject constructor(
                     appSettings.claudeModel.first()
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "     └─ ❌ Failed to load Claude model", e)
-                    "claude-opus-4-5-20251101"
+                    "claude-opus-4-5-20250514"
                 }
                 android.util.Log.d(TAG, "     └─ Model: $claudeModel")
 
@@ -610,7 +610,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun resetToDefaults() {
-        _claudeModelInput.value = "claude-opus-4-5-20251101"
+        _claudeModelInput.value = "claude-opus-4-5-20250514"
         _message.value = "⚠️ Settings reset to defaults (not saved)"
     }
 
