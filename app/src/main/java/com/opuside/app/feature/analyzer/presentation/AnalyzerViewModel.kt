@@ -78,7 +78,7 @@ class AnalyzerViewModel @Inject constructor(
     
     private val sessionId: String get() = _sessionId
     
-    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.OPUS_4_5)
+    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.getDefault()) // ✅ ИЗМЕНЕНО: было OPUS_4_5
     val selectedModel: StateFlow<ClaudeModelConfig.ClaudeModel> = _selectedModel.asStateFlow()
     
     private val _currentSession = MutableStateFlow<ClaudeModelConfig.ChatSession?>(null)
@@ -142,7 +142,7 @@ class AnalyzerViewModel @Inject constructor(
             Log.d(TAG, "Loading model from Settings: $savedModelId")
             
             val model = ClaudeModelConfig.ClaudeModel.fromModelId(savedModelId)
-                ?: ClaudeModelConfig.ClaudeModel.OPUS_4_5.also {
+                ?: ClaudeModelConfig.ClaudeModel.getDefault().also { // ✅ ИЗМЕНЕНО: было OPUS_4_5
                     Log.w(TAG, "Model not found, using default: ${it.displayName}")
                 }
             
