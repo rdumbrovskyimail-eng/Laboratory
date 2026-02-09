@@ -1,5 +1,7 @@
 package com.opuside.app.core.network.anthropic.model
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -10,36 +12,49 @@ import kotlinx.serialization.Serializable
 /**
  * Запрос к Claude API.
  * https://docs.anthropic.com/en/api/messages
+ *
+ * ✅ ИСПРАВЛЕНО v2.3:
+ * - @EncodeDefault на обязательных полях (model, max_tokens, messages, stream)
+ * - Nullable поля (system, temperature, top_p, etc.) НЕ сериализуются если null
+ *   благодаря explicitNulls=false + encodeDefaults=false в Json конфиге
+ * - Это исправляет ошибки:
+ *   * "temperature: Input should be a valid number" (null передавался в JSON)
+ *   * "system: Input should be a valid list" (null передавался в JSON)
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ClaudeRequest(
+    @EncodeDefault
     @SerialName("model")
     val model: String = "claude-opus-4-5-20250514",
-    
+
+    @EncodeDefault
     @SerialName("max_tokens")
     val maxTokens: Int = 4096,
-    
+
+    @EncodeDefault
     @SerialName("messages")
     val messages: List<ClaudeMessage>,
-    
+
     @SerialName("system")
     val system: String? = null,
-    
+
+    @EncodeDefault
     @SerialName("stream")
     val stream: Boolean = true,
-    
+
     @SerialName("temperature")
     val temperature: Double? = null,
-    
+
     @SerialName("top_p")
     val topP: Double? = null,
-    
+
     @SerialName("top_k")
     val topK: Int? = null,
-    
+
     @SerialName("stop_sequences")
     val stopSequences: List<String>? = null,
-    
+
     @SerialName("metadata")
     val metadata: ClaudeMetadata? = null
 )
@@ -51,7 +66,7 @@ data class ClaudeRequest(
 data class ClaudeMessage(
     @SerialName("role")
     val role: String, // "user" или "assistant"
-    
+
     @SerialName("content")
     val content: String
 )
@@ -76,25 +91,25 @@ data class ClaudeMetadata(
 data class ClaudeResponse(
     @SerialName("id")
     val id: String,
-    
+
     @SerialName("type")
     val type: String, // "message"
-    
+
     @SerialName("role")
     val role: String, // "assistant"
-    
+
     @SerialName("content")
     val content: List<ContentBlock>,
-    
+
     @SerialName("model")
     val model: String,
-    
+
     @SerialName("stop_reason")
     val stopReason: String?, // "end_turn", "max_tokens", "stop_sequence"
-    
+
     @SerialName("stop_sequence")
     val stopSequence: String?,
-    
+
     @SerialName("usage")
     val usage: Usage
 )
@@ -106,14 +121,14 @@ data class ClaudeResponse(
 data class ContentBlock(
     @SerialName("type")
     val type: String, // "text"
-    
+
     @SerialName("text")
     val text: String? = null
 )
 
 /**
  * Использование токенов v2.1 (UPDATED)
- * 
+ *
  * ✅ НОВОЕ: Поддержка Prompt Caching
  * - cache_creation_input_tokens: токены, добавленные в кеш
  * - cache_read_input_tokens: токены, прочитанные из кеша (экономия 90%)
@@ -122,14 +137,14 @@ data class ContentBlock(
 data class Usage(
     @SerialName("input_tokens")
     val inputTokens: Int,
-    
+
     @SerialName("output_tokens")
     val outputTokens: Int,
-    
+
     // ✅ НОВОЕ: Кеш-статистика
     @SerialName("cache_creation_input_tokens")
     val cacheCreationInputTokens: Int? = null,  // Токены, добавленные в кеш
-    
+
     @SerialName("cache_read_input_tokens")
     val cacheReadInputTokens: Int? = null  // Токены, прочитанные из кеша
 ) {
@@ -138,15 +153,15 @@ data class Usage(
      */
     val totalTokens: Int
         get() = inputTokens + outputTokens
-    
+
     val hasCacheData: Boolean
         get() = cacheCreationInputTokens != null || cacheReadInputTokens != null
-    
+
     val cacheHitRate: Double
         get() = if (inputTokens > 0 && cacheReadInputTokens != null) {
             (cacheReadInputTokens.toDouble() / inputTokens) * 100
         } else 0.0
-    
+
     override fun toString(): String = buildString {
         append("Usage(")
         append("input=$inputTokens, ")
@@ -172,22 +187,22 @@ data class Usage(
 data class StreamEvent(
     @SerialName("type")
     val type: String,
-    
+
     @SerialName("index")
     val index: Int? = null,
-    
+
     @SerialName("message")
     val message: StreamMessage? = null,
-    
+
     @SerialName("content_block")
     val contentBlock: ContentBlock? = null,
-    
+
     @SerialName("delta")
     val delta: StreamDelta? = null,
-    
+
     @SerialName("usage")
     val usage: Usage? = null,
-    
+
     @SerialName("error")
     val error: StreamError? = null
 )
@@ -199,16 +214,16 @@ data class StreamEvent(
 data class StreamMessage(
     @SerialName("id")
     val id: String,
-    
+
     @SerialName("type")
     val type: String,
-    
+
     @SerialName("role")
     val role: String,
-    
+
     @SerialName("model")
     val model: String,
-    
+
     @SerialName("usage")
     val usage: Usage? = null
 )
@@ -220,13 +235,13 @@ data class StreamMessage(
 data class StreamDelta(
     @SerialName("type")
     val type: String? = null,
-    
+
     @SerialName("text")
     val text: String? = null,
-    
+
     @SerialName("stop_reason")
     val stopReason: String? = null,
-    
+
     @SerialName("stop_sequence")
     val stopSequence: String? = null
 )
@@ -238,7 +253,7 @@ data class StreamDelta(
 data class StreamError(
     @SerialName("type")
     val type: String,
-    
+
     @SerialName("message")
     val message: String
 )
@@ -254,7 +269,7 @@ data class StreamError(
 data class ClaudeErrorResponse(
     @SerialName("type")
     val type: String, // "error"
-    
+
     @SerialName("error")
     val error: ClaudeError
 )
@@ -266,7 +281,7 @@ data class ClaudeErrorResponse(
 data class ClaudeError(
     @SerialName("type")
     val type: String, // "invalid_request_error", "authentication_error", "rate_limit_error", etc.
-    
+
     @SerialName("message")
     val message: String
 )
