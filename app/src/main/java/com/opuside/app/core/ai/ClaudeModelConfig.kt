@@ -8,30 +8,28 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🤖 CLAUDE MODEL CONFIGURATION v3.0 (HAIKU UPDATE)
+ * 🤖 CLAUDE MODEL CONFIGURATION v4.0 (ALL 8 MODELS)
  * 
- * ✅ ОБНОВЛЕНО:
- * - Добавлена Haiku 4.5 (мгновенная, $0.80/$4)
- * - Исправлен Opus 4.6 modelId
- * - 4 модели в порядке скорости
- * - ИСПРАВЛЕНЫ критические баги:
- *   * CRASH-2: getTotalCost() теперь поддерживает разные модели
- *   * CRASH-3: createSession() TOCTOU race condition
- *   * CRASH-4: endSession() TOCTOU race condition
- *   * BUG-2: ChatSession методы thread-safe
- *   * LEAK-1: cleanupOldSessions() чистит зависшие активные сессии
+ * ✅ ОБНОВЛЕНО (2026-02-09):
+ * - Все 8 моделей из Anthropic Console с правильными ID и ценами
+ * - Правильные model ID для каждой модели
+ * - Актуальные цены из docs.anthropic.com
  * 
- * Поддержка 4 моделей:
- * - Haiku 4.5 (мгновенная, $0.80/$4)
- * - Sonnet 4.5 (быстрая, $3/$15)
- * - Opus 4.5 (мощная, $5/$25)
- * - Opus 4.6 (новейшая, $5/$25)
+ * Модели (в порядке от новейшей к старой):
+ * 1. Opus 4.6       (claude-opus-4-6)             — $5/$25,  newest, best for coding
+ * 2. Opus 4.5       (claude-opus-4-5-20251101)     — $5/$25,  powerful & efficient
+ * 3. Opus 4.1       (claude-opus-4-1-20250805)     — $15/$75, specialized reasoning
+ * 4. Opus 4         (claude-opus-4-20250514)        — $15/$75, original opus 4
+ * 5. Sonnet 4.5     (claude-sonnet-4-5-20250929)    — $3/$15,  smart & efficient
+ * 6. Sonnet 4       (claude-sonnet-4-20250514)      — $3/$15,  balanced workhorse
+ * 7. Haiku 4.5      (claude-haiku-4-5-20251001)     — $1/$5,   fast for daily tasks
+ * 8. Haiku 3        (claude-3-haiku-20240307)        — $0.25/$1.25, fastest & cheapest
  * 
  * Оптимизации:
- * ✅ Prompt Caching (90% экономия)
- * ✅ Auto-Haiku (85% экономия на простых задачах)
+ * ✅ Prompt Caching (90% экономия на cache hits)
+ * ✅ Auto-Haiku (экономия на простых задачах)
  * ✅ Batch API (50% скидка)
- * ✅ Управление сеансами
+ * ✅ Управление сеансами (thread-safe)
  * ✅ Предупреждение о длинном контексте
  */
 object ClaudeModelConfig {
@@ -52,40 +50,29 @@ object ClaudeModelConfig {
         val speedRating: Int,
         val emoji: String
     ) {
-        HAIKU_4_5(
-            modelId = "claude-haiku-4-5-20251001",
-            displayName = "Haiku 4.5",
-            description = "Мгновенная, для простых задач",
-            inputPricePerM = 0.80,
-            outputPricePerM = 4.0,
-            longInputPricePerM = 1.60,
-            longOutputPricePerM = 6.0,
-            cachedInputPricePerM = 0.08,
-            longContextThreshold = 200_000,
-            maxTokens = 200_000,
-            speedRating = 10,
-            emoji = "💨"
-        ),
+        // ═══════════════════════════════════════════════════════════════════
+        // OPUS MODELS (most capable)
+        // ═══════════════════════════════════════════════════════════════════
         
-        SONNET_4_5(
-            modelId = "claude-sonnet-4-5-20250514",
-            displayName = "Sonnet 4.5",
-            description = "Быстрая и экономичная",
-            inputPricePerM = 3.0,
-            outputPricePerM = 15.0,
-            longInputPricePerM = 6.0,
-            longOutputPricePerM = 22.5,
-            cachedInputPricePerM = 0.30,
+        OPUS_4_6(
+            modelId = "claude-opus-4-6",
+            displayName = "Opus 4.6",
+            description = "Новейшая, лучшая для кодирования",
+            inputPricePerM = 5.0,
+            outputPricePerM = 25.0,
+            longInputPricePerM = 10.0,
+            longOutputPricePerM = 37.5,
+            cachedInputPricePerM = 0.50,
             longContextThreshold = 200_000,
             maxTokens = 1_000_000,
-            speedRating = 5,
-            emoji = "⚡"
+            speedRating = 3,
+            emoji = "🚀"
         ),
         
         OPUS_4_5(
-            modelId = "claude-opus-4-5-20250514",
+            modelId = "claude-opus-4-5-20251101",
             displayName = "Opus 4.5",
-            description = "Мощная, для сложных задач",
+            description = "Мощная и эффективная",
             inputPricePerM = 5.0,
             outputPricePerM = 25.0,
             longInputPricePerM = 10.0,
@@ -96,45 +83,133 @@ object ClaudeModelConfig {
             speedRating = 3,
             emoji = "🔥"
         ),
+
+        OPUS_4_1(
+            modelId = "claude-opus-4-1-20250805",
+            displayName = "Opus 4.1",
+            description = "Специализированная для reasoning",
+            inputPricePerM = 15.0,
+            outputPricePerM = 75.0,
+            longInputPricePerM = 30.0,
+            longOutputPricePerM = 112.5,
+            cachedInputPricePerM = 1.50,
+            longContextThreshold = 200_000,
+            maxTokens = 200_000,
+            speedRating = 2,
+            emoji = "🧠"
+        ),
+
+        OPUS_4(
+            modelId = "claude-opus-4-20250514",
+            displayName = "Opus 4",
+            description = "Оригинальная Opus 4",
+            inputPricePerM = 15.0,
+            outputPricePerM = 75.0,
+            longInputPricePerM = 30.0,
+            longOutputPricePerM = 112.5,
+            cachedInputPricePerM = 1.50,
+            longContextThreshold = 200_000,
+            maxTokens = 200_000,
+            speedRating = 2,
+            emoji = "💎"
+        ),
+
+        // ═══════════════════════════════════════════════════════════════════
+        // SONNET MODELS (balanced)
+        // ═══════════════════════════════════════════════════════════════════
         
-        OPUS_4_6(
-            modelId = "claude-opus-4-6",
-            displayName = "Opus 4.6",
-            description = "Новейшая, для кодирования",
-            inputPricePerM = 5.0,
-            outputPricePerM = 25.0,
-            longInputPricePerM = 10.0,
-            longOutputPricePerM = 37.5,
-            cachedInputPricePerM = 0.50,
+        SONNET_4_5(
+            modelId = "claude-sonnet-4-5-20250929",
+            displayName = "Sonnet 4.5",
+            description = "Умная и эффективная",
+            inputPricePerM = 3.0,
+            outputPricePerM = 15.0,
+            longInputPricePerM = 6.0,
+            longOutputPricePerM = 22.5,
+            cachedInputPricePerM = 0.30,
             longContextThreshold = 200_000,
             maxTokens = 1_000_000,
-            speedRating = 3,
-            emoji = "🚀"
+            speedRating = 5,
+            emoji = "⚡"
+        ),
+
+        SONNET_4(
+            modelId = "claude-sonnet-4-20250514",
+            displayName = "Sonnet 4",
+            description = "Сбалансированная рабочая лошадка",
+            inputPricePerM = 3.0,
+            outputPricePerM = 15.0,
+            longInputPricePerM = 6.0,
+            longOutputPricePerM = 22.5,
+            cachedInputPricePerM = 0.30,
+            longContextThreshold = 200_000,
+            maxTokens = 1_000_000,
+            speedRating = 5,
+            emoji = "✨"
+        ),
+
+        // ═══════════════════════════════════════════════════════════════════
+        // HAIKU MODELS (fastest & cheapest)
+        // ═══════════════════════════════════════════════════════════════════
+        
+        HAIKU_4_5(
+            modelId = "claude-haiku-4-5-20251001",
+            displayName = "Haiku 4.5",
+            description = "Быстрая для ежедневных задач",
+            inputPricePerM = 1.0,
+            outputPricePerM = 5.0,
+            longInputPricePerM = 2.0,
+            longOutputPricePerM = 7.5,
+            cachedInputPricePerM = 0.10,
+            longContextThreshold = 200_000,
+            maxTokens = 200_000,
+            speedRating = 8,
+            emoji = "💨"
+        ),
+
+        HAIKU_3(
+            modelId = "claude-3-haiku-20240307",
+            displayName = "Haiku 3",
+            description = "Самая быстрая и дешёвая",
+            inputPricePerM = 0.25,
+            outputPricePerM = 1.25,
+            longInputPricePerM = 0.25,
+            longOutputPricePerM = 1.25,
+            cachedInputPricePerM = 0.03,
+            longContextThreshold = 200_000,
+            maxTokens = 200_000,
+            speedRating = 10,
+            emoji = "🪶"
         );
         
         companion object {
             /**
-             * ✅ НОВОЕ: Получить модель по ID
+             * Получить модель по ID
              */
             fun fromModelId(modelId: String): ClaudeModel? {
                 return entries.find { it.modelId == modelId }
             }
             
             /**
-             * ✅ НОВОЕ: Список всех modelId для dropdown
+             * Список всех modelId для dropdown
              */
             fun getAllModelIds(): List<String> {
                 return entries.map { it.modelId }
             }
             
             /**
-             * ✅ НОВОЕ: Список с отображаемыми именами для UI
+             * Список с отображаемыми именами для UI
              */
             fun getAllModelsWithNames(): List<Pair<String, String>> {
                 return entries.map { 
-                    it.modelId to "${it.emoji} ${it.displayName}"
+                    it.modelId to "${it.emoji} ${it.displayName} — \$${it.inputPricePerM}/\$${it.outputPricePerM}"
                 }
             }
+            
+            /**
+             * Модель по умолчанию
+             */
+            fun getDefault(): ClaudeModel = OPUS_4_6
         }
         
         fun calculateCost(
@@ -265,7 +340,6 @@ object ClaudeModelConfig {
         var averageTokensPerMessage: Int = 0
             private set
         
-        // ✅ НОВОЕ: Кеш для currentCost (PERF-1 fix)
         private var _cachedCost: ModelCost? = null
         
         val duration: Long
@@ -306,7 +380,6 @@ object ClaudeModelConfig {
         val remainingTokensBeforeLongContext: Int
             get() = (model.longContextThreshold - totalInputTokens).coerceAtLeast(0)
         
-        // ✅ BUG-2 FIX: Thread-safe addMessage
         @Synchronized
         fun addMessage(inputTokens: Int, outputTokens: Int, cachedInputTokens: Int = 0) {
             require(inputTokens >= 0) { "Input tokens cannot be negative" }
@@ -318,7 +391,6 @@ object ClaudeModelConfig {
             totalCachedInputTokens += cachedInputTokens
             messageCount++
             
-            // Invalidate cost cache
             _cachedCost = null
             
             updateMetrics()
@@ -328,7 +400,6 @@ object ClaudeModelConfig {
                     "total messages=$messageCount")
         }
         
-        // ✅ BUG-2 FIX: Thread-safe end
         @Synchronized
         fun end() {
             isActive = false
@@ -392,7 +463,6 @@ object ClaudeModelConfig {
         private const val TAG = "SessionManager"
         private val sessions = ConcurrentHashMap<String, ChatSession>()
         
-        // ✅ CRASH-3 FIX: Использовать getOrPut для атомарности
         fun createSession(
             sessionId: String,
             model: ClaudeModel
@@ -412,7 +482,6 @@ object ClaudeModelConfig {
             return sessions[sessionId]
         }
         
-        // ✅ CRASH-4 FIX: Атомарное remove + end
         fun endSession(sessionId: String): ChatSession? {
             val session = sessions.remove(sessionId)
             session?.end()
@@ -435,7 +504,6 @@ object ClaudeModelConfig {
             return session.isApproachingLongContext
         }
         
-        // ✅ LEAK-1 FIX: Чистим также зависшие активные сессии старше 24 часов
         fun cleanupOldSessions(maxAge: Duration = Duration.ofDays(1)): Int {
             val now = Instant.now()
             var cleaned = 0
@@ -451,7 +519,6 @@ object ClaudeModelConfig {
                         Log.d(TAG, "Cleaned up old inactive session: ${session.sessionId} (age: ${age.toHours()}h)")
                     }
                 } else {
-                    // Чистим "зависшие" активные сессии старше 24 часов
                     val age = Duration.between(session.startTime, now)
                     if (age > Duration.ofHours(24)) {
                         session.end()
@@ -469,7 +536,6 @@ object ClaudeModelConfig {
             return cleaned
         }
         
-        // ✅ CRASH-2 FIX: getTotalCost теперь возвращает Map по моделям
         fun getTotalCost(): Map<ClaudeModel, ModelCost>? {
             val sessionList = sessions.values.toList()
             if (sessionList.isEmpty()) return null
