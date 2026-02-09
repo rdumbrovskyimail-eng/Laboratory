@@ -16,29 +16,41 @@ import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
 import io.ktor.serialization.kotlinx.json.*
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import java.util.concurrent.TimeUnit
 import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Network Module v2.2 (FINAL)
- * 
+ * Network Module v2.3 (FIX)
+ *
  * ✅ ИСПРАВЛЕНО:
- * - Добавлен AppSettings в provideClaudeApiClient()
- * - Добавлены все необходимые @Provides методы для API клиентов
+ * - provideJson(): explicitNulls = false, encodeDefaults = false
+ *   Это гарантирует, что null-поля (temperature, system, top_p, etc.)
+ *   НЕ попадают в JSON запрос.
+ * - @EncodeDefault на обязательных полях в ClaudeRequest гарантирует,
+ *   что model, max_tokens, messages, stream ВСЕГДА присутствуют в JSON.
+ *
+ * БЫЛО (ОШИБКА):
+ *   {"model":"...","max_tokens":10,"messages":[...],"system":null,"stream":false,"temperature":null,"top_p":null,"top_k":null,"stop_sequences":null,"metadata":null}
+ *
+ * СТАЛО (ПРАВИЛЬНО):
+ *   {"model":"...","max_tokens":10,"messages":[...],"stream":false}
  */
 @Module
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
+    @OptIn(ExperimentalSerializationApi::class)
     @Provides
     @Singleton
     fun provideJson(): Json {
         return Json {
             ignoreUnknownKeys = true
             isLenient = true
-            encodeDefaults = true
+            encodeDefaults = false      // ← НЕ сериализовать поля с дефолтными значениями
+            explicitNulls = false        // ← НЕ сериализовать null-поля (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ)
             prettyPrint = false
             coerceInputValues = true
         }
@@ -48,8 +60,8 @@ object NetworkModule {
     @Singleton
     @Named("anthropicApiUrl")
     fun provideAnthropicApiUrl(): String {
-        return BuildConfig.ANTHROPIC_API_URL.ifBlank { 
-            "https://api.anthropic.com/v1/messages" 
+        return BuildConfig.ANTHROPIC_API_URL.ifBlank {
+            "https://api.anthropic.com/v1/messages"
         }
     }
 
