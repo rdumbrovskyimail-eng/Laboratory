@@ -17,27 +17,21 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🤖 REPOSITORY ANALYZER v2.1 (FIXED)
+ * 🤖 REPOSITORY ANALYZER v3.0 (OPERATION MARKERS)
+ * 
+ * ✅ ОБНОВЛЕНО:
+ * - Новый системный промпт с маркерами операций
+ * - Поддержка чата БЕЗ файлов (чистый диалог)
+ * - Парсинг операций из ответа Claude
+ * - Выполнение операций (create/edit/delete/folder)
  * 
  * ✅ СОХРАНЕНЫ все фичи:
  * - Выборочное сканирование (MAX_FILES_PER_SCAN)
  * - Оценка стоимости ПЕРЕД сканированием
  * - Защита от больших файлов
- * - Операции с файлами (create/edit/delete)
- * - Визуализация в чате
- * 
- * ✅ ДОБАВЛЕНО:
- * - 3 модели Claude
  * - Управление сеансами (thread-safe)
  * - Prompt Caching
- * - Предупреждение о длинном контексте
- * 
- * ✅ ИСПРАВЛЕНО v2.1:
- * - Thread-safe session management
- * - Валидация входных данных
- * - Автоматическая очистка старых сеансов
- * - Улучшенная обработка ошибок
- * - Детальное логирование
+ * - 4 модели Claude
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
@@ -59,7 +53,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ ИСПРАВЛЕНО: SESSION MANAGEMENT (теперь через SessionManager)
+    // ✅ SESSION MANAGEMENT (через SessionManager)
     // ═══════════════════════════════════════════════════════════════════════════
 
     private val sessionManager = ClaudeModelConfig.SessionManager
@@ -72,9 +66,7 @@ class RepositoryAnalyzer @Inject constructor(
         sessionId: String,
         model: ClaudeModelConfig.ClaudeModel
     ): ClaudeModelConfig.ChatSession {
-        // ✅ Валидация
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
-        
         return sessionManager.createSession(sessionId, model)
     }
     
@@ -92,18 +84,16 @@ class RepositoryAnalyzer @Inject constructor(
         return sessionManager.shouldStartNewSession(sessionId)
     }
     
-    // ✅ НОВОЕ: Очистка старых сеансов
     suspend fun cleanupOldSessions(): Int {
         return sessionManager.cleanupOldSessions(Duration.ofDays(SESSION_CLEANUP_THRESHOLD_DAYS))
     }
     
-    // ✅ НОВОЕ: Получить все активные сеансы
     fun getActiveSessions(): List<ClaudeModelConfig.ChatSession> {
         return sessionManager.getAllActiveSessions()
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ СОХРАНЕНО: REPOSITORY STRUCTURE
+    // ✅ REPOSITORY STRUCTURE
     // ═══════════════════════════════════════════════════════════════════════════
 
     suspend fun getRepositoryStructure(
@@ -197,7 +187,7 @@ class RepositoryAnalyzer @Inject constructor(
     )
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ ИСПРАВЛЕНО: SELECTIVE SCANNING (улучшенная валидация и логирование)
+    // ✅ SCAN COST ESTIMATION
     // ═══════════════════════════════════════════════════════════════════════════
 
     suspend fun estimateScanCost(
@@ -205,7 +195,6 @@ class RepositoryAnalyzer @Inject constructor(
         model: ClaudeModelConfig.ClaudeModel,
         sessionId: String? = null
     ): Result<ScanEstimate> {
-        // ✅ ИСПРАВЛЕНО: Улучшенная валидация
         if (filePaths.isEmpty()) {
             Log.w(TAG, "estimateScanCost called with empty file list")
             return Result.failure(IllegalArgumentException("No files selected"))
@@ -231,19 +220,15 @@ class RepositoryAnalyzer @Inject constructor(
             }
             
             val totalSize = files.sumOf { it.size }
-            
-            // ✅ СОХРАНЕНО: Защита от больших файлов
             val oversizedFiles = files.filter { it.size > MAX_FILE_SIZE_BYTES }
             
             if (oversizedFiles.isNotEmpty()) {
                 Log.w(TAG, "Found ${oversizedFiles.size} oversized files")
             }
             
-            // ✅ СОХРАНЕНО: Оценка токенов
             val estimatedInputTokens = (totalSize / 4.0).toInt()
             val estimatedOutputTokens = estimatedInputTokens / 2
             
-            // ✅ ИСПРАВЛЕНО: Корректная работа с сеансом
             val session = sessionId?.let { id ->
                 getSession(id) ?: run {
                     Log.w(TAG, "Session $id not found for cost estimation")
@@ -254,12 +239,9 @@ class RepositoryAnalyzer @Inject constructor(
             val currentSessionTokens = session?.totalInputTokens ?: 0
             val projectedTotalTokens = currentSessionTokens + estimatedInputTokens
             
-            // ✅ УЛУЧШЕНО: Более точная оценка кеширования
             val cachedTokens = if (session != null && session.messageCount > 0) {
-                // Примерно 70% контекста можно кешировать
                 (estimatedInputTokens * 0.7).toInt()
             } else {
-                // Первое сообщение - кеширования нет
                 0
             }
             
@@ -378,7 +360,10 @@ class RepositoryAnalyzer @Inject constructor(
         }
     }
 
-    // ✅ ИСПРАВЛЕНО: scanFiles с улучшенной обработкой ошибок
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ НОВОЕ: FILE SCANNING (поддержка чата БЕЗ файлов)
+    // ═══════════════════════════════════════════════════════════════════════════
+
     suspend fun scanFiles(
         sessionId: String,
         filePaths: List<String>,
@@ -388,13 +373,13 @@ class RepositoryAnalyzer @Inject constructor(
     ): Flow<AnalysisResult> = flow {
         try {
             require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
-            require(filePaths.isNotEmpty()) { "File paths cannot be empty" }
+            // ✅ filePaths может быть пустым для чат-режима без файлов
             require(userQuery.isNotBlank()) { "User query cannot be blank" }
             
             Log.i(TAG, "Starting scan: session=$sessionId, files=${filePaths.size}, " +
                     "model=${model.displayName}, caching=$enableCaching")
             
-            // ✅ ИСПРАВЛЕНО: Получаем или создаем сеанс
+            // Получаем или создаем сеанс
             val session = getSession(sessionId) ?: createSession(sessionId, model).also {
                 Log.i(TAG, "Created new session for scan: $sessionId")
             }
@@ -406,36 +391,42 @@ class RepositoryAnalyzer @Inject constructor(
                 return@flow
             }
             
-            emit(AnalysisResult.Loading("Loading files..."))
-            
             val fileContents = mutableMapOf<String, String>()
-            var loadedCount = 0
             
-            for (path in filePaths) {
-                try {
-                    val content = gitHubClient.getFileContentDecoded(path).getOrNull()
-                    if (content != null) {
-                        fileContents[path] = content
-                        loadedCount++
-                        emit(AnalysisResult.Loading("Loaded $loadedCount/${filePaths.size} files..."))
-                    } else {
-                        Log.w(TAG, "Failed to load file: $path")
+            if (filePaths.isNotEmpty()) {
+                emit(AnalysisResult.Loading("Loading files..."))
+                var loadedCount = 0
+                
+                for (path in filePaths) {
+                    try {
+                        val content = gitHubClient.getFileContentDecoded(path).getOrNull()
+                        if (content != null) {
+                            fileContents[path] = content
+                            loadedCount++
+                            emit(AnalysisResult.Loading("Loaded $loadedCount/${filePaths.size} files..."))
+                        } else {
+                            Log.w(TAG, "Failed to load file: $path")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error loading file: $path", e)
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error loading file: $path", e)
                 }
-            }
-            
-            if (fileContents.isEmpty()) {
-                Log.e(TAG, "No files could be loaded")
-                emit(AnalysisResult.Error("No files could be loaded"))
-                return@flow
-            }
+                
+                if (fileContents.isEmpty() && filePaths.isNotEmpty()) {
+                    Log.e(TAG, "No files could be loaded")
+                    emit(AnalysisResult.Error("No files could be loaded"))
+                    return@flow
+                }
+            } // end if (filePaths.isNotEmpty())
             
             emit(AnalysisResult.Loading("Preparing context..."))
-            val context = buildFileContext(fileContents)
+            val context = if (fileContents.isNotEmpty()) buildFileContext(fileContents) else ""
             val systemPrompt = buildSystemPrompt()
-            val userMessage = buildUserMessage(context, userQuery)
+            val userMessage = if (context.isNotEmpty()) {
+                buildUserMessage(context, userQuery)
+            } else {
+                userQuery
+            }
             
             // Сохраняем сообщение пользователя
             chatDao.insert(ChatMessageEntity(
@@ -531,21 +522,49 @@ class RepositoryAnalyzer @Inject constructor(
         }
     }
 
+    // ✅ НОВОЕ: Системный промпт с операционными маркерами
     private fun buildSystemPrompt(): String = """
-You are an expert Android developer with full access to a GitHub repository.
+You are an expert Android/Kotlin developer assistant with FULL access to a GitHub repository via API.
 
-Your capabilities:
-✅ View repository structure
-✅ Create/delete files and folders
-✅ Edit code
-✅ Commit changes
-✅ Selective file scanning
+## YOUR CAPABILITIES:
+- View repository file tree and read files
+- Create new files and folders
+- Edit existing files
+- Delete files
+- Commit all changes automatically
 
-Guidelines:
-- Be precise and efficient
-- Minimize token usage
-- Show all actions in chat
-- Use proper code formatting
+## OPERATION FORMAT:
+When you need to perform file operations, use these EXACT markers in your response:
+
+### CREATE FILE:
+[CREATE_FILE:path/to/file.kt]
+file content here
+[/CREATE_FILE]
+
+### EDIT FILE (full replacement):
+[EDIT_FILE:path/to/existing.kt]
+complete new file content
+[/EDIT_FILE]
+
+### DELETE FILE:
+[DELETE_FILE:path/to/file.kt][/DELETE_FILE]
+
+### CREATE FOLDER (via placeholder file):
+[CREATE_FOLDER:path/to/new_folder][/CREATE_FOLDER]
+
+## RULES:
+1. Always use operation markers when the user asks to create/edit/delete files
+2. You can include multiple operations in one response
+3. After each operation marker, explain what you did
+4. When asked to show file tree or read files, just respond with the content — no markers needed
+5. Be precise with file paths — they are relative to repository root
+6. Write complete file content — partial edits are not supported
+7. For Kotlin/Java files, always include package declaration and imports
+8. Commit messages are auto-generated from your operation type
+
+## LANGUAGE:
+- Respond in the same language the user writes in
+- Code comments can be in English
     """.trimIndent()
 
     private fun buildUserMessage(context: String, query: String): String = """
@@ -568,7 +587,109 @@ Please analyze the provided files and respond to the user's query.
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ СОХРАНЕНО: FILE OPERATIONS (без изменений)
+    // ✅ НОВОЕ: PARSE AND EXECUTE OPERATIONS FROM CLAUDE RESPONSE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    data class ParsedOperation(
+        val type: OperationType,
+        val path: String,
+        val content: String = ""
+    )
+
+    enum class OperationType {
+        CREATE_FILE, EDIT_FILE, DELETE_FILE, CREATE_FOLDER
+    }
+
+    fun parseOperations(response: String): List<ParsedOperation> {
+        val operations = mutableListOf<ParsedOperation>()
+
+        // [CREATE_FILE:path]content[/CREATE_FILE]
+        val createFileRegex = Regex("""\[CREATE_FILE:(.+?)](.+?)\[/CREATE_FILE]""", RegexOption.DOT_MATCHES_ALL)
+        createFileRegex.findAll(response).forEach { match ->
+            operations.add(ParsedOperation(
+                type = OperationType.CREATE_FILE,
+                path = match.groupValues[1].trim(),
+                content = match.groupValues[2].trim()
+            ))
+        }
+
+        // [EDIT_FILE:path]content[/EDIT_FILE]
+        val editFileRegex = Regex("""\[EDIT_FILE:(.+?)](.+?)\[/EDIT_FILE]""", RegexOption.DOT_MATCHES_ALL)
+        editFileRegex.findAll(response).forEach { match ->
+            operations.add(ParsedOperation(
+                type = OperationType.EDIT_FILE,
+                path = match.groupValues[1].trim(),
+                content = match.groupValues[2].trim()
+            ))
+        }
+
+        // [DELETE_FILE:path][/DELETE_FILE]
+        val deleteFileRegex = Regex("""\[DELETE_FILE:(.+?)]\[/DELETE_FILE]""")
+        deleteFileRegex.findAll(response).forEach { match ->
+            operations.add(ParsedOperation(
+                type = OperationType.DELETE_FILE,
+                path = match.groupValues[1].trim()
+            ))
+        }
+
+        // [CREATE_FOLDER:path][/CREATE_FOLDER]
+        val createFolderRegex = Regex("""\[CREATE_FOLDER:(.+?)]\[/CREATE_FOLDER]""")
+        createFolderRegex.findAll(response).forEach { match ->
+            operations.add(ParsedOperation(
+                type = OperationType.CREATE_FOLDER,
+                path = match.groupValues[1].trim()
+            ))
+        }
+
+        return operations
+    }
+
+    suspend fun executeOperations(
+        sessionId: String,
+        operations: List<ParsedOperation>
+    ): List<Result<FileOperationResult>> {
+        val results = mutableListOf<Result<FileOperationResult>>()
+
+        for (op in operations) {
+            val result = when (op.type) {
+                OperationType.CREATE_FILE -> {
+                    createFile(sessionId, op.path, op.content, "Create ${op.path} via Claude")
+                }
+                OperationType.EDIT_FILE -> {
+                    // Для EDIT нужен SHA текущего файла
+                    try {
+                        val currentFile = gitHubClient.getFileContent(op.path).getOrThrow()
+                        val sha = currentFile.sha
+                        val oldContent = gitHubClient.getFileContentDecoded(op.path).getOrElse { "" }
+                        editFile(sessionId, op.path, oldContent, op.content, sha, "Edit ${op.path} via Claude")
+                    } catch (e: Exception) {
+                        // Если файл не существует — создаём
+                        Log.w(TAG, "File ${op.path} not found for edit, creating instead")
+                        createFile(sessionId, op.path, op.content, "Create ${op.path} via Claude")
+                    }
+                }
+                OperationType.DELETE_FILE -> {
+                    try {
+                        val currentFile = gitHubClient.getFileContent(op.path).getOrThrow()
+                        deleteFile(sessionId, op.path, currentFile.sha, "Delete ${op.path} via Claude")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to delete ${op.path}: file not found", e)
+                        Result.failure(e)
+                    }
+                }
+                OperationType.CREATE_FOLDER -> {
+                    // GitHub не поддерживает пустые папки — создаём .gitkeep
+                    createFile(sessionId, "${op.path}/.gitkeep", "", "Create folder ${op.path} via Claude")
+                }
+            }
+            results.add(result)
+        }
+
+        return results
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ✅ FILE OPERATIONS (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     suspend fun createFile(
