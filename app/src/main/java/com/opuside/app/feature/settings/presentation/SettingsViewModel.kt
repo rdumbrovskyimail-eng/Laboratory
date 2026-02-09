@@ -26,6 +26,13 @@ sealed class ConnectionStatus {
     data class Error(val message: String) : ConnectionStatus()
 }
 
+/**
+ * Settings ViewModel v3.0
+ * 
+ * ✅ ИСПРАВЛЕНО (SEC-1):
+ * - Логирование токенов сокращено до 8 символов (было 10)
+ * - Все логи показывают только "sk-ant-a***" вместо первых 10-15 символов
+ */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -137,7 +144,8 @@ class SettingsViewModel @Inject constructor(
                 android.util.Log.d(TAG, "  ├─ Loading GitHub token...")
                 val githubToken = try {
                     val token = secureSettings.getGitHubToken().first()
-                    android.util.Log.d(TAG, "  │  └─ Token: ${if (token.isNotEmpty()) "[${token.take(10)}...]" else "[EMPTY]"}")
+                    // ✅ SEC-1 FIX: Только 8 символов вместо 10
+                    android.util.Log.d(TAG, "  │  └─ Token: ${if (token.isNotEmpty()) "[${token.take(8)}***]" else "[EMPTY]"}")
                     token
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "  │  └─ ❌ Failed to decrypt GitHub token", e)
@@ -147,7 +155,8 @@ class SettingsViewModel @Inject constructor(
                 android.util.Log.d(TAG, "  ├─ Loading Anthropic API key...")
                 val anthropicKey = try {
                     val key = secureSettings.getAnthropicApiKey().first()
-                    android.util.Log.d(TAG, "  │  └─ Key: ${if (key.isNotEmpty()) "[${key.take(10)}...]" else "[EMPTY]"}")
+                    // ✅ SEC-1 FIX: Только 8 символов вместо 10
+                    android.util.Log.d(TAG, "  │  └─ Key: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
                     key
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "  │  └─ ❌ Failed to decrypt Anthropic key", e)
@@ -335,7 +344,8 @@ class SettingsViewModel @Inject constructor(
             return
         }
         _githubTokenInput.value = token
-        android.util.Log.d(TAG, "🔄 GitHub Token updated: ${token.take(10)}...")
+        // ✅ SEC-1 FIX: Только 8 символов вместо 10
+        android.util.Log.d(TAG, "🔄 GitHub Token updated: ${token.take(8)}***")
     }
 
     fun updateGitHubBranch(branch: String) {
@@ -353,7 +363,8 @@ class SettingsViewModel @Inject constructor(
             return
         }
         _anthropicKeyInput.value = key
-        android.util.Log.d(TAG, "🔄 Anthropic Key updated: ${key.take(10)}...")
+        // ✅ SEC-1 FIX: Только 8 символов вместо 10
+        android.util.Log.d(TAG, "🔄 Anthropic Key updated: ${key.take(8)}***")
     }
 
     fun updateClaudeModel(model: String) {
@@ -403,7 +414,8 @@ class SettingsViewModel @Inject constructor(
                     _isSaving.value = false
                     return@launch
                 }
-                android.util.Log.d(TAG, "  │  ├─ Token: ${_githubTokenInput.value.take(10)}...")
+                // ✅ SEC-1 FIX: Только 8 символов вместо 10
+                android.util.Log.d(TAG, "  │  ├─ Token: ${_githubTokenInput.value.take(8)}***")
                 android.util.Log.d(TAG, "  │  └─ Branch: ${_githubBranchInput.value}")
 
                 android.util.Log.d(TAG, "  ├─ Saving GitHub token...")
@@ -470,7 +482,8 @@ class SettingsViewModel @Inject constructor(
                     _isSaving.value = false
                     return@launch
                 }
-                android.util.Log.d(TAG, "  │  ├─ Key: ${_anthropicKeyInput.value.take(10)}...")
+                // ✅ SEC-1 FIX: Только 8 символов вместо 10
+                android.util.Log.d(TAG, "  │  ├─ Key: ${_anthropicKeyInput.value.take(8)}***")
                 android.util.Log.d(TAG, "  │  └─ Model: ${_claudeModelInput.value}")
 
                 android.util.Log.d(TAG, "  ├─ Saving Anthropic API key...")
