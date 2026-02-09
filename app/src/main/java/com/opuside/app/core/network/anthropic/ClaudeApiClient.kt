@@ -34,6 +34,7 @@ import javax.inject.Singleton
  * - Добавлен AppSettings для получения модели
  * - Улучшено логирование
  * - Детальные сообщения об ошибках
+ * - SEC-1 FIX: Логирование ключа сокращено до 8 символов
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -52,7 +53,7 @@ class ClaudeApiClient @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Только SecureSettingsDataStore
+     * ✅ ИСПРАВЛЕНО: Только SecureSettingsDataStore + безопасное логирование (SEC-1)
      */
     private suspend fun getApiKey(): String {
         Log.d(TAG, "🔑 Retrieving API key from SecureSettings...")
@@ -66,12 +67,13 @@ class ClaudeApiClient @Inject constructor(
             )
         }
         
-        Log.d(TAG, "✅ API key retrieved: ${key.take(10)}...")
+        // ✅ SEC-1 FIX: Только 8 символов вместо 10
+        Log.d(TAG, "✅ API key retrieved (length: ${key.length})")
         return key
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Test с детальным логированием
+     * ✅ ИСПРАВЛЕНО: Test с детальным логированием + безопасное логирование (SEC-1)
      */
     suspend fun testConnection(): Result<String> {
         return try {
@@ -90,7 +92,8 @@ class ClaudeApiClient @Inject constructor(
             }
             
             Log.d(TAG, "  ├─ API URL: $apiUrl")
-            Log.d(TAG, "  ├─ API Key: ${apiKey.take(15)}...")
+            // ✅ SEC-1 FIX: Только 8 символов вместо 15
+            Log.d(TAG, "  ├─ API Key: ${apiKey.take(8)}***")
             Log.d(TAG, "  └─ API Version: $API_VERSION")
             
             // ✅ Всегда тестируем на Haiku — самая дешёвая модель ($0.80/1M vs $5/1M)
@@ -184,6 +187,7 @@ class ClaudeApiClient @Inject constructor(
             val isValid = key.isNotBlank() && key.startsWith("sk-ant-")
             
             if (isValid) {
+                // ✅ SEC-1 FIX: Не логируем ключ, только длину
                 Log.d(TAG, "✅ API key validated (length: ${key.length})")
             } else {
                 Log.w(TAG, "⚠️ API key format invalid")
