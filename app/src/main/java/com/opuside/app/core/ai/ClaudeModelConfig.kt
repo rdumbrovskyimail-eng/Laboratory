@@ -8,20 +8,22 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🤖 CLAUDE MODEL CONFIGURATION v2.2 (FINAL)
+ * 🤖 CLAUDE MODEL CONFIGURATION v3.0 (HAIKU UPDATE)
  * 
- * ✅ ИСПРАВЛЕНО:
- * - Сохранены оригинальные модели
- * - Добавлены helper методы для синхронизации с Settings
- * - Thread-safe операции
+ * ✅ ОБНОВЛЕНО:
+ * - Добавлена Haiku 4.5 (мгновенная, $0.80/$4)
+ * - Исправлен Opus 4.6 modelId
+ * - 4 модели в порядке скорости
  * 
- * Поддержка 3 моделей:
+ * Поддержка 4 моделей:
+ * - Haiku 4.5 (мгновенная, $0.80/$4)
  * - Sonnet 4.5 (быстрая, $3/$15)
  * - Opus 4.5 (мощная, $5/$25)
  * - Opus 4.6 (новейшая, $5/$25)
  * 
  * Оптимизации:
  * ✅ Prompt Caching (90% экономия)
+ * ✅ Auto-Haiku (85% экономия на простых задачах)
  * ✅ Batch API (50% скидка)
  * ✅ Управление сеансами
  * ✅ Предупреждение о длинном контексте
@@ -44,6 +46,21 @@ object ClaudeModelConfig {
         val speedRating: Int,
         val emoji: String
     ) {
+        HAIKU_4_5(
+            modelId = "claude-haiku-4-5-20251001",
+            displayName = "Haiku 4.5",
+            description = "Мгновенная, для простых задач",
+            inputPricePerM = 0.80,
+            outputPricePerM = 4.0,
+            longInputPricePerM = 1.60,
+            longOutputPricePerM = 6.0,
+            cachedInputPricePerM = 0.08,
+            longContextThreshold = 200_000,
+            maxTokens = 200_000,
+            speedRating = 10,
+            emoji = "💨"
+        ),
+        
         SONNET_4_5(
             modelId = "claude-sonnet-4-5-20250514",
             displayName = "Sonnet 4.5",
@@ -75,7 +92,7 @@ object ClaudeModelConfig {
         ),
         
         OPUS_4_6(
-            modelId = "claude-opus-4-6-20260115",
+            modelId = "claude-opus-4-6",
             displayName = "Opus 4.6",
             description = "Новейшая, для кодирования",
             inputPricePerM = 5.0,
