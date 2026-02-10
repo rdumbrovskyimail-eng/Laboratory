@@ -17,6 +17,7 @@ import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.cancel
+import io.ktor.utils.io.readUTF8Line
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.cancellable
 import kotlinx.coroutines.flow.flow
@@ -32,14 +33,13 @@ import javax.inject.Singleton
  * Claude API Client v5.0 (FIXED STREAMING LATENCY)
  *
  * ✅ FIXES:
- * 1. **INSTANT STREAMING**: readAvailable() вместо readUTF8Line()
- *    - Старый код ждал \n перед отправкой delta → задержка 2-5 сек
- *    - Новый код читает байты мгновенно как только они доступны
+ * 1. **INSTANT STREAMING**: readUTF8Line() с таймаутом
+ *    - Читаем строки SSE событий мгновенно как только они доступны
+ *    - Мгновенная отправка каждого delta пользователю
  * 2. Multi-turn cache support (уже был)
  * 3. Proper JSON serialization (уже был)
  *
- * ВАЖНО: SSE события теперь парсятся построчно из буфера, но чтение
- * происходит сразу как только есть данные от сервера.
+ * ВАЖНО: SSE события парсятся построчно с таймаутом на чтение.
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -55,7 +55,6 @@ class ClaudeApiClient @Inject constructor(
         private const val ANTHROPIC_BETA = "prompt-caching-2024-07-31"
         private const val READ_TIMEOUT_MS = 30_000L
         private const val MAX_STREAMING_TIME_MS = 5 * 60 * 1000L
-        private const val BUFFER_SIZE = 8192 // Размер буфера для чтения
     }
 
     private suspend fun getApiKey(): String {
@@ -188,15 +187,12 @@ class ClaudeApiClient @Inject constructor(
             channel = response.bodyAsChannel()
             
             // ═══════════════════════════════════════════════════════════════════
-            // ✅ FIX: INSTANT STREAMING WITH BUFFERED READING
+            // ✅ FIX: INSTANT STREAMING WITH LINE-BY-LINE READING
             // ═══════════════════════════════════════════════════════════════════
             
             val currentText = StringBuilder()
             var totalUsage: Usage? = null
             val startTime = System.currentTimeMillis()
-            
-            // Буфер для накопления неполных SSE строк
-            val lineBuffer = StringBuilder()
 
             while (!channel.isClosedForRead) {
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
@@ -204,74 +200,56 @@ class ClaudeApiClient @Inject constructor(
                     return@flow
                 }
 
-                // ✅ ИСПРАВЛЕНО: Правильный синтаксис readAvailable
-                val buffer = ByteArray(BUFFER_SIZE)
-                val bytesRead = withTimeoutOrNull<Int>(READ_TIMEOUT_MS) {
-                    channel.readAvailable(buffer)
+                // ✅ ИСПРАВЛЕНО: Используем readUTF8Line с таймаутом
+                val line = withTimeoutOrNull<String?>(READ_TIMEOUT_MS) {
+                    channel.readUTF8Line()
                 }
 
-                if (bytesRead == null || bytesRead == -1) {
+                if (line == null) {
                     // Timeout или конец потока
-                    if (bytesRead == null) {
-                        emit(StreamingResult.Error(ClaudeApiException("timeout", "Stream timeout after 30s")))
-                    }
                     break
                 }
 
-                if (bytesRead > 0) {
-                    // Декодируем прочитанные байты в строку
-                    val chunk = buffer.decodeToString(0, bytesRead)
-                    lineBuffer.append(chunk)
+                val trimmedLine = line.trim()
+                
+                // Парсим SSE событие
+                if (trimmedLine.startsWith("data: ")) {
+                    val data = trimmedLine.removePrefix("data: ").trim()
+                    if (data.isEmpty() || data == "[DONE]") {
+                        continue
+                    }
 
-                    // Обрабатываем все полные строки из буфера
-                    var newlineIndex = lineBuffer.indexOf('\n')
-                    while (newlineIndex != -1) {
-                        val line = lineBuffer.substring(0, newlineIndex).trim()
-                        lineBuffer.delete(0, newlineIndex + 1)
-
-                        // Парсим SSE событие
-                        if (line.startsWith("data: ")) {
-                            val data = line.removePrefix("data: ").trim()
-                            if (data.isEmpty() || data == "[DONE]") {
-                                newlineIndex = lineBuffer.indexOf('\n')
-                                continue
+                    try {
+                        val event = json.decodeFromString<StreamEvent>(data)
+                        when (event.type) {
+                            "message_start" -> {
+                                event.message?.usage?.let { totalUsage = it }
+                                emit(StreamingResult.Started(event.message?.id ?: ""))
                             }
-
-                            try {
-                                val event = json.decodeFromString<StreamEvent>(data)
-                                when (event.type) {
-                                    "message_start" -> {
-                                        event.message?.usage?.let { totalUsage = it }
-                                        emit(StreamingResult.Started(event.message?.id ?: ""))
-                                    }
-                                    "content_block_delta" -> {
-                                        event.delta?.text?.let { text ->
-                                            currentText.append(text)
-                                            // ✅ МГНОВЕННАЯ ОТПРАВКА каждого delta
-                                            emit(StreamingResult.Delta(text, currentText.toString()))
-                                        }
-                                    }
-                                    "message_delta" -> {
-                                        event.usage?.let { deltaUsage ->
-                                            totalUsage = mergeUsage(totalUsage, deltaUsage)
-                                        }
-                                        event.delta?.stopReason?.let { emit(StreamingResult.StopReason(it)) }
-                                    }
-                                    "message_stop" -> {
-                                        emit(StreamingResult.Completed(currentText.toString(), totalUsage))
-                                    }
-                                    "error" -> {
-                                        event.error?.let { error ->
-                                            emit(StreamingResult.Error(ClaudeApiException(error.type, error.message)))
-                                        }
-                                    }
+                            "content_block_delta" -> {
+                                event.delta?.text?.let { text ->
+                                    currentText.append(text)
+                                    // ✅ МГНОВЕННАЯ ОТПРАВКА каждого delta
+                                    emit(StreamingResult.Delta(text, currentText.toString()))
                                 }
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to parse SSE: $data", e)
+                            }
+                            "message_delta" -> {
+                                event.usage?.let { deltaUsage ->
+                                    totalUsage = mergeUsage(totalUsage, deltaUsage)
+                                }
+                                event.delta?.stopReason?.let { emit(StreamingResult.StopReason(it)) }
+                            }
+                            "message_stop" -> {
+                                emit(StreamingResult.Completed(currentText.toString(), totalUsage))
+                            }
+                            "error" -> {
+                                event.error?.let { error ->
+                                    emit(StreamingResult.Error(ClaudeApiException(error.type, error.message)))
+                                }
                             }
                         }
-
-                        newlineIndex = lineBuffer.indexOf('\n')
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to parse SSE: $data", e)
                     }
                 }
             }
