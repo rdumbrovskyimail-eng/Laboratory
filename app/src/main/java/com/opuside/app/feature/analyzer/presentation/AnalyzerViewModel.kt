@@ -18,15 +18,18 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v5.1 (CACHE MODE + OUTPUT LOCK)
+ * Analyzer ViewModel v5.2 (FIXED CACHE TIMER + REAL STREAMING)
  *
- * ЛОГИКА БЛОКИРОВКИ:
- * ─────────────────────────────────────────────────
- * ECO (8K) ON   → Cache кнопка ЗАБЛОКИРОВАНА
- * ECO OFF (MAX) → Cache кнопка ДОСТУПНА
- * Cache Mode ON → ECO toggle ЗАБЛОКИРОВАН
- *                 Output ВСЕГДА = model.maxOutputTokens
- * Cache Mode OFF→ ECO toggle работает нормально
+ * ✅ ИСПРАВЛЕНО (2026-02-10):
+ * 1. ТАЙМЕР КЕША:
+ *    - Запускается СРАЗУ при StreamingStarted (когда Claude начинает отвечать)
+ *    - НЕ ждёт окончания ответа!
+ *    - Обновляется при cache read (добавляет +5 минут к текущему времени)
+ * 
+ * 2. РЕАЛЬНЫЙ STREAMING:
+ *    - Streaming event теперь обновляет БД в реальном времени
+ *    - UI видит каждое слово по мере генерации
+ *    - Оптимизация для Samsung S23 Ultra: debounce 16ms (60 FPS)
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -39,6 +42,7 @@ class AnalyzerViewModel @Inject constructor(
     companion object {
         private const val TAG = "AnalyzerVM"
         private const val KEY_SESSION_ID = "session_id"
+        private const val STREAMING_DEBOUNCE_MS = 16L // 60 FPS для S23 Ultra
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -61,7 +65,6 @@ class AnalyzerViewModel @Inject constructor(
     // ECO / MAX OUTPUT MODE
     // ═══════════════════════════════════════════════════════════════════
 
-    /** true = ECO (8K output), false = MAX (model max) */
     private val _ecoOutputMode = MutableStateFlow(true)
     val ecoOutputMode: StateFlow<Boolean> = _ecoOutputMode.asStateFlow()
 
@@ -91,6 +94,9 @@ class AnalyzerViewModel @Inject constructor(
     val cacheHitCount: StateFlow<Int> = _cacheHitCount.asStateFlow()
 
     private var cacheTimerJob: Job? = null
+    
+    // ✅ НОВОЕ: Храним время истечения кеша
+    private var cacheExpiresAt: Long = 0L
 
     // ═══════════════════════════════════════════════════════════════════
     // SESSION & MODEL
@@ -181,13 +187,8 @@ class AnalyzerViewModel @Inject constructor(
     // ECO / MAX TOGGLE
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Переключить ECO/MAX.
-     * ЗАБЛОКИРОВАНО когда Cache Mode включён.
-     */
     fun toggleOutputMode() {
         if (_cacheModeEnabled.value) {
-            // В Cache Mode — ECO переключать нельзя, всегда MAX
             addOperation("🔒", "ECO заблокирован: в Cache Mode всегда MAX output", OperationLogType.INFO)
             return
         }
@@ -202,16 +203,10 @@ class AnalyzerViewModel @Inject constructor(
         )
     }
 
-    /**
-     * Получить эффективный output limit.
-     * Cache Mode → ВСЕГДА maxOutputTokens модели.
-     * Иначе → ECO (8K) или MAX в зависимости от toggle.
-     */
     fun getEffectiveMaxTokens(): Int = getEffectiveMaxTokens(_selectedModel.value)
 
     fun getEffectiveMaxTokens(model: ClaudeModelConfig.ClaudeModel): Int {
         return if (_cacheModeEnabled.value) {
-            // CACHE MODE: всегда максимум модели
             model.maxOutputTokens
         } else {
             model.getEffectiveOutputTokens(_ecoOutputMode.value)
@@ -219,16 +214,11 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE MODE CONTROLS
+    // CACHE MODE CONTROLS (FIXED TIMER)
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Переключить Cache Mode.
-     * ЗАБЛОКИРОВАНО когда ECO (8K) включён — надо сначала переключить на MAX.
-     */
     fun toggleCacheMode() {
         if (_ecoOutputMode.value && !_cacheModeEnabled.value) {
-            // ECO включён — Cache заблокирован
             addOperation("🔒", "Cache заблокирован: сначала выключите ECO (переключите на MAX)", OperationLogType.ERROR)
             return
         }
@@ -237,32 +227,37 @@ class AnalyzerViewModel @Inject constructor(
         _cacheModeEnabled.value = newState
 
         if (newState) {
-            // Включаем Cache Mode → принудительно MAX output
             _ecoOutputMode.value = false
             val model = _selectedModel.value
             addOperation("📦", "CACHE MODE ON — output MAX: ${"%,d".format(model.maxOutputTokens)} tok", OperationLogType.SUCCESS)
             Log.i(TAG, "Cache Mode ON, forced MAX output: ${model.maxOutputTokens}")
         } else {
-            // Выключаем — сбрасываем кеш-статистику
             stopCacheTimer()
             _cacheIsWarmed.value = false
             _cacheTotalReadTokens.value = 0
             _cacheTotalWriteTokens.value = 0
             _cacheTotalSavingsEUR.value = 0.0
             _cacheHitCount.value = 0
+            cacheExpiresAt = 0L
             addOperation("📦", "CACHE MODE OFF", OperationLogType.INFO)
             Log.i(TAG, "Cache Mode OFF")
         }
     }
 
-    private fun startOrRefreshCacheTimer() {
+    /**
+     * ✅ ИСПРАВЛЕНО: Запускает таймер на ПОЛНЫЕ 5 минут
+     * Вызывается когда Claude НАЧИНАЕТ отвечать (StreamingStarted)
+     */
+    private fun startCacheTimer() {
         cacheTimerJob?.cancel()
+        
+        cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
         _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
+        _cacheIsWarmed.value = true
 
         cacheTimerJob = viewModelScope.launch {
-            val endTime = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
             while (true) {
-                val remaining = endTime - System.currentTimeMillis()
+                val remaining = cacheExpiresAt - System.currentTimeMillis()
                 if (remaining <= 0) {
                     _cacheTimerMs.value = 0
                     _cacheIsWarmed.value = false
@@ -274,26 +269,54 @@ class AnalyzerViewModel @Inject constructor(
                 delay(1000)
             }
         }
+        
+        Log.i(TAG, "Cache timer started: ${getCacheTimerFormatted(ClaudeModelConfig.CACHE_TTL_MS)}")
+    }
+
+    /**
+     * ✅ ИСПРАВЛЕНО: Добавляет +5 минут к ТЕКУЩЕМУ времени истечения
+     * Вызывается при cache read (hit)
+     */
+    private fun refreshCacheTimer() {
+        if (!_cacheIsWarmed.value) {
+            // Если кеш не прогрет — запускаем новый таймер
+            startCacheTimer()
+            return
+        }
+        
+        // Добавляем 5 минут к текущему времени
+        val oldExpires = cacheExpiresAt
+        cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
+        val addedMinutes = ((cacheExpiresAt - oldExpires) / 60000.0)
+        
+        Log.i(TAG, "Cache timer refreshed: +${String.format("%.1f", addedMinutes)} min, new TTL: ${getCacheTimerFormatted(cacheExpiresAt - System.currentTimeMillis())}")
+        addOperation("🔄", "TTL обновлён: +5:00 мин", OperationLogType.SUCCESS)
     }
 
     private fun stopCacheTimer() {
         cacheTimerJob?.cancel()
         cacheTimerJob = null
         _cacheTimerMs.value = 0
+        cacheExpiresAt = 0L
     }
 
+    /**
+     * ✅ ИСПРАВЛЕНО: Вызывается ПОСЛЕ получения usage statistics
+     * Обновляет метрики, но НЕ запускает таймер (уже запущен в StreamingStarted!)
+     */
     private fun handleCacheResult(cachedReadTokens: Int, cachedWriteTokens: Int, savingsEUR: Double) {
         if (cachedWriteTokens > 0) {
-            _cacheIsWarmed.value = true
             _cacheTotalWriteTokens.value += cachedWriteTokens
-            startOrRefreshCacheTimer()
             addOperation("📝", "Cache WRITE: ${"%,d".format(cachedWriteTokens)} tok", OperationLogType.SUCCESS)
         }
         if (cachedReadTokens > 0) {
             _cacheTotalReadTokens.value += cachedReadTokens
             _cacheHitCount.value += 1
             _cacheTotalSavingsEUR.value += savingsEUR
-            startOrRefreshCacheTimer() // TTL обновляется при каждом hit!
+            
+            // ✅ Обновляем таймер при cache hit (добавляем время!)
+            refreshCacheTimer()
+            
             addOperation("⚡", "Cache HIT: ${"%,d".format(cachedReadTokens)} tok (€${String.format("%.4f", savingsEUR)} saved)", OperationLogType.SUCCESS)
         }
     }
@@ -346,6 +369,7 @@ class AnalyzerViewModel @Inject constructor(
                 _cacheTotalWriteTokens.value = 0
                 _cacheTotalSavingsEUR.value = 0.0
                 _cacheHitCount.value = 0
+                cacheExpiresAt = 0L
             }
 
             addOperation("🔄", "Новый сеанс: ${_selectedModel.value.displayName}", OperationLogType.SUCCESS)
@@ -399,7 +423,7 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CHAT (with Cache Mode)
+    // CHAT (with REAL STREAMING)
     // ═══════════════════════════════════════════════════════════════════
 
     fun sendMessage(message: String) {
@@ -411,11 +435,33 @@ class AnalyzerViewModel @Inject constructor(
 
             val useModel = _selectedModel.value
             val isCacheMode = _cacheModeEnabled.value
-            // В Cache Mode → ВСЕГДА maxOutputTokens
             val maxTokens = getEffectiveMaxTokens(useModel)
             val modeName = if (isCacheMode) "CACHE MAX" else if (_ecoOutputMode.value) "ECO" else "MAX"
 
             addOperation("📤", "$modeName ${"%,d".format(maxTokens)} tok: ${message.take(40)}...", OperationLogType.PROGRESS)
+
+            // Save user message
+            chatDao.insert(ChatMessageEntity(
+                sessionId = sessionId,
+                role = com.opuside.app.core.database.entity.MessageRole.USER,
+                content = message
+            ))
+
+            // Create assistant message placeholder
+            val assistantMsgId = chatDao.insert(ChatMessageEntity(
+                sessionId = sessionId,
+                role = com.opuside.app.core.database.entity.MessageRole.ASSISTANT,
+                content = "",
+                isStreaming = true
+            ))
+
+            var fullResponse = ""
+            var inputTokens = 0
+            var outputTokens = 0
+            var cachedReadTokens = 0
+            var cachedWriteTokens = 0
+            var streamingStartedEmitted = false
+            var lastUpdateTime = 0L
 
             repositoryAnalyzer.scanFiles(
                 sessionId = sessionId,
@@ -431,23 +477,52 @@ class AnalyzerViewModel @Inject constructor(
                     }
 
                     is RepositoryAnalyzer.AnalysisResult.StreamingStarted -> {
-                        if (isCacheMode) {
-                            startOrRefreshCacheTimer()
-                            addOperation("⏱️", "Ответ начался — таймер кеша", OperationLogType.INFO)
+                        if (!streamingStartedEmitted) {
+                            streamingStartedEmitted = true
+                            
+                            // ✅ ИСПРАВЛЕНО: Запускаем таймер СРАЗУ когда Claude начал отвечать!
+                            if (isCacheMode) {
+                                startCacheTimer()
+                                addOperation("⏱️", "Кеш активен — таймер 5:00", OperationLogType.INFO)
+                            }
                         }
                     }
 
-                    is RepositoryAnalyzer.AnalysisResult.Streaming -> { /* via chatDao */ }
+                    is RepositoryAnalyzer.AnalysisResult.Streaming -> {
+                        // ✅ ИСПРАВЛЕНО: РЕАЛЬНЫЙ STREAMING
+                        // Обновляем БД в реальном времени с debounce для производительности
+                        fullResponse = result.text
+                        
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdateTime >= STREAMING_DEBOUNCE_MS) {
+                            chatDao.updateStreamingContent(assistantMsgId, fullResponse)
+                            lastUpdateTime = now
+                        }
+                    }
 
                     is RepositoryAnalyzer.AnalysisResult.Completed -> {
                         _isStreaming.value = false
                         _currentSession.value = result.session
+
+                        fullResponse = result.text
+                        result.cost.let { cost ->
+                            inputTokens = cost.inputTokens
+                            outputTokens = cost.outputTokens
+                            cachedReadTokens = cost.cachedReadTokens
+                            cachedWriteTokens = cost.cachedWriteTokens
+                        }
+
+                        Log.i(TAG, "Completed: input=$inputTokens, output=$outputTokens, " +
+                                "cacheRead=$cachedReadTokens, cacheWrite=$cachedWriteTokens")
+
+                        _currentSession.value?.addMessage(inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens)
 
                         addOperation("✅",
                             "${"%,d".format(result.cost.totalTokens)} tok, €${String.format("%.4f", result.cost.totalCostEUR)}",
                             OperationLogType.SUCCESS
                         )
 
+                        // ✅ Обновляем метрики кеша (НЕ запускаем таймер - уже работает!)
                         if (isCacheMode) {
                             handleCacheResult(
                                 result.cost.cachedReadTokens,
@@ -456,7 +531,14 @@ class AnalyzerViewModel @Inject constructor(
                             )
                         }
 
-                        val operations = repositoryAnalyzer.parseOperations(result.text)
+                        // Финализируем сообщение в БД
+                        chatDao.finishStreaming(
+                            id = assistantMsgId,
+                            finalContent = fullResponse,
+                            tokensUsed = inputTokens + outputTokens
+                        )
+
+                        val operations = repositoryAnalyzer.parseOperations(fullResponse)
                         if (operations.isNotEmpty()) {
                             addOperation("🔧", "${operations.size} операций", OperationLogType.INFO)
                             executeClaudeOperations(operations)
@@ -469,6 +551,7 @@ class AnalyzerViewModel @Inject constructor(
                     is RepositoryAnalyzer.AnalysisResult.Error -> {
                         _isStreaming.value = false
                         _chatError.value = result.message
+                        chatDao.markAsError(assistantMsgId, result.message)
                         addOperation("❌", result.message, OperationLogType.ERROR)
                     }
                 }
