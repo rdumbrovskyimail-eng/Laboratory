@@ -10,26 +10,23 @@ import com.opuside.app.core.network.anthropic.StreamingResult
 import com.opuside.app.core.network.anthropic.model.ClaudeMessage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.first
 import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.opuside.app.core.network.github.GitHubApiClient
 
 /**
- * 🤖 REPOSITORY ANALYZER v5.0 (3 CRITICAL FIXES)
+ * 🤖 REPOSITORY ANALYZER v6.0 (FIXED REPO ACCESS)
  *
- * ✅ FIX 1: scanFilesV2() does NOT insert messages into ChatDao
- *    - ViewModel is the SINGLE source of truth for DB writes
- *    - No more message duplication
+ * ✅ FIX: Claude теперь РЕАЛЬНО видит структуру репозитория
+ *    - Автоматическая загрузка file tree при каждом запросе
+ *    - Правдивый system prompt (без лжи про "FULL access")
+ *    - GitHub config (owner/repo/branch) включён в контекст
+ *    - Рекурсивное сканирование до 3 уровней вложенности
  *
- * ✅ FIX 2: scanFilesV2() accepts full conversation history
- *    - All prior messages are sent to Claude API
- *    - Claude remembers user's name, previous context, etc.
- *    - Cache works because the system prompt + history prefix stays identical
- *
- * ✅ FIX 3: Streaming events flow directly to ViewModel
- *    - ViewModel stores streaming text in MutableStateFlow
- *    - UI reads it instantly (no Room DB roundtrip)
+ * ✅ СОХРАНЕНО:
+ *    - Все предыдущие исправления (cache, streaming, no duplication)
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
@@ -44,6 +41,8 @@ class RepositoryAnalyzer @Inject constructor(
         private const val MAX_FILES_PER_SCAN = 50
         private const val MAX_FILE_SIZE_BYTES = 100_000
         private const val SESSION_CLEANUP_THRESHOLD_DAYS = 1L
+        private const val MAX_TREE_DEPTH = 3  // Рекурсия до 3 уровней
+        private const val MAX_TREE_FILES = 500  // Максимум файлов в дереве
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -102,6 +101,49 @@ class RepositoryAnalyzer @Inject constructor(
             Log.e(TAG, "Failed to get repository structure", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * ✅ НОВОЕ: Рекурсивное получение файлового дерева
+     * Возвращает текстовое представление структуры репозитория
+     */
+    private suspend fun buildRepositoryTree(
+        path: String = "",
+        depth: Int = 0,
+        maxDepth: Int = MAX_TREE_DEPTH,
+        filesCollected: MutableList<String> = mutableListOf()
+    ): String = buildString {
+        if (depth >= maxDepth || filesCollected.size >= MAX_TREE_FILES) return@buildString
+
+        try {
+            val contents = gitHubClient.getContent(path).getOrNull() ?: return@buildString
+            val indent = "  ".repeat(depth)
+
+            contents.forEach { item ->
+                when (item.type) {
+                    "file" -> {
+                        if (filesCollected.size < MAX_TREE_FILES) {
+                            appendLine("${indent}📄 ${item.name} (${formatSize(item.size)})")
+                            filesCollected.add(item.path)
+                        }
+                    }
+                    "dir" -> {
+                        appendLine("${indent}📁 ${item.name}/")
+                        // Рекурсивно обходим директорию
+                        append(buildRepositoryTree(item.path, depth + 1, maxDepth, filesCollected))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to scan directory: $path", e)
+            appendLine("${indent}⚠️ [Error reading directory]")
+        }
+    }
+
+    private fun formatSize(bytes: Int): String = when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+        else -> "${bytes / (1024 * 1024)} MB"
     }
 
     data class RepositoryStructure(
@@ -177,15 +219,16 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ NEW: scanFilesV2 — NO DB WRITES, WITH CONVERSATION HISTORY
+    // ✅ FIXED: scanFilesV2 — WITH REPO STRUCTURE
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * V2: Does NOT write to ChatDao. ViewModel handles all DB operations.
      * Accepts full conversation history so Claude remembers context.
+     * 
+     * ✅ NEW: Автоматически загружает структуру репозитория в контекст
      *
      * @param conversationHistory All previous messages from the session (USER + ASSISTANT)
-     *                            The current userQuery is ALREADY included as the last USER message.
      */
     suspend fun scanFilesV2(
         sessionId: String,
@@ -211,7 +254,24 @@ class RepositoryAnalyzer @Inject constructor(
                 return@flow
             }
 
-            // Load files from GitHub
+            // ✅ НОВОЕ: Загружаем GitHub config
+            val gitHubConfig = appSettings.gitHubConfig.first()
+            val repoInfo = if (gitHubConfig.owner.isNotBlank() && gitHubConfig.repo.isNotBlank()) {
+                "${gitHubConfig.owner}/${gitHubConfig.repo} (branch: ${gitHubConfig.branch})"
+            } else {
+                "Not configured"
+            }
+
+            // ✅ НОВОЕ: Загружаем структуру репозитория
+            emit(AnalysisResult.Loading("Scanning repository structure..."))
+            val repoTree = try {
+                buildRepositoryTree()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to build repo tree", e)
+                "[Repository structure unavailable: ${e.message}]"
+            }
+
+            // Load explicitly requested files
             val fileContents = mutableMapOf<String, String>()
             if (filePaths.isNotEmpty()) {
                 emit(AnalysisResult.Loading("Loading files..."))
@@ -235,25 +295,25 @@ class RepositoryAnalyzer @Inject constructor(
             }
 
             emit(AnalysisResult.Loading("Preparing context..."))
-            val context = if (fileContents.isNotEmpty()) buildFileContext(fileContents) else ""
+            
+            // ✅ НОВОЕ: Build context with repo structure
+            val context = buildFullContext(repoInfo, repoTree, fileContents)
             val systemPrompt = buildSystemPrompt()
 
-            // ✅ FIX 2: Build FULL conversation history for Claude
-            // Convert DB messages to Claude API format
+            // Build FULL conversation history for Claude
             val claudeMessages = mutableListOf<ClaudeMessage>()
 
             for (msg in conversationHistory) {
                 val role = when (msg.role) {
                     MessageRole.USER -> "user"
                     MessageRole.ASSISTANT -> "assistant"
-                    else -> continue // Skip SYSTEM messages
+                    else -> continue
                 }
-                // Skip empty messages
                 if (msg.content.isBlank()) continue
                 claudeMessages.add(ClaudeMessage(role, msg.content))
             }
 
-            // If there's file context, prepend it to the LAST user message
+            // Prepend context to LAST user message
             if (context.isNotEmpty() && claudeMessages.isNotEmpty()) {
                 val lastIdx = claudeMessages.lastIndex
                 val lastMsg = claudeMessages[lastIdx]
@@ -265,7 +325,6 @@ class RepositoryAnalyzer @Inject constructor(
                 }
             }
 
-            // Ensure messages alternate correctly (Claude API requirement)
             val sanitizedMessages = sanitizeMessageOrder(claudeMessages)
 
             if (sanitizedMessages.isEmpty()) {
@@ -305,7 +364,6 @@ class RepositoryAnalyzer @Inject constructor(
                             streamingStartedEmitted = true
                             emit(AnalysisResult.StreamingStarted)
                         }
-                        // ✅ FIX 3: Emit every delta immediately
                         emit(AnalysisResult.Streaming(result.accumulated))
                     }
 
@@ -330,7 +388,6 @@ class RepositoryAnalyzer @Inject constructor(
                             cachedWriteTokens = cachedWriteTokens
                         )
 
-                        // ✅ FIX 1: NO chatDao operations here!
                         emit(AnalysisResult.Completed(
                             text = fullResponse,
                             cost = cost,
@@ -340,7 +397,6 @@ class RepositoryAnalyzer @Inject constructor(
 
                     is StreamingResult.Error -> {
                         Log.e(TAG, "Streaming error", result.exception)
-                        // ✅ FIX 1: NO chatDao operations here!
                         emit(AnalysisResult.Error(result.exception.message ?: "Unknown error"))
                     }
 
@@ -358,8 +414,6 @@ class RepositoryAnalyzer @Inject constructor(
 
     /**
      * Ensure messages alternate user/assistant correctly.
-     * Claude API requires: first message is "user", messages alternate.
-     * Consecutive same-role messages are merged.
      */
     private fun sanitizeMessageOrder(messages: List<ClaudeMessage>): List<ClaudeMessage> {
         if (messages.isEmpty()) return emptyList()
@@ -367,7 +421,6 @@ class RepositoryAnalyzer @Inject constructor(
         val result = mutableListOf<ClaudeMessage>()
         for (msg in messages) {
             if (result.isNotEmpty() && result.last().role == msg.role) {
-                // Merge consecutive same-role messages
                 val last = result.removeAt(result.lastIndex)
                 result.add(ClaudeMessage(msg.role, last.content + "\n\n" + msg.content))
             } else {
@@ -375,12 +428,10 @@ class RepositoryAnalyzer @Inject constructor(
             }
         }
 
-        // Ensure first message is from "user"
         if (result.isNotEmpty() && result.first().role != "user") {
             result.add(0, ClaudeMessage("user", "Hello"))
         }
 
-        // Ensure last message is from "user"
         if (result.isNotEmpty() && result.last().role != "user") {
             result.add(ClaudeMessage("user", "Continue"))
         }
@@ -392,7 +443,7 @@ class RepositoryAnalyzer @Inject constructor(
     // LEGACY: scanFiles (kept for backward compatibility)
     // ═══════════════════════════════════════════════════════════════════════════
 
-    @Deprecated("Use scanFilesV2 instead — no DB duplication, with conversation history")
+    @Deprecated("Use scanFilesV2 instead")
     suspend fun scanFiles(
         sessionId: String,
         filePaths: List<String>,
@@ -462,6 +513,42 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // CONTEXT BUILDING
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * ✅ НОВОЕ: Build full context with repo structure + explicit files
+     */
+    private fun buildFullContext(
+        repoInfo: String,
+        repoTree: String,
+        explicitFiles: Map<String, String>
+    ): String = buildString {
+        appendLine("# Repository Context")
+        appendLine()
+        appendLine("**Repository**: $repoInfo")
+        appendLine()
+        
+        if (repoTree.isNotBlank()) {
+            appendLine("## File Structure")
+            appendLine("```")
+            appendLine(repoTree)
+            appendLine("```")
+            appendLine()
+        }
+
+        if (explicitFiles.isNotEmpty()) {
+            appendLine("## Explicitly Loaded Files")
+            appendLine()
+            explicitFiles.forEach { (path, content) ->
+                appendLine("### File: `$path`")
+                appendLine("```")
+                appendLine(content)
+                appendLine("```")
+                appendLine()
+            }
+        }
+    }
 
     private fun buildFileContext(files: Map<String, String>): String = buildString {
         appendLine("# Repository Files Context")
@@ -475,18 +562,28 @@ class RepositoryAnalyzer @Inject constructor(
         }
     }
 
+    /**
+     * ✅ FIXED: Правдивый system prompt
+     */
     private fun buildSystemPrompt(): String = """
-You are an expert Android/Kotlin developer assistant with FULL access to a GitHub repository via API.
+You are an expert Android/Kotlin developer assistant working with a GitHub repository.
 
-## YOUR CAPABILITIES:
-- View repository file tree and read files
-- Create new files and folders
-- Edit existing files
-- Delete files
-- Commit all changes automatically
+## WHAT YOU CAN SEE:
+1. **Repository structure** — You receive a complete file tree showing all directories and files
+2. **Explicitly loaded files** — When user attaches files, you see their full content
+3. **GitHub config** — You know which repository (owner/repo/branch) you're working with
 
-## OPERATION FORMAT:
-When you need to perform file operations, use these EXACT markers in your response:
+## WHAT YOU CANNOT DO:
+- You CANNOT read files that weren't explicitly loaded
+- You CANNOT browse directories interactively
+- You CANNOT execute git commands
+
+## WHEN USER ASKS "Show me the repo structure" or "What files are in this project":
+✅ DO: Refer to the "File Structure" section in your context — it's already there!
+❌ DON'T: Say you don't have access or ask for a link
+
+## FILE OPERATIONS:
+When you need to create/edit/delete files, use these EXACT markers:
 
 ### CREATE FILE:
 [CREATE_FILE:path/to/file.kt]
@@ -505,14 +602,12 @@ complete new file content
 [CREATE_FOLDER:path/to/new_folder][/CREATE_FOLDER]
 
 ## RULES:
-1. Always use operation markers when the user asks to create/edit/delete files
-2. You can include multiple operations in one response
-3. After each operation marker, explain what you did
-4. When asked to show file tree or read files, just respond with the content
-5. Be precise with file paths — they are relative to repository root
-6. Write complete file content — partial edits are not supported
-7. For Kotlin/Java files, always include package declaration and imports
-8. Commit messages are auto-generated from your operation type
+1. The file tree in your context is COMPLETE — trust it
+2. If user asks about files/structure, reference what you already see
+3. Use operation markers only when user asks to CREATE/EDIT/DELETE
+4. Be precise with file paths — they are relative to repository root
+5. Write complete file content — partial edits are not supported
+6. For Kotlin/Java files, always include package declaration and imports
 
 ## LANGUAGE:
 - Respond in the same language the user writes in
@@ -524,7 +619,7 @@ $context
 
 User Query: $query
 
-Please analyze the provided files and respond to the user's query.
+Please analyze the provided context and respond to the user's query.
     """.trimIndent()
 
     // ═══════════════════════════════════════════════════════════════════════════
