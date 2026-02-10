@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.flow
 import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.opuside.app.core.network.github.GitHubApiClient
 
 /**
  * 🤖 REPOSITORY ANALYZER v4.0 (DEDICATED CACHE MODE)
