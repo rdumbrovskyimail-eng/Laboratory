@@ -8,23 +8,20 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🤖 CLAUDE MODEL CONFIGURATION v5.0 (ALL 8 MODELS + ECO/MAX OUTPUT)
+ * 🤖 CLAUDE MODEL CONFIGURATION v6.0 (DEDICATED CACHE MODE)
  * 
  * ✅ ОБНОВЛЕНО (2026-02-10):
- * - contextWindow: макс контекстное окно (input + output)
- * - maxOutputTokens: предел выходных токенов каждой модели
- * - ECO_OUTPUT_TOKENS: экономный режим (8192 для всех)
- * - getEffectiveOutputTokens(ecoMode): выбор между ECO и MAX
+ * - УДАЛЁН: Auto-Haiku, старый cache toggle
+ * - ДОБАВЛЕНО: Dedicated Cache Mode с 5-минутным TTL таймером
+ * - cacheWritePricePerM: стоимость записи в кеш (1.25× от input)
+ * - cacheReadPricePerM: стоимость чтения из кеша (0.1× от input)
+ * - minCacheableTokens: минимум токенов для кеширования
+ * - Все 8 моделей поддерживают кеширование
  * 
- * Лимиты по моделям (из docs.anthropic.com):
- * 1. Opus 4.6   — context: 200K (1M beta), max output: 128,000
- * 2. Opus 4.5   — context: 200K,           max output: 64,000
- * 3. Opus 4.1   — context: 200K,           max output: 64,000
- * 4. Opus 4     — context: 200K,           max output: 64,000
- * 5. Sonnet 4.5 — context: 200K (1M beta), max output: 64,000
- * 6. Sonnet 4   — context: 200K (1M beta), max output: 64,000
- * 7. Haiku 4.5  — context: 200K,           max output: 64,000
- * 8. Haiku 3    — context: 200K,           max output: 4,096
+ * Pricing (из docs.anthropic.com):
+ * - 5min cache write = 1.25× base input price
+ * - Cache read (hit) = 0.1× base input price  
+ * - TTL refreshes on each successful cache hit (free)
  */
 object ClaudeModelConfig {
     
@@ -32,6 +29,9 @@ object ClaudeModelConfig {
     
     /** ECO mode: экономный лимит output для всех моделей */
     const val ECO_OUTPUT_TOKENS = 8192
+    
+    /** Cache TTL в миллисекундах (5 минут) */
+    const val CACHE_TTL_MS = 5 * 60 * 1000L
     
     enum class ClaudeModel(
         val modelId: String,
@@ -43,7 +43,9 @@ object ClaudeModelConfig {
         val outputPricePerM: Double,
         val longInputPricePerM: Double,
         val longOutputPricePerM: Double,
-        val cachedInputPricePerM: Double,
+        val cacheWritePricePerM: Double,   // 1.25× input
+        val cacheReadPricePerM: Double,    // 0.1× input
+        val minCacheableTokens: Int,       // минимум для кеширования
         val longContextThreshold: Int,
         val supportsLongContext1M: Boolean,
         val speedRating: Int,
@@ -63,7 +65,9 @@ object ClaudeModelConfig {
             outputPricePerM = 25.0,
             longInputPricePerM = 10.0,
             longOutputPricePerM = 37.5,
-            cachedInputPricePerM = 0.50,
+            cacheWritePricePerM = 6.25,    // 5.0 × 1.25
+            cacheReadPricePerM = 0.50,     // 5.0 × 0.10
+            minCacheableTokens = 1,  // TEST: was 1024
             longContextThreshold = 200_000,
             supportsLongContext1M = true,
             speedRating = 3,
@@ -80,7 +84,9 @@ object ClaudeModelConfig {
             outputPricePerM = 25.0,
             longInputPricePerM = 10.0,
             longOutputPricePerM = 37.5,
-            cachedInputPricePerM = 0.50,
+            cacheWritePricePerM = 6.25,
+            cacheReadPricePerM = 0.50,
+            minCacheableTokens = 1,  // TEST: was 4096
             longContextThreshold = 200_000,
             supportsLongContext1M = false,
             speedRating = 3,
@@ -97,7 +103,9 @@ object ClaudeModelConfig {
             outputPricePerM = 75.0,
             longInputPricePerM = 30.0,
             longOutputPricePerM = 112.5,
-            cachedInputPricePerM = 1.50,
+            cacheWritePricePerM = 18.75,   // 15.0 × 1.25
+            cacheReadPricePerM = 1.50,     // 15.0 × 0.10
+            minCacheableTokens = 1,  // TEST: was 1024
             longContextThreshold = 200_000,
             supportsLongContext1M = false,
             speedRating = 2,
@@ -114,7 +122,9 @@ object ClaudeModelConfig {
             outputPricePerM = 75.0,
             longInputPricePerM = 30.0,
             longOutputPricePerM = 112.5,
-            cachedInputPricePerM = 1.50,
+            cacheWritePricePerM = 18.75,
+            cacheReadPricePerM = 1.50,
+            minCacheableTokens = 1,  // TEST: was 1024
             longContextThreshold = 200_000,
             supportsLongContext1M = false,
             speedRating = 2,
@@ -135,7 +145,9 @@ object ClaudeModelConfig {
             outputPricePerM = 15.0,
             longInputPricePerM = 6.0,
             longOutputPricePerM = 22.5,
-            cachedInputPricePerM = 0.30,
+            cacheWritePricePerM = 3.75,    // 3.0 × 1.25
+            cacheReadPricePerM = 0.30,     // 3.0 × 0.10
+            minCacheableTokens = 1,  // TEST: was 1024
             longContextThreshold = 200_000,
             supportsLongContext1M = true,
             speedRating = 5,
@@ -152,7 +164,9 @@ object ClaudeModelConfig {
             outputPricePerM = 15.0,
             longInputPricePerM = 6.0,
             longOutputPricePerM = 22.5,
-            cachedInputPricePerM = 0.30,
+            cacheWritePricePerM = 3.75,
+            cacheReadPricePerM = 0.30,
+            minCacheableTokens = 1,  // TEST: was 1024
             longContextThreshold = 200_000,
             supportsLongContext1M = true,
             speedRating = 5,
@@ -173,7 +187,9 @@ object ClaudeModelConfig {
             outputPricePerM = 5.0,
             longInputPricePerM = 2.0,
             longOutputPricePerM = 7.5,
-            cachedInputPricePerM = 0.10,
+            cacheWritePricePerM = 1.25,    // 1.0 × 1.25
+            cacheReadPricePerM = 0.10,     // 1.0 × 0.10
+            minCacheableTokens = 1,  // TEST: was 4096
             longContextThreshold = 200_000,
             supportsLongContext1M = false,
             speedRating = 8,
@@ -190,7 +206,9 @@ object ClaudeModelConfig {
             outputPricePerM = 1.25,
             longInputPricePerM = 0.25,
             longOutputPricePerM = 1.25,
-            cachedInputPricePerM = 0.03,
+            cacheWritePricePerM = 0.30,    // 0.25 × 1.25 ≈ 0.3125 → rounded
+            cacheReadPricePerM = 0.03,     // 0.25 × 0.10 ≈ 0.025 → rounded
+            minCacheableTokens = 1,  // TEST: was 2048
             longContextThreshold = 200_000,
             supportsLongContext1M = false,
             speedRating = 10,
@@ -199,7 +217,7 @@ object ClaudeModelConfig {
         
         /**
          * Получить эффективный лимит output токенов
-         * ECO mode (true)  → 8192 (или maxOutputTokens если он меньше, как у Haiku 3)
+         * ECO mode (true)  → 8192 (или maxOutputTokens если он меньше)
          * MAX mode (false)  → maxOutputTokens модели
          */
         fun getEffectiveOutputTokens(ecoMode: Boolean): Int {
@@ -238,47 +256,53 @@ object ClaudeModelConfig {
         fun calculateCost(
             inputTokens: Int,
             outputTokens: Int,
-            cachedInputTokens: Int = 0,
+            cachedReadTokens: Int = 0,
+            cachedWriteTokens: Int = 0,
             usdToEur: Double = 0.92
         ): ModelCost {
             require(inputTokens >= 0) { "Input tokens cannot be negative: $inputTokens" }
             require(outputTokens >= 0) { "Output tokens cannot be negative: $outputTokens" }
-            require(cachedInputTokens >= 0) { "Cached tokens cannot be negative: $cachedInputTokens" }
-            require(cachedInputTokens <= inputTokens) { 
-                "Cached tokens ($cachedInputTokens) cannot exceed input tokens ($inputTokens)" 
-            }
+            require(cachedReadTokens >= 0) { "Cache read tokens cannot be negative" }
+            require(cachedWriteTokens >= 0) { "Cache write tokens cannot be negative" }
             require(usdToEur > 0) { "USD to EUR rate must be positive: $usdToEur" }
             
-            Log.d(TAG, "Calculating cost for ${this.displayName}: " +
-                    "input=$inputTokens, output=$outputTokens, cached=$cachedInputTokens")
-            
             val isLongContext = inputTokens > longContextThreshold
-            
             val actualInputPrice = if (isLongContext) longInputPricePerM else inputPricePerM
             val actualOutputPrice = if (isLongContext) longOutputPricePerM else outputPricePerM
             
-            val newInputTokens = inputTokens - cachedInputTokens
+            // Обычные (не кешированные) input токены
+            val regularInputTokens = inputTokens - cachedReadTokens - cachedWriteTokens
+            val regularInputCostUSD = (regularInputTokens.coerceAtLeast(0) / 1_000_000.0) * actualInputPrice
             
-            val newInputCostUSD = (newInputTokens / 1_000_000.0) * actualInputPrice
-            val cachedInputCostUSD = (cachedInputTokens / 1_000_000.0) * cachedInputPricePerM
+            // Кеш write (1.25× input price)
+            val cacheWriteCostUSD = (cachedWriteTokens / 1_000_000.0) * cacheWritePricePerM
+            
+            // Кеш read (0.1× input price — 90% экономия!)
+            val cacheReadCostUSD = (cachedReadTokens / 1_000_000.0) * cacheReadPricePerM
+            
+            // Output
             val outputCostUSD = (outputTokens / 1_000_000.0) * actualOutputPrice
             
-            val totalCostUSD = newInputCostUSD + cachedInputCostUSD + outputCostUSD
+            val totalCostUSD = regularInputCostUSD + cacheWriteCostUSD + cacheReadCostUSD + outputCostUSD
             val totalCostEUR = totalCostUSD * usdToEur
             
-            val savingsUSD = if (cachedInputTokens > 0) {
-                (cachedInputTokens / 1_000_000.0) * (actualInputPrice - cachedInputPricePerM)
+            // Экономия: сколько бы стоило без кеша vs с кешем
+            val withoutCacheCostUSD = if (cachedReadTokens > 0) {
+                (cachedReadTokens / 1_000_000.0) * actualInputPrice
             } else 0.0
+            val savingsUSD = withoutCacheCostUSD - cacheReadCostUSD
             
             val cost = ModelCost(
                 model = this,
                 inputTokens = inputTokens,
                 outputTokens = outputTokens,
-                cachedInputTokens = cachedInputTokens,
-                newInputTokens = newInputTokens,
+                cachedReadTokens = cachedReadTokens,
+                cachedWriteTokens = cachedWriteTokens,
+                regularInputTokens = regularInputTokens.coerceAtLeast(0),
                 isLongContext = isLongContext,
-                newInputCostUSD = newInputCostUSD,
-                cachedInputCostUSD = cachedInputCostUSD,
+                regularInputCostUSD = regularInputCostUSD,
+                cacheWriteCostUSD = cacheWriteCostUSD,
+                cacheReadCostUSD = cacheReadCostUSD,
                 outputCostUSD = outputCostUSD,
                 totalCostUSD = totalCostUSD,
                 totalCostEUR = totalCostEUR,
@@ -286,9 +310,9 @@ object ClaudeModelConfig {
                 cacheSavingsEUR = savingsUSD * usdToEur
             )
             
-            Log.d(TAG, "Cost calculated: $${String.format("%.4f", totalCostUSD)} " +
+            Log.d(TAG, "Cost: \$${String.format("%.4f", totalCostUSD)} " +
                     "(€${String.format("%.4f", totalCostEUR)}), " +
-                    "savings: ${String.format("%.1f", cost.savingsPercentage)}%")
+                    "cache savings: ${String.format("%.1f", cost.savingsPercentage)}%")
             
             return cost
         }
@@ -298,11 +322,13 @@ object ClaudeModelConfig {
         val model: ClaudeModel,
         val inputTokens: Int,
         val outputTokens: Int,
-        val cachedInputTokens: Int,
-        val newInputTokens: Int,
+        val cachedReadTokens: Int,
+        val cachedWriteTokens: Int,
+        val regularInputTokens: Int,
         val isLongContext: Boolean,
-        val newInputCostUSD: Double,
-        val cachedInputCostUSD: Double,
+        val regularInputCostUSD: Double,
+        val cacheWriteCostUSD: Double,
+        val cacheReadCostUSD: Double,
         val outputCostUSD: Double,
         val totalCostUSD: Double,
         val totalCostEUR: Double,
@@ -311,7 +337,7 @@ object ClaudeModelConfig {
     ) {
         val totalTokens: Int = inputTokens + outputTokens
         
-        val savingsPercentage: Double = if (inputTokens > 0 && cacheSavingsUSD > 0) {
+        val savingsPercentage: Double = if (cacheSavingsUSD > 0 && totalCostUSD > 0) {
             (cacheSavingsUSD / (totalCostUSD + cacheSavingsUSD)) * 100
         } else 0.0
         
@@ -320,16 +346,27 @@ object ClaudeModelConfig {
         } else 0.0
         
         val cacheEfficiency: Double = if (inputTokens > 0) {
-            (cachedInputTokens.toDouble() / inputTokens) * 100
+            (cachedReadTokens.toDouble() / inputTokens) * 100
         } else 0.0
         
         operator fun plus(other: ModelCost): ModelCost {
             require(model == other.model) { "Cannot combine costs from different models" }
-            
-            return model.calculateCost(
+            return ModelCost(
+                model = model,
                 inputTokens = inputTokens + other.inputTokens,
                 outputTokens = outputTokens + other.outputTokens,
-                cachedInputTokens = cachedInputTokens + other.cachedInputTokens
+                cachedReadTokens = cachedReadTokens + other.cachedReadTokens,
+                cachedWriteTokens = cachedWriteTokens + other.cachedWriteTokens,
+                regularInputTokens = regularInputTokens + other.regularInputTokens,
+                isLongContext = isLongContext || other.isLongContext,
+                regularInputCostUSD = regularInputCostUSD + other.regularInputCostUSD,
+                cacheWriteCostUSD = cacheWriteCostUSD + other.cacheWriteCostUSD,
+                cacheReadCostUSD = cacheReadCostUSD + other.cacheReadCostUSD,
+                outputCostUSD = outputCostUSD + other.outputCostUSD,
+                totalCostUSD = totalCostUSD + other.totalCostUSD,
+                totalCostEUR = totalCostEUR + other.totalCostEUR,
+                cacheSavingsUSD = cacheSavingsUSD + other.cacheSavingsUSD,
+                cacheSavingsEUR = cacheSavingsEUR + other.cacheSavingsEUR
             )
         }
         
@@ -337,7 +374,8 @@ object ClaudeModelConfig {
             append("ModelCost(")
             append("model=${model.displayName}, ")
             append("tokens=$totalTokens, ")
-            append("cost=$${String.format("%.4f", totalCostUSD)}, ")
+            append("cost=\$${String.format("%.4f", totalCostUSD)}, ")
+            append("cacheRead=$cachedReadTokens, cacheWrite=$cachedWriteTokens, ")
             append("savings=${String.format("%.1f", savingsPercentage)}%")
             append(")")
         }
@@ -350,7 +388,8 @@ object ClaudeModelConfig {
         var endTime: Instant? = null,
         var totalInputTokens: Int = 0,
         var totalOutputTokens: Int = 0,
-        var totalCachedInputTokens: Int = 0,
+        var totalCachedReadTokens: Int = 0,
+        var totalCachedWriteTokens: Int = 0,
         var messageCount: Int = 0,
         var isActive: Boolean = true
     ) {
@@ -391,7 +430,8 @@ object ClaudeModelConfig {
             get() = _cachedCost ?: model.calculateCost(
                 inputTokens = totalInputTokens,
                 outputTokens = totalOutputTokens,
-                cachedInputTokens = totalCachedInputTokens
+                cachedReadTokens = totalCachedReadTokens,
+                cachedWriteTokens = totalCachedWriteTokens
             ).also { _cachedCost = it }
         
         val isApproachingLongContext: Boolean
@@ -404,38 +444,39 @@ object ClaudeModelConfig {
             get() = (model.longContextThreshold - totalInputTokens).coerceAtLeast(0)
         
         @Synchronized
-        fun addMessage(inputTokens: Int, outputTokens: Int, cachedInputTokens: Int = 0) {
+        fun addMessage(
+            inputTokens: Int, 
+            outputTokens: Int, 
+            cachedReadTokens: Int = 0,
+            cachedWriteTokens: Int = 0
+        ) {
             require(inputTokens >= 0) { "Input tokens cannot be negative" }
             require(outputTokens >= 0) { "Output tokens cannot be negative" }
-            require(cachedInputTokens >= 0) { "Cached tokens cannot be negative" }
             
             totalInputTokens += inputTokens
             totalOutputTokens += outputTokens
-            totalCachedInputTokens += cachedInputTokens
+            totalCachedReadTokens += cachedReadTokens
+            totalCachedWriteTokens += cachedWriteTokens
             messageCount++
             
             _cachedCost = null
-            
             updateMetrics()
             
-            Log.d(TAG, "Message added to session $sessionId: " +
-                    "input=$inputTokens, output=$outputTokens, cached=$cachedInputTokens, " +
-                    "total messages=$messageCount")
+            Log.d(TAG, "Message #$messageCount: input=$inputTokens, output=$outputTokens, " +
+                    "cacheRead=$cachedReadTokens, cacheWrite=$cachedWriteTokens")
         }
         
         @Synchronized
         fun end() {
             isActive = false
             endTime = Instant.now()
-            
-            Log.i(TAG, "Session $sessionId ended: " +
-                    "duration=$durationFormatted, messages=$messageCount, " +
-                    "cost=${currentCost.totalCostEUR}€")
+            Log.i(TAG, "Session $sessionId ended: ${durationFormatted}, ${messageCount} msgs, " +
+                    "€${String.format("%.4f", currentCost.totalCostEUR)}")
         }
         
         private fun updateMetrics() {
             cacheHitRate = if (totalInputTokens > 0) {
-                (totalCachedInputTokens.toDouble() / totalInputTokens) * 100
+                (totalCachedReadTokens.toDouble() / totalInputTokens) * 100
             } else 0.0
             
             averageCostPerMessage = if (messageCount > 0) {
@@ -456,29 +497,28 @@ object ClaudeModelConfig {
         fun getDetailedStats(): String = buildString {
             appendLine("📊 Session Statistics")
             appendLine()
-            appendLine("**Session ID:** ${sessionId.take(8)}...")
-            appendLine("**Model:** ${model.displayName} ${model.emoji}")
-            appendLine("**Context:** ${"%,d".format(model.contextWindow)} tok")
-            appendLine("**Max Output:** ${"%,d".format(model.maxOutputTokens)} tok")
-            appendLine("**Started:** $startTimeFormatted")
-            if (endTime != null) {
-                appendLine("**Ended:** $endTimeFormatted")
-            }
-            appendLine("**Duration:** $durationFormatted")
+            appendLine("Session ID: ${sessionId.take(8)}...")
+            appendLine("Model: ${model.displayName} ${model.emoji}")
+            appendLine("Context: ${"%,d".format(model.contextWindow)} tok")
+            appendLine("Max Output: ${"%,d".format(model.maxOutputTokens)} tok")
+            appendLine("Started: $startTimeFormatted")
+            if (endTime != null) appendLine("Ended: $endTimeFormatted")
+            appendLine("Duration: $durationFormatted")
             appendLine()
-            appendLine("**Messages:** $messageCount")
-            appendLine("**Total Tokens:** ${"%,d".format(totalInputTokens + totalOutputTokens)}")
-            appendLine("**Input Tokens:** ${"%,d".format(totalInputTokens)}")
-            appendLine("**Output Tokens:** ${"%,d".format(totalOutputTokens)}")
-            appendLine("**Cached Tokens:** ${"%,d".format(totalCachedInputTokens)}")
+            appendLine("Messages: $messageCount")
+            appendLine("Total Tokens: ${"%,d".format(totalInputTokens + totalOutputTokens)}")
+            appendLine("Input Tokens: ${"%,d".format(totalInputTokens)}")
+            appendLine("Output Tokens: ${"%,d".format(totalOutputTokens)}")
+            appendLine("Cache Read: ${"%,d".format(totalCachedReadTokens)}")
+            appendLine("Cache Write: ${"%,d".format(totalCachedWriteTokens)}")
             appendLine()
-            appendLine("**Cache Hit Rate:** ${String.format("%.1f", cacheHitRate)}%")
-            appendLine("**Avg Tokens/Msg:** ${"%,d".format(averageTokensPerMessage)}")
-            appendLine("**Avg Cost/Msg:** €${String.format("%.4f", averageCostPerMessage)}")
+            appendLine("Cache Hit Rate: ${String.format("%.1f", cacheHitRate)}%")
+            appendLine("Avg Tokens/Msg: ${"%,d".format(averageTokensPerMessage)}")
+            appendLine("Avg Cost/Msg: €${String.format("%.4f", averageCostPerMessage)}")
             appendLine()
-            appendLine("**Total Cost:** €${String.format("%.4f", currentCost.totalCostEUR)}")
+            appendLine("Total Cost: €${String.format("%.4f", currentCost.totalCostEUR)}")
             if (currentCost.savingsPercentage > 0) {
-                appendLine("**Savings:** ${String.format("%.1f", currentCost.savingsPercentage)}% " +
+                appendLine("Savings: ${String.format("%.1f", currentCost.savingsPercentage)}% " +
                         "(€${String.format("%.4f", currentCost.cacheSavingsEUR)})")
             }
         }
@@ -495,7 +535,7 @@ object ClaudeModelConfig {
                     model = model,
                     startTime = Instant.now()
                 ).also {
-                    Log.i(TAG, "Created new session: $sessionId with model ${model.displayName}")
+                    Log.i(TAG, "Created session: $sessionId [${model.displayName}]")
                 }
             }
         }
@@ -505,7 +545,6 @@ object ClaudeModelConfig {
         fun endSession(sessionId: String): ChatSession? {
             val session = sessions.remove(sessionId)
             session?.end()
-            if (session != null) Log.i(TAG, "Ended session: $sessionId")
             return session
         }
         
@@ -521,38 +560,29 @@ object ClaudeModelConfig {
         fun cleanupOldSessions(maxAge: Duration = Duration.ofDays(1)): Int {
             val now = Instant.now()
             var cleaned = 0
-            
             sessions.values.toList().forEach { session ->
                 if (!session.isActive) {
                     val endTime = session.endTime ?: now
-                    val age = Duration.between(endTime, now)
-                    if (age > maxAge) {
+                    if (Duration.between(endTime, now) > maxAge) {
                         sessions.remove(session.sessionId)
                         cleaned++
                     }
-                } else {
-                    val age = Duration.between(session.startTime, now)
-                    if (age > Duration.ofHours(24)) {
-                        session.end()
-                        sessions.remove(session.sessionId)
-                        cleaned++
-                    }
+                } else if (Duration.between(session.startTime, now) > Duration.ofHours(24)) {
+                    session.end()
+                    sessions.remove(session.sessionId)
+                    cleaned++
                 }
             }
-            
-            if (cleaned > 0) Log.i(TAG, "Cleaned up $cleaned old sessions")
+            if (cleaned > 0) Log.i(TAG, "Cleaned $cleaned old sessions")
             return cleaned
         }
         
         fun getTotalCost(): Map<ClaudeModel, ModelCost>? {
             val sessionList = sessions.values.toList()
             if (sessionList.isEmpty()) return null
-            
             return sessionList
                 .groupBy { it.model }
-                .mapValues { (_, modelSessions) ->
-                    modelSessions.map { it.currentCost }.reduce { acc, cost -> acc + cost }
-                }
+                .mapValues { (_, s) -> s.map { it.currentCost }.reduce { a, b -> a + b } }
         }
         
         fun clear() {
