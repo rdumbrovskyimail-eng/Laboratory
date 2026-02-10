@@ -29,13 +29,13 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Claude API Client v3.1 (FIXED CACHE MODE)
+ * Claude API Client v4.0 (FIXED MULTI-TURN CACHE + STREAMING)
  *
- * ✅ ИСПРАВЛЕНО (2026-02-10):
- * - Правильная сериализация строк с Json.encodeToString
- * - Кеширование ПОСЛЕДНЕГО user message (там контекст файлов + запрос)
- * - System prompt тоже кешируется
- * - Оба блока получают cache_control: {"type": "ephemeral"}
+ * ✅ FIXES:
+ * 1. Multi-turn conversations: all messages sent as conversation history
+ * 2. Cache works with multi-turn: system prompt + LAST user message cached
+ * 3. Proper JSON serialization for all message content
+ * 4. anthropic-beta header only when caching is enabled
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -56,7 +56,7 @@ class ClaudeApiClient @Inject constructor(
     private suspend fun getApiKey(): String {
         val key = secureSettings.getAnthropicApiKey().first()
         if (key.isBlank()) {
-            throw IllegalStateException("ANTHROPIC_API_KEY not configured. Please set it in Settings → Claude API.")
+            throw IllegalStateException("ANTHROPIC_API_KEY not configured. Please set it in Settings.")
         }
         return key
     }
@@ -120,12 +120,16 @@ class ClaudeApiClient @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: enableCaching теперь кеширует:
-     * 1. System prompt (инструкция для Claude)
-     * 2. ПОСЛЕДНЕЕ user message (контекст файлов + запрос пользователя)
-     * 
-     * Оба блока получают cache_control: {"type": "ephemeral"}
-     * TTL = 5 минут, обновляется при каждом cache hit.
+     * ✅ FIXED: Supports multi-turn conversations with prompt caching.
+     *
+     * When enableCaching=true:
+     * - System prompt gets cache_control: {"type": "ephemeral"}
+     * - LAST user message gets cache_control: {"type": "ephemeral"}
+     * - All prior messages are sent as-is (they form the cached prefix)
+     * - Cache TTL = 5 minutes, refreshes on each hit
+     *
+     * This ensures Claude remembers the entire conversation AND
+     * the system prompt + context stay cached between requests.
      */
     fun streamMessage(
         model: String,
@@ -150,48 +154,17 @@ class ClaudeApiClient @Inject constructor(
                 }
 
                 if (enableCaching) {
-                    // ✅ КЕШИРОВАНИЕ: system prompt + последнее user message
-                    val jsonBody = buildString {
-                        append("{")
-                        append("\"model\":\"$model\",")
-                        append("\"max_tokens\":$maxTokens,")
-                        append("\"stream\":true")
-                        if (temperature != null) append(",\"temperature\":$temperature")
-                        
-                        // System prompt с кешированием
-                        if (systemPrompt != null) {
-                            append(",\"system\":[{")
-                            append("\"type\":\"text\",")
-                            append("\"text\":${Json.encodeToString(systemPrompt)},")
-                            append("\"cache_control\":{\"type\":\"ephemeral\"}")
-                            append("}]")
-                        }
-                        
-                        // Messages: последнее user message с cache_control
-                        append(",\"messages\":[")
-                        messages.forEachIndexed { index, msg ->
-                            if (index > 0) append(",")
-                            append("{")
-                            append("\"role\":\"${msg.role}\",")
-                            append("\"content\":[{")
-                            append("\"type\":\"text\",")
-                            append("\"text\":${Json.encodeToString(msg.content)}")
-                            
-                            // ✅ Кешируем ПОСЛЕДНЕЕ user message (там весь контекст!)
-                            if (index == messages.lastIndex && msg.role == "user") {
-                                append(",\"cache_control\":{\"type\":\"ephemeral\"}")
-                            }
-                            append("}]")
-                            append("}")
-                        }
-                        append("]")
-                        append("}")
-                    }
-                    
-                    Log.d(TAG, "Cache enabled - caching: system=${systemPrompt != null}, last_user_msg=true")
+                    // ✅ Manual JSON construction for cache_control support
+                    val jsonBody = buildCachedRequestJson(
+                        model = model,
+                        messages = messages,
+                        systemPrompt = systemPrompt,
+                        maxTokens = maxTokens,
+                        temperature = temperature
+                    )
+                    Log.d(TAG, "Cache enabled: system=${systemPrompt != null}, msgs=${messages.size}")
                     setBody(jsonBody)
                 } else {
-                    // Обычный запрос без кеширования
                     val request = ClaudeRequest(
                         model = model,
                         maxTokens = maxTokens,
@@ -235,6 +208,8 @@ class ClaudeApiClient @Inject constructor(
                         val event = json.decodeFromString<StreamEvent>(data)
                         when (event.type) {
                             "message_start" -> {
+                                // ✅ Extract usage from message_start (contains cache info)
+                                event.message?.usage?.let { totalUsage = it }
                                 emit(StreamingResult.Started(event.message?.id ?: ""))
                             }
                             "content_block_delta" -> {
@@ -244,7 +219,10 @@ class ClaudeApiClient @Inject constructor(
                                 }
                             }
                             "message_delta" -> {
-                                event.usage?.let { totalUsage = it }
+                                // ✅ Merge usage: message_delta has output_tokens + cache info
+                                event.usage?.let { deltaUsage ->
+                                    totalUsage = mergeUsage(totalUsage, deltaUsage)
+                                }
                                 event.delta?.stopReason?.let { emit(StreamingResult.StopReason(it)) }
                             }
                             "message_stop" -> {
@@ -271,6 +249,73 @@ class ClaudeApiClient @Inject constructor(
             channel?.cancel()
         }
     }.cancellable()
+
+    /**
+     * ✅ Build JSON request with cache_control for multi-turn conversations.
+     *
+     * Structure:
+     * - system: [{ type: "text", text: "...", cache_control: { type: "ephemeral" } }]
+     * - messages: [ ...history..., { role: "user", content: [{ type: "text", text: "...", cache_control: { type: "ephemeral" } }] } ]
+     */
+    private fun buildCachedRequestJson(
+        model: String,
+        messages: List<ClaudeMessage>,
+        systemPrompt: String?,
+        maxTokens: Int,
+        temperature: Double?
+    ): String = buildString {
+        append("{")
+        append("\"model\":${Json.encodeToString(model)},")
+        append("\"max_tokens\":$maxTokens,")
+        append("\"stream\":true")
+        if (temperature != null) append(",\"temperature\":$temperature")
+
+        // System prompt with cache_control
+        if (systemPrompt != null) {
+            append(",\"system\":[{")
+            append("\"type\":\"text\",")
+            append("\"text\":${Json.encodeToString(systemPrompt)},")
+            append("\"cache_control\":{\"type\":\"ephemeral\"}")
+            append("}]")
+        }
+
+        // Messages with cache_control on LAST user message
+        append(",\"messages\":[")
+        messages.forEachIndexed { index, msg ->
+            if (index > 0) append(",")
+            append("{")
+            append("\"role\":${Json.encodeToString(msg.role)},")
+            append("\"content\":[{")
+            append("\"type\":\"text\",")
+            append("\"text\":${Json.encodeToString(msg.content)}")
+
+            // Cache the LAST user message (contains the latest context)
+            if (index == messages.lastIndex && msg.role == "user") {
+                append(",\"cache_control\":{\"type\":\"ephemeral\"}")
+            }
+            append("}]")
+            append("}")
+        }
+        append("]")
+        append("}")
+    }
+
+    /**
+     * Merge usage from message_start and message_delta events.
+     * message_start contains input_tokens + cache info.
+     * message_delta contains output_tokens.
+     */
+    private fun mergeUsage(existing: Usage?, delta: Usage?): Usage {
+        if (existing == null && delta == null) return Usage(0, 0)
+        if (existing == null) return delta!!
+        if (delta == null) return existing
+        return Usage(
+            inputTokens = maxOf(existing.inputTokens, delta.inputTokens),
+            outputTokens = maxOf(existing.outputTokens, delta.outputTokens),
+            cacheCreationInputTokens = existing.cacheCreationInputTokens ?: delta.cacheCreationInputTokens,
+            cacheReadInputTokens = existing.cacheReadInputTokens ?: delta.cacheReadInputTokens
+        )
+    }
 
     suspend fun sendMessage(
         model: String,
