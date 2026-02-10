@@ -16,14 +16,20 @@ import javax.inject.Singleton
 import com.opuside.app.core.network.github.GitHubApiClient
 
 /**
- * 🤖 REPOSITORY ANALYZER v4.0 (DEDICATED CACHE MODE)
- * 
- * ✅ ОБНОВЛЕНО:
- * - StreamingStarted event для запуска таймера кеша
- * - enableCaching parameter для dedicated cache mode
- * - Proper cache_control: {"type": "ephemeral"} в API запросах
- * - Обновлённый cost calculation с cache read/write tokens
- * - УДАЛЁН: Auto-Haiku
+ * 🤖 REPOSITORY ANALYZER v5.0 (3 CRITICAL FIXES)
+ *
+ * ✅ FIX 1: scanFilesV2() does NOT insert messages into ChatDao
+ *    - ViewModel is the SINGLE source of truth for DB writes
+ *    - No more message duplication
+ *
+ * ✅ FIX 2: scanFilesV2() accepts full conversation history
+ *    - All prior messages are sent to Claude API
+ *    - Claude remembers user's name, previous context, etc.
+ *    - Cache works because the system prompt + history prefix stays identical
+ *
+ * ✅ FIX 3: Streaming events flow directly to ViewModel
+ *    - ViewModel stores streaming text in MutableStateFlow
+ *    - UI reads it instantly (no Room DB roundtrip)
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
@@ -32,7 +38,7 @@ class RepositoryAnalyzer @Inject constructor(
     private val chatDao: ChatDao,
     private val appSettings: AppSettings
 ) {
-    
+
     companion object {
         private const val TAG = "RepositoryAnalyzer"
         private const val MAX_FILES_PER_SCAN = 50
@@ -45,30 +51,30 @@ class RepositoryAnalyzer @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════════
 
     private val sessionManager = ClaudeModelConfig.SessionManager
-    
+
     init { Log.i(TAG, "RepositoryAnalyzer initialized") }
-    
+
     fun createSession(sessionId: String, model: ClaudeModelConfig.ClaudeModel): ClaudeModelConfig.ChatSession {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
         return sessionManager.createSession(sessionId, model)
     }
-    
+
     fun getSession(sessionId: String): ClaudeModelConfig.ChatSession? {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
         return sessionManager.getSession(sessionId)
     }
-    
+
     fun endSession(sessionId: String): ClaudeModelConfig.ChatSession? {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
         return sessionManager.endSession(sessionId)
     }
-    
+
     fun shouldStartNewSession(sessionId: String): Boolean =
         sessionManager.shouldStartNewSession(sessionId)
-    
+
     suspend fun cleanupOldSessions(): Int =
         sessionManager.cleanupOldSessions(Duration.ofDays(SESSION_CLEANUP_THRESHOLD_DAYS))
-    
+
     fun getActiveSessions(): List<ClaudeModelConfig.ChatSession> =
         sessionManager.getAllActiveSessions()
 
@@ -122,25 +128,25 @@ class RepositoryAnalyzer @Inject constructor(
         if (filePaths.isEmpty()) return Result.failure(IllegalArgumentException("No files selected"))
         if (filePaths.size > MAX_FILES_PER_SCAN) return Result.failure(
             IllegalArgumentException("Too many files: ${filePaths.size} > $MAX_FILES_PER_SCAN"))
-        
+
         return try {
             val files = filePaths.mapNotNull { gitHubClient.getFileContent(it).getOrNull() }
             if (files.isEmpty()) return Result.failure(IllegalStateException("No files could be loaded"))
-            
+
             val totalSize = files.sumOf { it.size }
             val oversizedFiles = files.filter { it.size > MAX_FILE_SIZE_BYTES }
             val estimatedInputTokens = (totalSize / 4.0).toInt()
             val estimatedOutputTokens = estimatedInputTokens / 2
-            
+
             val session = sessionId?.let { getSession(it) }
             val currentSessionTokens = session?.totalInputTokens ?: 0
             val projectedTotalTokens = currentSessionTokens + estimatedInputTokens
-            
+
             val cost = model.calculateCost(
                 inputTokens = estimatedInputTokens,
                 outputTokens = estimatedOutputTokens
             )
-            
+
             Result.success(ScanEstimate(
                 fileCount = files.size,
                 totalSizeBytes = totalSize,
@@ -171,13 +177,21 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // FILE SCANNING (with Cache Mode + StreamingStarted event)
+    // ✅ NEW: scanFilesV2 — NO DB WRITES, WITH CONVERSATION HISTORY
     // ═══════════════════════════════════════════════════════════════════════════
 
-    suspend fun scanFiles(
+    /**
+     * V2: Does NOT write to ChatDao. ViewModel handles all DB operations.
+     * Accepts full conversation history so Claude remembers context.
+     *
+     * @param conversationHistory All previous messages from the session (USER + ASSISTANT)
+     *                            The current userQuery is ALREADY included as the last USER message.
+     */
+    suspend fun scanFilesV2(
         sessionId: String,
         filePaths: List<String>,
         userQuery: String,
+        conversationHistory: List<ChatMessageEntity>,
         model: ClaudeModelConfig.ClaudeModel,
         enableCaching: Boolean = false,
         maxTokens: Int = 8192
@@ -185,17 +199,18 @@ class RepositoryAnalyzer @Inject constructor(
         try {
             require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
             require(userQuery.isNotBlank()) { "User query cannot be blank" }
-            
-            Log.i(TAG, "Scan: session=$sessionId, files=${filePaths.size}, " +
-                    "model=${model.displayName}, caching=$enableCaching, maxTokens=$maxTokens")
-            
+
+            Log.i(TAG, "ScanV2: session=$sessionId, files=${filePaths.size}, " +
+                    "model=${model.displayName}, caching=$enableCaching, maxTokens=$maxTokens, " +
+                    "history=${conversationHistory.size} msgs")
+
             val session = getSession(sessionId) ?: createSession(sessionId, model)
-            
+
             if (session.model != model) {
                 emit(AnalysisResult.Error("Model mismatch. Please start a new session."))
                 return@flow
             }
-            
+
             // Load files from GitHub
             val fileContents = mutableMapOf<String, String>()
             if (filePaths.isNotEmpty()) {
@@ -218,60 +233,82 @@ class RepositoryAnalyzer @Inject constructor(
                     return@flow
                 }
             }
-            
+
             emit(AnalysisResult.Loading("Preparing context..."))
             val context = if (fileContents.isNotEmpty()) buildFileContext(fileContents) else ""
             val systemPrompt = buildSystemPrompt()
-            val userMessage = if (context.isNotEmpty()) buildUserMessage(context, userQuery) else userQuery
-            
-            // Save user message
-            chatDao.insert(ChatMessageEntity(
-                sessionId = sessionId,
-                role = MessageRole.USER,
-                content = userQuery
-            ))
-            
-            val assistantMsgId = chatDao.insert(ChatMessageEntity(
-                sessionId = sessionId,
-                role = MessageRole.ASSISTANT,
-                content = "",
-                isStreaming = true
-            ))
-            
+
+            // ✅ FIX 2: Build FULL conversation history for Claude
+            // Convert DB messages to Claude API format
+            val claudeMessages = mutableListOf<ClaudeMessage>()
+
+            for (msg in conversationHistory) {
+                val role = when (msg.role) {
+                    MessageRole.USER -> "user"
+                    MessageRole.ASSISTANT -> "assistant"
+                    else -> continue // Skip SYSTEM messages
+                }
+                // Skip empty messages
+                if (msg.content.isBlank()) continue
+                claudeMessages.add(ClaudeMessage(role, msg.content))
+            }
+
+            // If there's file context, prepend it to the LAST user message
+            if (context.isNotEmpty() && claudeMessages.isNotEmpty()) {
+                val lastIdx = claudeMessages.lastIndex
+                val lastMsg = claudeMessages[lastIdx]
+                if (lastMsg.role == "user") {
+                    claudeMessages[lastIdx] = ClaudeMessage(
+                        "user",
+                        buildUserMessage(context, lastMsg.content)
+                    )
+                }
+            }
+
+            // Ensure messages alternate correctly (Claude API requirement)
+            val sanitizedMessages = sanitizeMessageOrder(claudeMessages)
+
+            if (sanitizedMessages.isEmpty()) {
+                emit(AnalysisResult.Error("No messages to send"))
+                return@flow
+            }
+
+            Log.i(TAG, "Sending ${sanitizedMessages.size} messages to Claude (history + current)")
+
             emit(AnalysisResult.Loading("Analyzing with ${model.displayName}..."))
-            
+
             var fullResponse = ""
             var inputTokens = 0
             var outputTokens = 0
             var cachedReadTokens = 0
             var cachedWriteTokens = 0
             var streamingStartedEmitted = false
-            
+
             claudeClient.streamMessage(
                 model = model.modelId,
-                messages = listOf(ClaudeMessage("user", userMessage)),
+                messages = sanitizedMessages,
                 systemPrompt = systemPrompt,
                 maxTokens = maxTokens,
                 enableCaching = enableCaching
             ).collect { result ->
                 when (result) {
                     is StreamingResult.Started -> {
-                        // ✅ ИИ начал отвечать — emit StreamingStarted для таймера
                         if (!streamingStartedEmitted) {
                             streamingStartedEmitted = true
                             emit(AnalysisResult.StreamingStarted)
                         }
                     }
-                    
+
                     is StreamingResult.Delta -> {
                         fullResponse = result.accumulated
                         if (!streamingStartedEmitted) {
                             streamingStartedEmitted = true
                             emit(AnalysisResult.StreamingStarted)
                         }
+                        // ✅ FIX 3: Emit every delta immediately
                         emit(AnalysisResult.Streaming(result.accumulated))
                     }
-                    
+
                     is StreamingResult.Completed -> {
                         fullResponse = result.fullText
                         result.usage?.let { usage ->
@@ -280,42 +317,37 @@ class RepositoryAnalyzer @Inject constructor(
                             cachedReadTokens = usage.cacheReadInputTokens ?: 0
                             cachedWriteTokens = usage.cacheCreationInputTokens ?: 0
                         }
-                        
+
                         Log.i(TAG, "Completed: input=$inputTokens, output=$outputTokens, " +
                                 "cacheRead=$cachedReadTokens, cacheWrite=$cachedWriteTokens")
-                        
+
                         session.addMessage(inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens)
-                        
+
                         val cost = model.calculateCost(
                             inputTokens = inputTokens,
                             outputTokens = outputTokens,
                             cachedReadTokens = cachedReadTokens,
                             cachedWriteTokens = cachedWriteTokens
                         )
-                        
-                        chatDao.finishStreaming(
-                            id = assistantMsgId,
-                            finalContent = fullResponse,
-                            tokensUsed = inputTokens + outputTokens
-                        )
-                        
+
+                        // ✅ FIX 1: NO chatDao operations here!
                         emit(AnalysisResult.Completed(
                             text = fullResponse,
                             cost = cost,
                             session = session
                         ))
                     }
-                    
+
                     is StreamingResult.Error -> {
                         Log.e(TAG, "Streaming error", result.exception)
-                        chatDao.markAsError(assistantMsgId, result.exception.message ?: "Error")
+                        // ✅ FIX 1: NO chatDao operations here!
                         emit(AnalysisResult.Error(result.exception.message ?: "Unknown error"))
                     }
-                    
+
                     else -> {}
                 }
             }
-            
+
         } catch (e: IllegalArgumentException) {
             emit(AnalysisResult.Error("Invalid input: ${e.message}"))
         } catch (e: Exception) {
@@ -323,6 +355,113 @@ class RepositoryAnalyzer @Inject constructor(
             emit(AnalysisResult.Error(e.message ?: "Unknown error"))
         }
     }
+
+    /**
+     * Ensure messages alternate user/assistant correctly.
+     * Claude API requires: first message is "user", messages alternate.
+     * Consecutive same-role messages are merged.
+     */
+    private fun sanitizeMessageOrder(messages: List<ClaudeMessage>): List<ClaudeMessage> {
+        if (messages.isEmpty()) return emptyList()
+
+        val result = mutableListOf<ClaudeMessage>()
+        for (msg in messages) {
+            if (result.isNotEmpty() && result.last().role == msg.role) {
+                // Merge consecutive same-role messages
+                val last = result.removeAt(result.lastIndex)
+                result.add(ClaudeMessage(msg.role, last.content + "\n\n" + msg.content))
+            } else {
+                result.add(msg)
+            }
+        }
+
+        // Ensure first message is from "user"
+        if (result.isNotEmpty() && result.first().role != "user") {
+            result.add(0, ClaudeMessage("user", "Hello"))
+        }
+
+        // Ensure last message is from "user"
+        if (result.isNotEmpty() && result.last().role != "user") {
+            result.add(ClaudeMessage("user", "Continue"))
+        }
+
+        return result
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // LEGACY: scanFiles (kept for backward compatibility)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    @Deprecated("Use scanFilesV2 instead — no DB duplication, with conversation history")
+    suspend fun scanFiles(
+        sessionId: String,
+        filePaths: List<String>,
+        userQuery: String,
+        model: ClaudeModelConfig.ClaudeModel,
+        enableCaching: Boolean = false,
+        maxTokens: Int = 8192
+    ): Flow<AnalysisResult> = flow {
+        try {
+            require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
+            require(userQuery.isNotBlank()) { "User query cannot be blank" }
+
+            val session = getSession(sessionId) ?: createSession(sessionId, model)
+            if (session.model != model) {
+                emit(AnalysisResult.Error("Model mismatch. Please start a new session."))
+                return@flow
+            }
+
+            val fileContents = mutableMapOf<String, String>()
+            if (filePaths.isNotEmpty()) {
+                emit(AnalysisResult.Loading("Loading files..."))
+                for (path in filePaths) {
+                    try {
+                        gitHubClient.getFileContentDecoded(path).getOrNull()?.let {
+                            fileContents[path] = it
+                        }
+                    } catch (e: Exception) { Log.e(TAG, "Error loading file: $path", e) }
+                }
+            }
+
+            val context = if (fileContents.isNotEmpty()) buildFileContext(fileContents) else ""
+            val systemPrompt = buildSystemPrompt()
+            val userMessage = if (context.isNotEmpty()) buildUserMessage(context, userQuery) else userQuery
+
+            claudeClient.streamMessage(
+                model = model.modelId,
+                messages = listOf(ClaudeMessage("user", userMessage)),
+                systemPrompt = systemPrompt,
+                maxTokens = maxTokens,
+                enableCaching = enableCaching
+            ).collect { result ->
+                when (result) {
+                    is StreamingResult.Started -> emit(AnalysisResult.StreamingStarted)
+                    is StreamingResult.Delta -> emit(AnalysisResult.Streaming(result.accumulated))
+                    is StreamingResult.Completed -> {
+                        session.addMessage(
+                            result.usage?.inputTokens ?: 0,
+                            result.usage?.outputTokens ?: 0,
+                            result.usage?.cacheReadInputTokens ?: 0,
+                            result.usage?.cacheCreationInputTokens ?: 0
+                        )
+                        val cost = model.calculateCost(
+                            inputTokens = result.usage?.inputTokens ?: 0,
+                            outputTokens = result.usage?.outputTokens ?: 0,
+                            cachedReadTokens = result.usage?.cacheReadInputTokens ?: 0,
+                            cachedWriteTokens = result.usage?.cacheCreationInputTokens ?: 0
+                        )
+                        emit(AnalysisResult.Completed(result.fullText, cost, session))
+                    }
+                    is StreamingResult.Error -> emit(AnalysisResult.Error(result.exception.message ?: "Error"))
+                    else -> {}
+                }
+            }
+        } catch (e: Exception) {
+            emit(AnalysisResult.Error(e.message ?: "Unknown error"))
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
 
     private fun buildFileContext(files: Map<String, String>): String = buildString {
         appendLine("# Repository Files Context")
@@ -389,15 +528,12 @@ Please analyze the provided files and respond to the user's query.
     """.trimIndent()
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ANALYSIS RESULT (with StreamingStarted)
+    // ANALYSIS RESULT
     // ═══════════════════════════════════════════════════════════════════════════
 
     sealed class AnalysisResult {
         data class Loading(val message: String) : AnalysisResult()
-        
-        /** ✅ NEW: ИИ начал писать ответ — сигнал для запуска таймера кеша */
         data object StreamingStarted : AnalysisResult()
-        
         data class Streaming(val text: String) : AnalysisResult()
         data class Completed(
             val text: String,
