@@ -18,18 +18,23 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v5.2 (FIXED CACHE TIMER + REAL STREAMING)
+ * Analyzer ViewModel v6.0 (COMPLETE REWRITE — 3 CRITICAL FIXES)
  *
- * ✅ ИСПРАВЛЕНО (2026-02-10):
- * 1. ТАЙМЕР КЕША:
- *    - Запускается СРАЗУ при StreamingStarted (когда Claude начинает отвечать)
- *    - НЕ ждёт окончания ответа!
- *    - Обновляется при cache read (добавляет +5 минут к текущему времени)
- * 
- * 2. РЕАЛЬНЫЙ STREAMING:
- *    - Streaming event теперь обновляет БД в реальном времени
- *    - UI видит каждое слово по мере генерации
- *    - Оптимизация для Samsung S23 Ultra: debounce 16ms (60 FPS)
+ * ✅ FIX 1: MESSAGE DUPLICATION
+ *    - Messages are now ONLY inserted in ViewModel, NOT in RepositoryAnalyzer
+ *    - RepositoryAnalyzer.scanFiles() no longer touches ChatDao
+ *
+ * ✅ FIX 2: CONVERSATION HISTORY + CACHE
+ *    - Full conversation history is sent to Claude API on every request
+ *    - Claude now remembers your name and prior context
+ *    - Cache works because system prompt + history stay the same (cache hit!)
+ *    - Timer refreshes on every cache hit
+ *
+ * ✅ FIX 3: REAL-TIME STREAMING
+ *    - Streaming text stored in MutableStateFlow (in-memory), NOT via Room DB
+ *    - UI observes _streamingText directly → instant character-by-character display
+ *    - No more "Claude пишет..." spinner then text dump
+ *    - Room DB is only updated on completion (final save)
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -42,7 +47,6 @@ class AnalyzerViewModel @Inject constructor(
     companion object {
         private const val TAG = "AnalyzerVM"
         private const val KEY_SESSION_ID = "session_id"
-        private const val STREAMING_DEBOUNCE_MS = 16L // 60 FPS для S23 Ultra
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -94,8 +98,6 @@ class AnalyzerViewModel @Inject constructor(
     val cacheHitCount: StateFlow<Int> = _cacheHitCount.asStateFlow()
 
     private var cacheTimerJob: Job? = null
-    
-    // ✅ НОВОЕ: Храним время истечения кеша
     private var cacheExpiresAt: Long = 0L
 
     // ═══════════════════════════════════════════════════════════════════
@@ -138,6 +140,13 @@ class AnalyzerViewModel @Inject constructor(
 
     private val _chatError = MutableStateFlow<String?>(null)
     val chatError: StateFlow<String?> = _chatError.asStateFlow()
+
+    /**
+     * ✅ FIX 3: In-memory streaming text for instant UI updates.
+     * UI observes this directly instead of waiting for Room DB roundtrip.
+     */
+    private val _streamingText = MutableStateFlow<String?>(null)
+    val streamingText: StateFlow<String?> = _streamingText.asStateFlow()
 
     val sessionTokens: StateFlow<ClaudeModelConfig.ModelCost?> = currentSession
         .map { it?.currentCost }
@@ -214,7 +223,7 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE MODE CONTROLS (FIXED TIMER)
+    // CACHE MODE CONTROLS
     // ═══════════════════════════════════════════════════════════════════
 
     fun toggleCacheMode() {
@@ -245,12 +254,11 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Запускает таймер на ПОЛНЫЕ 5 минут
-     * Вызывается когда Claude НАЧИНАЕТ отвечать (StreamingStarted)
+     * Start a new cache timer (called on first WRITE).
+     * Cancels any existing timer and starts fresh 5:00.
      */
     private fun startCacheTimer() {
         cacheTimerJob?.cancel()
-        
         cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
         _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
         _cacheIsWarmed.value = true
@@ -261,7 +269,7 @@ class AnalyzerViewModel @Inject constructor(
                 if (remaining <= 0) {
                     _cacheTimerMs.value = 0
                     _cacheIsWarmed.value = false
-                    addOperation("⏰", "Cache TTL истёк! Кеш очищен.", OperationLogType.ERROR)
+                    addOperation("⏰", "Cache TTL истёк! Следующий запрос = новый WRITE.", OperationLogType.ERROR)
                     Log.w(TAG, "Cache TTL expired")
                     break
                 }
@@ -269,28 +277,25 @@ class AnalyzerViewModel @Inject constructor(
                 delay(1000)
             }
         }
-        
-        Log.i(TAG, "Cache timer started: ${getCacheTimerFormatted(ClaudeModelConfig.CACHE_TTL_MS)}")
+        Log.i(TAG, "Cache timer STARTED: 5:00")
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Добавляет +5 минут к ТЕКУЩЕМУ времени истечения
-     * Вызывается при cache read (hit)
+     * Reset cache TTL to full 5 min (called on cache READ/hit).
+     * Per Anthropic docs: "TTL resets with each successful cache hit"
+     * Does NOT restart the timer job — just moves cacheExpiresAt forward.
+     * The existing job reads cacheExpiresAt each second, so it picks up the new value.
      */
-    private fun refreshCacheTimer() {
+    private fun resetCacheTimer() {
         if (!_cacheIsWarmed.value) {
-            // Если кеш не прогрет — запускаем новый таймер
+            // Cache wasn't warmed (somehow got READ without WRITE) — start fresh
             startCacheTimer()
             return
         }
-        
-        // Добавляем 5 минут к текущему времени
-        val oldExpires = cacheExpiresAt
+        // Reset expiry to now + 5 min
         cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
-        val addedMinutes = ((cacheExpiresAt - oldExpires) / 60000.0)
-        
-        Log.i(TAG, "Cache timer refreshed: +${String.format("%.1f", addedMinutes)} min, new TTL: ${getCacheTimerFormatted(cacheExpiresAt - System.currentTimeMillis())}")
-        addOperation("🔄", "TTL обновлён: +5:00 мин", OperationLogType.SUCCESS)
+        _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
+        Log.i(TAG, "Cache timer RESET to 5:00 (cache hit)")
     }
 
     private fun stopCacheTimer() {
@@ -301,23 +306,35 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Вызывается ПОСЛЕ получения usage statistics
-     * Обновляет метрики, но НЕ запускает таймер (уже запущен в StreamingStarted!)
+     * Handle cache usage results according to official Anthropic behavior:
+     * https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+     *
+     * Official behavior:
+     * - Cache WRITE: content is cached, TTL starts at 5 minutes
+     * - Cache READ (hit): TTL is RESET to full 5 minutes from now
+     * - No hit within TTL: cache expires, next request = new WRITE
+     *
+     * Timer flow:
+     * 1. Request 1 → cache WRITE → timer starts at 5:00
+     * 2. Request 2 (within 5 min, same prefix) → cache READ → timer resets to 5:00
+     * 3. Request 3 (within 5 min) → cache READ → timer resets to 5:00 again
+     * 4. No requests for 5 min → timer expires → cache gone
+     * 5. Next request → cache WRITE → timer starts at 5:00
      */
     private fun handleCacheResult(cachedReadTokens: Int, cachedWriteTokens: Int, savingsEUR: Double) {
         if (cachedWriteTokens > 0) {
             _cacheTotalWriteTokens.value += cachedWriteTokens
-            addOperation("📝", "Cache WRITE: ${"%,d".format(cachedWriteTokens)} tok", OperationLogType.SUCCESS)
+            // WRITE = new content cached, TTL starts now (5 min)
+            startCacheTimer()
+            addOperation("📝", "Cache WRITE: ${"%,d".format(cachedWriteTokens)} tok → TTL 5:00", OperationLogType.SUCCESS)
         }
         if (cachedReadTokens > 0) {
             _cacheTotalReadTokens.value += cachedReadTokens
             _cacheHitCount.value += 1
             _cacheTotalSavingsEUR.value += savingsEUR
-            
-            // ✅ Обновляем таймер при cache hit (добавляем время!)
-            refreshCacheTimer()
-            
-            addOperation("⚡", "Cache HIT: ${"%,d".format(cachedReadTokens)} tok (€${String.format("%.4f", savingsEUR)} saved)", OperationLogType.SUCCESS)
+            // READ = cache hit, TTL RESETS to full 5 min from now
+            resetCacheTimer()
+            addOperation("⚡", "Cache HIT: ${"%,d".format(cachedReadTokens)} tok → TTL обновлён 5:00 (€${String.format("%.4f", savingsEUR)} saved)", OperationLogType.SUCCESS)
         }
     }
 
@@ -361,7 +378,6 @@ class AnalyzerViewModel @Inject constructor(
             _scanEstimate.value = null
             _chatError.value = null
 
-            // Reset cache stats
             if (_cacheModeEnabled.value) {
                 stopCacheTimer()
                 _cacheIsWarmed.value = false
@@ -423,7 +439,7 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CHAT (with REAL STREAMING)
+    // CHAT — ALL 3 BUGS FIXED
     // ═══════════════════════════════════════════════════════════════════
 
     fun sendMessage(message: String) {
@@ -432,6 +448,7 @@ class AnalyzerViewModel @Inject constructor(
         viewModelScope.launch {
             _isStreaming.value = true
             _chatError.value = null
+            _streamingText.value = null // Will be set to "" on first StreamingStarted
 
             val useModel = _selectedModel.value
             val isCacheMode = _cacheModeEnabled.value
@@ -440,33 +457,27 @@ class AnalyzerViewModel @Inject constructor(
 
             addOperation("📤", "$modeName ${"%,d".format(maxTokens)} tok: ${message.take(40)}...", OperationLogType.PROGRESS)
 
-            // Save user message
+            // ✅ FIX 1: Save user message ONLY HERE (not in RepositoryAnalyzer)
             chatDao.insert(ChatMessageEntity(
                 sessionId = sessionId,
                 role = com.opuside.app.core.database.entity.MessageRole.USER,
                 content = message
             ))
 
-            // Create assistant message placeholder
-            val assistantMsgId = chatDao.insert(ChatMessageEntity(
-                sessionId = sessionId,
-                role = com.opuside.app.core.database.entity.MessageRole.ASSISTANT,
-                content = "",
-                isStreaming = true
-            ))
+            // ✅ FIX 2: Build conversation history from DB for Claude context
+            val historyMessages = chatDao.getSession(sessionId)
+                .filter { it.role != com.opuside.app.core.database.entity.MessageRole.SYSTEM }
+                .filter { !it.isStreaming && it.content.isNotBlank() }
 
             var fullResponse = ""
-            var inputTokens = 0
-            var outputTokens = 0
-            var cachedReadTokens = 0
-            var cachedWriteTokens = 0
-            var streamingStartedEmitted = false
-            var lastUpdateTime = 0L
 
-            repositoryAnalyzer.scanFiles(
+            // ✅ FIX 1+2: Use scanFilesV2 which does NOT insert into DB, 
+            // and accepts conversation history
+            repositoryAnalyzer.scanFilesV2(
                 sessionId = sessionId,
                 filePaths = _selectedFiles.value.toList(),
                 userQuery = message,
+                conversationHistory = historyMessages,
                 model = useModel,
                 maxTokens = maxTokens,
                 enableCaching = isCacheMode
@@ -477,67 +488,56 @@ class AnalyzerViewModel @Inject constructor(
                     }
 
                     is RepositoryAnalyzer.AnalysisResult.StreamingStarted -> {
-                        if (!streamingStartedEmitted) {
-                            streamingStartedEmitted = true
-                            
-                            // ✅ ИСПРАВЛЕНО: Запускаем таймер СРАЗУ когда Claude начал отвечать!
-                            if (isCacheMode) {
-                                startCacheTimer()
-                                addOperation("⏱️", "Кеш активен — таймер 5:00", OperationLogType.INFO)
-                            }
-                        }
+                        // Show streaming bubble with cursor
+                        _streamingText.value = ""
+                        // Timer is NOT started here — we wait for actual cache usage data
+                        // in handleCacheResult (Completed event) to know if WRITE or READ happened
                     }
 
                     is RepositoryAnalyzer.AnalysisResult.Streaming -> {
-                        // ✅ ИСПРАВЛЕНО: РЕАЛЬНЫЙ STREAMING
-                        // Обновляем БД в реальном времени с debounce для производительности
+                        // ✅ FIX 3: Update in-memory StateFlow — UI sees it INSTANTLY
                         fullResponse = result.text
-                        
-                        val now = System.currentTimeMillis()
-                        if (now - lastUpdateTime >= STREAMING_DEBOUNCE_MS) {
-                            chatDao.updateStreamingContent(assistantMsgId, fullResponse)
-                            lastUpdateTime = now
-                        }
+                        _streamingText.value = fullResponse
                     }
 
                     is RepositoryAnalyzer.AnalysisResult.Completed -> {
+                        fullResponse = result.text
                         _isStreaming.value = false
+
+                        // ✅ FIX 1: Save assistant message to DB FIRST, then clear streaming
+                        // This prevents a visual flash where streaming bubble disappears
+                        // before the final Room message appears
+                        val assistantId = chatDao.insert(ChatMessageEntity(
+                            sessionId = sessionId,
+                            role = com.opuside.app.core.database.entity.MessageRole.ASSISTANT,
+                            content = fullResponse,
+                            isStreaming = false
+                        ))
+                        // Update tokens via finishStreaming which sets tokens_used column
+                        chatDao.finishStreaming(
+                            id = assistantId,
+                            finalContent = fullResponse,
+                            tokensUsed = result.cost.totalTokens
+                        )
+
+                        // ✅ Now safe to clear streaming — Room message is already saved
+                        _streamingText.value = null
+
                         _currentSession.value = result.session
 
-                        fullResponse = result.text
                         result.cost.let { cost ->
-                            inputTokens = cost.inputTokens
-                            outputTokens = cost.outputTokens
-                            cachedReadTokens = cost.cachedReadTokens
-                            cachedWriteTokens = cost.cachedWriteTokens
-                        }
-
-                        Log.i(TAG, "Completed: input=$inputTokens, output=$outputTokens, " +
-                                "cacheRead=$cachedReadTokens, cacheWrite=$cachedWriteTokens")
-
-                        _currentSession.value?.addMessage(inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens)
-
-                        addOperation("✅",
-                            "${"%,d".format(result.cost.totalTokens)} tok, €${String.format("%.4f", result.cost.totalCostEUR)}",
-                            OperationLogType.SUCCESS
-                        )
-
-                        // ✅ Обновляем метрики кеша (НЕ запускаем таймер - уже работает!)
-                        if (isCacheMode) {
-                            handleCacheResult(
-                                result.cost.cachedReadTokens,
-                                result.cost.cachedWriteTokens,
-                                result.cost.cacheSavingsEUR
+                            addOperation("✅",
+                                "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)}",
+                                OperationLogType.SUCCESS
                             )
+
+                            // ✅ Cache metrics
+                            if (isCacheMode) {
+                                handleCacheResult(cost.cachedReadTokens, cost.cachedWriteTokens, cost.cacheSavingsEUR)
+                            }
                         }
 
-                        // Финализируем сообщение в БД
-                        chatDao.finishStreaming(
-                            id = assistantMsgId,
-                            finalContent = fullResponse,
-                            tokensUsed = inputTokens + outputTokens
-                        )
-
+                        // Parse and execute file operations
                         val operations = repositoryAnalyzer.parseOperations(fullResponse)
                         if (operations.isNotEmpty()) {
                             addOperation("🔧", "${operations.size} операций", OperationLogType.INFO)
@@ -550,8 +550,8 @@ class AnalyzerViewModel @Inject constructor(
 
                     is RepositoryAnalyzer.AnalysisResult.Error -> {
                         _isStreaming.value = false
+                        _streamingText.value = null
                         _chatError.value = result.message
-                        chatDao.markAsError(assistantMsgId, result.message)
                         addOperation("❌", result.message, OperationLogType.ERROR)
                     }
                 }
