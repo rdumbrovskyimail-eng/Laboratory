@@ -23,19 +23,19 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Claude API Client v3.0 (DEDICATED CACHE MODE)
+ * Claude API Client v3.1 (FIXED CACHE MODE)
  *
- * ✅ ОБНОВЛЕНО:
- * - enableCaching flag для dedicated cache mode
- * - Proper cache_control: {"type": "ephemeral"} в system block
- * - anthropic-beta: prompt-caching-2024-07-31 header при кешировании
- * - Кеширует system prompt (инструкция + контекст)
- * - УДАЛЁН: старый "session.messageCount > 0" check для кеша
+ * ✅ ИСПРАВЛЕНО (2026-02-10):
+ * - Правильная сериализация строк с Json.encodeToString
+ * - Кеширование ПОСЛЕДНЕГО user message (там контекст файлов + запрос)
+ * - System prompt тоже кешируется
+ * - Оба блока получают cache_control: {"type": "ephemeral"}
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -120,9 +120,12 @@ class ClaudeApiClient @Inject constructor(
     }
 
     /**
-     * ✅ ОБНОВЛЕНО: enableCaching теперь работает как dedicated flag.
-     * Когда включен — system prompt кешируется через cache_control: {"type": "ephemeral"}
-     * TTL = 5 минут, обновляется при каждом cache hit (бесплатно).
+     * ✅ ИСПРАВЛЕНО: enableCaching теперь кеширует:
+     * 1. System prompt (инструкция для Claude)
+     * 2. ПОСЛЕДНЕЕ user message (контекст файлов + запрос пользователя)
+     * 
+     * Оба блока получают cache_control: {"type": "ephemeral"}
+     * TTL = 5 минут, обновляется при каждом cache hit.
      */
     fun streamMessage(
         model: String,
@@ -146,22 +149,46 @@ class ClaudeApiClient @Inject constructor(
                     header("anthropic-beta", ANTHROPIC_BETA)
                 }
 
-                if (enableCaching && systemPrompt != null) {
-                    // ✅ КЕШИРОВАНИЕ: system prompt как массив с cache_control
+                if (enableCaching) {
+                    // ✅ КЕШИРОВАНИЕ: system prompt + последнее user message
                     val jsonBody = buildString {
                         append("{")
                         append("\"model\":\"$model\",")
                         append("\"max_tokens\":$maxTokens,")
-                        append("\"stream\":true,")
-                        if (temperature != null) append("\"temperature\":$temperature,")
-                        append("\"system\":[{")
-                        append("\"type\":\"text\",")
-                        append("\"text\":${json.encodeToString(kotlinx.serialization.serializer(), systemPrompt)},")
-                        append("\"cache_control\":{\"type\":\"ephemeral\"}")
-                        append("}],")
-                        append("\"messages\":${json.encodeToString(kotlinx.serialization.serializer(), messages)}")
+                        append("\"stream\":true")
+                        if (temperature != null) append(",\"temperature\":$temperature")
+                        
+                        // System prompt с кешированием
+                        if (systemPrompt != null) {
+                            append(",\"system\":[{")
+                            append("\"type\":\"text\",")
+                            append("\"text\":${Json.encodeToString(systemPrompt)},")
+                            append("\"cache_control\":{\"type\":\"ephemeral\"}")
+                            append("}]")
+                        }
+                        
+                        // Messages: последнее user message с cache_control
+                        append(",\"messages\":[")
+                        messages.forEachIndexed { index, msg ->
+                            if (index > 0) append(",")
+                            append("{")
+                            append("\"role\":\"${msg.role}\",")
+                            append("\"content\":[{")
+                            append("\"type\":\"text\",")
+                            append("\"text\":${Json.encodeToString(msg.content)}")
+                            
+                            // ✅ Кешируем ПОСЛЕДНЕЕ user message (там весь контекст!)
+                            if (index == messages.lastIndex && msg.role == "user") {
+                                append(",\"cache_control\":{\"type\":\"ephemeral\"}")
+                            }
+                            append("}]")
+                            append("}")
+                        }
+                        append("]")
                         append("}")
                     }
+                    
+                    Log.d(TAG, "Cache enabled - caching: system=${systemPrompt != null}, last_user_msg=true")
                     setBody(jsonBody)
                 } else {
                     // Обычный запрос без кеширования
