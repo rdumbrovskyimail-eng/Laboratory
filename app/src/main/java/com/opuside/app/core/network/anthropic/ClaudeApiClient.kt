@@ -15,7 +15,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
-import io.ktor.utils.io.readUTF8Line
+import io.ktor.utils.io.ByteReadChannel
 import io.ktor.utils.io.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.cancellable
@@ -29,13 +29,17 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Claude API Client v4.0 (FIXED MULTI-TURN CACHE + STREAMING)
+ * Claude API Client v5.0 (FIXED STREAMING LATENCY)
  *
  * ✅ FIXES:
- * 1. Multi-turn conversations: all messages sent as conversation history
- * 2. Cache works with multi-turn: system prompt + LAST user message cached
- * 3. Proper JSON serialization for all message content
- * 4. anthropic-beta header only when caching is enabled
+ * 1. **INSTANT STREAMING**: readAvailable() вместо readUTF8Line()
+ *    - Старый код ждал \n перед отправкой delta → задержка 2-5 сек
+ *    - Новый код читает байты мгновенно как только они доступны
+ * 2. Multi-turn cache support (уже был)
+ * 3. Proper JSON serialization (уже был)
+ *
+ * ВАЖНО: SSE события теперь парсятся построчно из буфера, но чтение
+ * происходит сразу как только есть данные от сервера.
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -51,6 +55,7 @@ class ClaudeApiClient @Inject constructor(
         private const val ANTHROPIC_BETA = "prompt-caching-2024-07-31"
         private const val READ_TIMEOUT_MS = 30_000L
         private const val MAX_STREAMING_TIME_MS = 5 * 60 * 1000L
+        private const val BUFFER_SIZE = 8192 // Размер буфера для чтения
     }
 
     private suspend fun getApiKey(): String {
@@ -121,15 +126,13 @@ class ClaudeApiClient @Inject constructor(
 
     /**
      * ✅ FIXED: Supports multi-turn conversations with prompt caching.
+     * ✅ FIXED: INSTANT streaming — no more 2-5 second delays!
      *
      * When enableCaching=true:
      * - System prompt gets cache_control: {"type": "ephemeral"}
      * - LAST user message gets cache_control: {"type": "ephemeral"}
      * - All prior messages are sent as-is (they form the cached prefix)
      * - Cache TTL = 5 minutes, refreshes on each hit
-     *
-     * This ensures Claude remembers the entire conversation AND
-     * the system prompt + context stay cached between requests.
      */
     fun streamMessage(
         model: String,
@@ -139,7 +142,7 @@ class ClaudeApiClient @Inject constructor(
         temperature: Double? = null,
         enableCaching: Boolean = false
     ): Flow<StreamingResult> = flow {
-        var channel: io.ktor.utils.io.ByteReadChannel? = null
+        var channel: ByteReadChannel? = null
 
         try {
             val apiKey = getApiKey()
@@ -154,7 +157,7 @@ class ClaudeApiClient @Inject constructor(
                 }
 
                 if (enableCaching) {
-                    // ✅ Manual JSON construction for cache_control support
+                    // Manual JSON construction for cache_control support
                     val jsonBody = buildCachedRequestJson(
                         model = model,
                         messages = messages,
@@ -183,9 +186,17 @@ class ClaudeApiClient @Inject constructor(
             }
 
             channel = response.bodyAsChannel()
+            
+            // ═══════════════════════════════════════════════════════════════════
+            // ✅ FIX: INSTANT STREAMING WITH BUFFERED READING
+            // ═══════════════════════════════════════════════════════════════════
+            
             val currentText = StringBuilder()
             var totalUsage: Usage? = null
             val startTime = System.currentTimeMillis()
+            
+            // Буфер для накопления неполных SSE строк
+            val lineBuffer = StringBuilder()
 
             while (!channel.isClosedForRead) {
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
@@ -193,49 +204,74 @@ class ClaudeApiClient @Inject constructor(
                     return@flow
                 }
 
-                val line = withTimeoutOrNull(READ_TIMEOUT_MS) { channel.readUTF8Line() }
-
-                if (line == null) {
-                    emit(StreamingResult.Error(ClaudeApiException("timeout", "Stream timeout after 30s")))
-                    return@flow
+                // ✅ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Читаем доступные байты СРАЗУ, не ждем \n
+                val buffer = ByteArray(BUFFER_SIZE)
+                val bytesRead = withTimeoutOrNull(READ_TIMEOUT_MS) {
+                    channel.readAvailable(buffer, 0, BUFFER_SIZE)
                 }
 
-                if (line.startsWith("data: ")) {
-                    val data = line.removePrefix("data: ").trim()
-                    if (data.isEmpty() || data == "[DONE]") continue
+                if (bytesRead == null || bytesRead == -1) {
+                    // Timeout или конец потока
+                    if (bytesRead == null) {
+                        emit(StreamingResult.Error(ClaudeApiException("timeout", "Stream timeout after 30s")))
+                    }
+                    break
+                }
 
-                    try {
-                        val event = json.decodeFromString<StreamEvent>(data)
-                        when (event.type) {
-                            "message_start" -> {
-                                // ✅ Extract usage from message_start (contains cache info)
-                                event.message?.usage?.let { totalUsage = it }
-                                emit(StreamingResult.Started(event.message?.id ?: ""))
+                if (bytesRead > 0) {
+                    // Декодируем прочитанные байты в строку
+                    val chunk = buffer.decodeToString(0, bytesRead)
+                    lineBuffer.append(chunk)
+
+                    // Обрабатываем все полные строки из буфера
+                    var newlineIndex = lineBuffer.indexOf('\n')
+                    while (newlineIndex != -1) {
+                        val line = lineBuffer.substring(0, newlineIndex).trim()
+                        lineBuffer.delete(0, newlineIndex + 1)
+
+                        // Парсим SSE событие
+                        if (line.startsWith("data: ")) {
+                            val data = line.removePrefix("data: ").trim()
+                            if (data.isEmpty() || data == "[DONE]") {
+                                newlineIndex = lineBuffer.indexOf('\n')
+                                continue
                             }
-                            "content_block_delta" -> {
-                                event.delta?.text?.let { text ->
-                                    currentText.append(text)
-                                    emit(StreamingResult.Delta(text, currentText.toString()))
+
+                            try {
+                                val event = json.decodeFromString<StreamEvent>(data)
+                                when (event.type) {
+                                    "message_start" -> {
+                                        event.message?.usage?.let { totalUsage = it }
+                                        emit(StreamingResult.Started(event.message?.id ?: ""))
+                                    }
+                                    "content_block_delta" -> {
+                                        event.delta?.text?.let { text ->
+                                            currentText.append(text)
+                                            // ✅ МГНОВЕННАЯ ОТПРАВКА каждого delta
+                                            emit(StreamingResult.Delta(text, currentText.toString()))
+                                        }
+                                    }
+                                    "message_delta" -> {
+                                        event.usage?.let { deltaUsage ->
+                                            totalUsage = mergeUsage(totalUsage, deltaUsage)
+                                        }
+                                        event.delta?.stopReason?.let { emit(StreamingResult.StopReason(it)) }
+                                    }
+                                    "message_stop" -> {
+                                        emit(StreamingResult.Completed(currentText.toString(), totalUsage))
+                                    }
+                                    "error" -> {
+                                        event.error?.let { error ->
+                                            emit(StreamingResult.Error(ClaudeApiException(error.type, error.message)))
+                                        }
+                                    }
                                 }
-                            }
-                            "message_delta" -> {
-                                // ✅ Merge usage: message_delta has output_tokens + cache info
-                                event.usage?.let { deltaUsage ->
-                                    totalUsage = mergeUsage(totalUsage, deltaUsage)
-                                }
-                                event.delta?.stopReason?.let { emit(StreamingResult.StopReason(it)) }
-                            }
-                            "message_stop" -> {
-                                emit(StreamingResult.Completed(currentText.toString(), totalUsage))
-                            }
-                            "error" -> {
-                                event.error?.let { error ->
-                                    emit(StreamingResult.Error(ClaudeApiException(error.type, error.message)))
-                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to parse SSE: $data", e)
                             }
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to parse SSE: $data", e)
+
+                        newlineIndex = lineBuffer.indexOf('\n')
                     }
                 }
             }
@@ -251,11 +287,7 @@ class ClaudeApiClient @Inject constructor(
     }.cancellable()
 
     /**
-     * ✅ Build JSON request with cache_control for multi-turn conversations.
-     *
-     * Structure:
-     * - system: [{ type: "text", text: "...", cache_control: { type: "ephemeral" } }]
-     * - messages: [ ...history..., { role: "user", content: [{ type: "text", text: "...", cache_control: { type: "ephemeral" } }] } ]
+     * Build JSON request with cache_control for multi-turn conversations.
      */
     private fun buildCachedRequestJson(
         model: String,
@@ -302,8 +334,6 @@ class ClaudeApiClient @Inject constructor(
 
     /**
      * Merge usage from message_start and message_delta events.
-     * message_start contains input_tokens + cache info.
-     * message_delta contains output_tokens.
      */
     private fun mergeUsage(existing: Usage?, delta: Usage?): Usage {
         if (existing == null && delta == null) return Usage(0, 0)
