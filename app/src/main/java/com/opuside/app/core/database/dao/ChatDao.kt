@@ -8,7 +8,6 @@ import androidx.room.Query
 import androidx.room.Transaction
 import androidx.room.Update
 import com.opuside.app.core.database.entity.ChatMessageEntity
-import com.opuside.app.core.database.entity.MessageRole
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -61,6 +60,12 @@ abstract class ChatDao {
      */
     @Query("SELECT * FROM chat_messages WHERE id = :id")
     abstract suspend fun getById(id: Long): ChatMessageEntity?
+    
+    /**
+     * ✅ ДОБАВЛЕНО: Alias для getById (используется в старом коде)
+     */
+    @Query("SELECT * FROM chat_messages WHERE id = :id")
+    abstract suspend fun getMessageById(id: Long): ChatMessageEntity?
 
     /**
      * Получить все уникальные сессии.
@@ -73,6 +78,12 @@ abstract class ChatDao {
      */
     @Query("SELECT COUNT(*) FROM chat_messages WHERE session_id = :sessionId")
     abstract suspend fun getSessionMessageCount(sessionId: String): Int
+    
+    /**
+     * ✅ ДОБАВЛЕНО: Alias для getSessionMessageCount (используется в старом коде)
+     */
+    @Query("SELECT COUNT(*) FROM chat_messages WHERE session_id = :sessionId")
+    abstract suspend fun getMessageCount(sessionId: String): Int
 
     /**
      * Получить общее количество использованных токенов в сессии.
@@ -193,6 +204,12 @@ abstract class ChatDao {
      */
     @Query("UPDATE chat_messages SET content = :content WHERE id = :id")
     abstract suspend fun updateContent(id: Long, content: String)
+    
+    /**
+     * ✅ ДОБАВЛЕНО: Alias для updateContent (используется в старом коде)
+     */
+    @Query("UPDATE chat_messages SET content = :content WHERE id = :id")
+    abstract suspend fun updateStreamingContent(id: Long, content: String)
 
     /**
      * Завершить streaming для сообщения.
