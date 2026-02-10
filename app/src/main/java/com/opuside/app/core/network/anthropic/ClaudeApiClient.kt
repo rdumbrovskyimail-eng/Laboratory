@@ -204,10 +204,10 @@ class ClaudeApiClient @Inject constructor(
                     return@flow
                 }
 
-                // ✅ КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Читаем доступные байты СРАЗУ, не ждем \n
+                // ✅ ИСПРАВЛЕНО: Правильный синтаксис readAvailable
                 val buffer = ByteArray(BUFFER_SIZE)
-                val bytesRead = withTimeoutOrNull(READ_TIMEOUT_MS) {
-                    channel.readAvailable(buffer, 0, BUFFER_SIZE)
+                val bytesRead = withTimeoutOrNull<Int>(READ_TIMEOUT_MS) {
+                    channel.readAvailable(buffer)
                 }
 
                 if (bytesRead == null || bytesRead == -1) {
