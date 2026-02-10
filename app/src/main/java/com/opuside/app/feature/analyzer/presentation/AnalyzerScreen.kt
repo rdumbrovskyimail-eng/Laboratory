@@ -44,7 +44,6 @@ fun AnalyzerScreen(
     val sessionTokens by viewModel.sessionTokens.collectAsState()
     val ecoOutputMode by viewModel.ecoOutputMode.collectAsState()
     val operationsLog by viewModel.operationsLog.collectAsState()
-
     val cacheModeEnabled by viewModel.cacheModeEnabled.collectAsState()
     val cacheTimerMs by viewModel.cacheTimerMs.collectAsState()
     val cacheIsWarmed by viewModel.cacheIsWarmed.collectAsState()
@@ -52,11 +51,11 @@ fun AnalyzerScreen(
     val cacheTotalWriteTokens by viewModel.cacheTotalWriteTokens.collectAsState()
     val cacheTotalSavingsEUR by viewModel.cacheTotalSavingsEUR.collectAsState()
     val cacheHitCount by viewModel.cacheHitCount.collectAsState()
+    val streamingText by viewModel.streamingText.collectAsState()
 
     var userInput by remember { mutableStateOf("") }
     var showModelDialog by remember { mutableStateOf(false) }
     var showSessionStats by remember { mutableStateOf(false) }
-
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -64,30 +63,29 @@ fun AnalyzerScreen(
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val imeVisible = imeBottomPx > 0
 
-    LaunchedEffect(messages.size) { if (messages.isNotEmpty()) chatListState.animateScrollToItem(messages.size - 1) }
-    LaunchedEffect(imeVisible) { if (imeVisible && messages.isNotEmpty()) chatListState.animateScrollToItem(messages.size - 1) }
+    val hasStreamingBubble = isStreaming && streamingText != null
+    val totalItems = messages.size + (if (hasStreamingBubble) 1 else 0)
+    LaunchedEffect(totalItems, streamingText) {
+        if (totalItems > 0) chatListState.animateScrollToItem(totalItems - 1)
+    }
+    LaunchedEffect(imeVisible) { if (imeVisible && totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) }
     LaunchedEffect(operationsLog.size) { if (operationsLog.isNotEmpty()) opsListState.animateScrollToItem(operationsLog.size - 1) }
 
-    // DARK
     val dBg = Color(0xFF0D1117); val dSurf = Color(0xFF161B22); val dBord = Color(0xFF30363D)
     val dGreen = Color(0xFF3FB950); val dBlue = Color(0xFF58A6FF); val dYellow = Color(0xFFD29922)
     val dRed = Color(0xFFF85149); val dTxt1 = Color(0xFFE6EDF3); val dTxt2 = Color(0xFF8B949E)
     val dInp = Color(0xFF1C2128)
-    // LIGHT (cache mode)
     val lBg = Color(0xFFF8FAFE); val lSurf = Color(0xFFFFFFFF); val lBord = Color(0xFFD0D7DE)
     val lBlue = Color(0xFF0969DA); val lBlueSoft = Color(0xFFDDF4FF); val lGreen = Color(0xFF1A7F37)
     val lYellow = Color(0xFF9A6700); val lRed = Color(0xFFCF222E); val lTxt1 = Color(0xFF1F2328)
     val lTxt2 = Color(0xFF656D76); val lInp = Color(0xFFEFF2F5)
-    // Active
+
     val cm = cacheModeEnabled
     val bg = if (cm) lBg else dBg; val sf = if (cm) lSurf else dSurf; val bd = if (cm) lBord else dBord
     val ac = if (cm) lBlue else dBlue; val gr = if (cm) lGreen else dGreen; val yl = if (cm) lYellow else dYellow
     val rd = if (cm) lRed else dRed; val t1 = if (cm) lTxt1 else dTxt1; val t2 = if (cm) lTxt2 else dTxt2
     val inp = if (cm) lInp else dInp
-
-    // Кнопка Cache заблокирована если ECO включён
     val cacheButtonEnabled = !ecoOutputMode || cacheModeEnabled
-    // Кнопка ECO заблокирована если Cache Mode включён
     val ecoButtonEnabled = !cacheModeEnabled
 
     Scaffold(
@@ -116,20 +114,10 @@ fun AnalyzerScreen(
                     }
                 },
                 actions = {
-                    // CACHE TOGGLE — disabled when ECO is on
-                    IconButton(
-                        onClick = { viewModel.toggleCacheMode() },
-                        enabled = cacheButtonEnabled
-                    ) {
-                        Icon(
-                            Icons.Default.Cached,
-                            "Cache",
-                            tint = when {
-                                !cacheButtonEnabled -> t2.copy(alpha = 0.3f)
-                                cm -> ac
-                                else -> t2
-                            }
-                        )
+                    IconButton(onClick = { viewModel.toggleCacheMode() }, enabled = cacheButtonEnabled) {
+                        Icon(Icons.Default.Cached, "Cache", tint = when {
+                            !cacheButtonEnabled -> t2.copy(alpha = 0.3f); cm -> ac; else -> t2
+                        })
                     }
                     IconButton(onClick = { showModelDialog = true }) { Icon(Icons.Default.Psychology, "Model", tint = t2) }
                     IconButton(onClick = { showSessionStats = true }) { Icon(Icons.Default.Analytics, "Stats", tint = t2) }
@@ -141,8 +129,6 @@ fun AnalyzerScreen(
         containerColor = bg
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
-
-            // CACHE STATUS BAR
             AnimatedVisibility(visible = cm) {
                 CacheStatusBar(cacheTimerMs, cacheIsWarmed, cacheTotalReadTokens, cacheTotalWriteTokens,
                     cacheTotalSavingsEUR, cacheHitCount, viewModel, ac, gr, rd, t1, t2, bd, lBlueSoft)
@@ -154,15 +140,13 @@ fun AnalyzerScreen(
                     Row(Modifier.fillMaxWidth().background(inp).padding(horizontal = 12.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("⚙️", fontSize = 14.sp); Spacer(Modifier.width(6.dp))
+                            Text("\u2699\uFE0F", fontSize = 14.sp); Spacer(Modifier.width(6.dp))
                             Text("OPERATIONS LOG", color = t2, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(8.dp).clip(CircleShape).background(
-                                if (cm) ac else if (ecoOutputMode) gr else rd))
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(if (cm) ac else if (ecoOutputMode) gr else rd))
                             Spacer(Modifier.width(4.dp))
-                            Text(
-                                if (cm) "CACHE MAX" else if (ecoOutputMode) "ECO" else "MAX",
+                            Text(if (cm) "CACHE MAX" else if (ecoOutputMode) "ECO" else "MAX",
                                 color = if (cm) ac else if (ecoOutputMode) gr else rd,
                                 fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                             Spacer(Modifier.width(8.dp))
@@ -188,12 +172,11 @@ fun AnalyzerScreen(
 
             // CHAT + INPUT
             Column(Modifier.fillMaxWidth().weight(if (cm) 0.78f else 0.72f)) {
-                // Error
                 AnimatedVisibility(visible = chatError != null) {
                     Surface(Modifier.fillMaxWidth().padding(8.dp),
                         color = if (cm) Color(0xFFFFF0F0) else Color(0xFF3D1F1F), shape = RoundedCornerShape(8.dp)) {
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("❌", fontSize = 16.sp); Spacer(Modifier.width(8.dp))
+                            Text("\u274C", fontSize = 16.sp); Spacer(Modifier.width(8.dp))
                             Text(chatError ?: "", color = rd, fontSize = 13.sp, modifier = Modifier.weight(1f))
                             IconButton(onClick = { viewModel.dismissError() }, Modifier.size(24.dp)) {
                                 Icon(Icons.Default.Close, "X", tint = t2, modifier = Modifier.size(16.dp))
@@ -202,49 +185,37 @@ fun AnalyzerScreen(
                     }
                 }
 
-                // Messages
                 LazyColumn(state = chatListState, modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                    items(messages) { msg -> MsgBubble(msg, cm, bg, sf, t1, t2, ac, gr, lBlueSoft) }
-                    if (isStreaming) { item {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(Modifier.size(16.dp), color = ac, strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Claude пишет...", color = t2, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                    items(messages, key = { it.id }) { msg -> MsgBubble(msg, cm, bg, sf, t1, t2, ac, gr, lBlueSoft) }
+
+                    // REAL-TIME STREAMING BUBBLE
+                    if (hasStreamingBubble) {
+                        item(key = "streaming_bubble") {
+                            StreamingBubble(text = streamingText ?: "", cm = cm, sf = sf, t1 = t1, t2 = t2, ac = ac)
                         }
-                    }}
+                    }
                 }
 
-                // INPUT
+                // INPUT BAR
                 Surface(Modifier.fillMaxWidth(), color = inp, tonalElevation = 2.dp) {
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        // ECO/MAX — disabled in cache mode
-                        IconButton(
-                            onClick = { viewModel.toggleOutputMode() },
-                            modifier = Modifier.size(40.dp),
-                            enabled = ecoButtonEnabled
-                        ) {
+                        IconButton(onClick = { viewModel.toggleOutputMode() }, modifier = Modifier.size(40.dp), enabled = ecoButtonEnabled) {
                             Box(contentAlignment = Alignment.Center) {
-                                val dotColor = when {
-                                    cm -> ac  // В cache mode — синий (CACHE MAX)
-                                    ecoOutputMode -> gr
-                                    else -> rd
-                                }
-                                Box(Modifier.size(12.dp).clip(CircleShape).background(
-                                    if (ecoButtonEnabled) dotColor else dotColor.copy(alpha = 0.3f)))
+                                val dotColor = when { cm -> ac; ecoOutputMode -> gr; else -> rd }
+                                Box(Modifier.size(12.dp).clip(CircleShape).background(if (ecoButtonEnabled) dotColor else dotColor.copy(alpha = 0.3f)))
                             }
                         }
-
                         OutlinedTextField(
                             value = userInput, onValueChange = { userInput = it },
                             modifier = Modifier.weight(1f),
                             placeholder = {
                                 val maxTok = viewModel.getEffectiveMaxTokens()
                                 val label = when {
-                                    cm && cacheIsWarmed -> "CACHE MAX ${"%,d".format(maxTok)} [📦]..."
+                                    cm && cacheIsWarmed -> "CACHE MAX ${"%,d".format(maxTok)} [\uD83D\uDCE6]..."
                                     cm -> "CACHE MAX ${"%,d".format(maxTok)}..."
-                                    ecoOutputMode -> "ECO 🟢 8K..."
-                                    else -> "MAX 🔴 ${"%,d".format(maxTok)}..."
+                                    ecoOutputMode -> "ECO \uD83D\uDFE2 8K..."
+                                    else -> "MAX \uD83D\uDD34 ${"%,d".format(maxTok)}..."
                                 }
                                 Text(label, color = t2, fontSize = 13.sp)
                             },
@@ -261,9 +232,7 @@ fun AnalyzerScreen(
                             }),
                             shape = RoundedCornerShape(12.dp)
                         )
-
                         Spacer(Modifier.width(8.dp))
-
                         FilledIconButton(
                             onClick = {
                                 if (userInput.isNotBlank() && !isStreaming) {
@@ -284,7 +253,7 @@ fun AnalyzerScreen(
         }
     }
 
-    // DIALOGS
+    // MODEL DIALOG
     if (showModelDialog) {
         AlertDialog(
             onDismissRequest = { showModelDialog = false },
@@ -305,7 +274,7 @@ fun AnalyzerScreen(
                                 Column(Modifier.weight(1f)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(model.displayName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                        if (isExp) { Spacer(Modifier.width(6.dp)); Text("⚠️ 3×", fontSize = 10.sp, color = Color(0xFFE65100)) }
+                                        if (isExp) { Spacer(Modifier.width(6.dp)); Text("\u26A0\uFE0F 3\u00D7", fontSize = 10.sp, color = Color(0xFFE65100)) }
                                     }
                                     Text(model.description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text("In: \$${model.inputPricePerM} | Out: \$${model.outputPricePerM} | Cache R: \$${model.cacheReadPricePerM}",
@@ -326,7 +295,7 @@ fun AnalyzerScreen(
     if (showSessionStats) {
         AlertDialog(
             onDismissRequest = { showSessionStats = false },
-            title = { Text("📊 Статистика") },
+            title = { Text("\uD83D\uDCCA Статистика") },
             text = {
                 val s = viewModel.getSessionStats()
                 if (s != null) Text(s, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
@@ -338,7 +307,7 @@ fun AnalyzerScreen(
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// CACHE STATUS BAR
+// SUB-COMPOSABLES
 // ═══════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -357,12 +326,11 @@ private fun CacheStatusBar(
                     Spacer(Modifier.width(6.dp))
                     Text(vm.getCacheTimerFormatted(timerMs), fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = tc)
                     Spacer(Modifier.width(8.dp))
-                    Text(when { !warmed -> "Ожидание..."; timerMs > 0 -> "TTL active"; else -> "TTL expired" },
-                        fontSize = 11.sp, color = txt2)
+                    Text(when { !warmed -> "Ожидание..."; timerMs > 0 -> "TTL active"; else -> "TTL expired" }, fontSize = 11.sp, color = txt2)
                 }
                 Surface(shape = RoundedCornerShape(12.dp),
                     color = if (warmed && timerMs > 0) green.copy(alpha = 0.15f) else red.copy(alpha = 0.15f)) {
-                    Text(if (warmed && timerMs > 0) "● CACHED" else "○ EMPTY",
+                    Text(if (warmed && timerMs > 0) "\u25CF CACHED" else "\u25CB EMPTY",
                         Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                         fontSize = 10.sp, fontWeight = FontWeight.Bold,
                         color = if (warmed && timerMs > 0) green else red)
@@ -376,10 +344,10 @@ private fun CacheStatusBar(
             if (writeTok > 0 || readTok > 0) {
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("📝 W:${"%,d".format(writeTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
-                    Text("⚡ R:${"%,d".format(readTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = accent)
-                    Text("🎯 $hits", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
-                    Text("💰 -€${String.format("%.4f", savEUR)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = green)
+                    Text("\uD83D\uDCDD W:${"%,d".format(writeTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
+                    Text("\u26A1 R:${"%,d".format(readTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = accent)
+                    Text("\uD83C\uDFAF $hits", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
+                    Text("\uD83D\uDCB0 -\u20AC${String.format("%.4f", savEUR)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = green)
                 }
             }
         }
@@ -403,7 +371,7 @@ private fun MsgBubble(msg: ChatMessageEntity, cm: Boolean, bg: Color, sf: Color,
     val bc = when { cm && isU -> Color(0xFFE8F0FE); cm && isS -> Color(0xFFE6F4EA); cm -> sf; isU -> Color(0xFF1A2332); isS -> Color(0xFF1A2E1A); else -> sf }
     val cc = if (isS) gr else t1
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = if (isU) Alignment.End else Alignment.Start) {
-        Text(when { isU -> "👤 You"; isS -> "⚙️ System"; else -> "🤖 Claude" },
+        Text(when { isU -> "\uD83D\uDC64 You"; isS -> "\u2699\uFE0F System"; else -> "\uD83E\uDD16 Claude" },
             color = t2, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
         Surface(
@@ -412,6 +380,32 @@ private fun MsgBubble(msg: ChatMessageEntity, cm: Boolean, bg: Color, sf: Color,
             border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
         ) {
             Text(msg.content, color = cc, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
+        }
+    }
+}
+
+/**
+ * Real-time streaming bubble. Shows text as it arrives, no spinner.
+ */
+@Composable
+private fun StreamingBubble(text: String, cm: Boolean, sf: Color, t1: Color, t2: Color, ac: Color) {
+    val bc = if (cm) sf else Color(0xFF161B22)
+    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = Alignment.Start) {
+        Row(Modifier.padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("\uD83E\uDD16 Claude", color = t2, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.width(8.dp))
+            CircularProgressIndicator(modifier = Modifier.size(10.dp), color = ac, strokeWidth = 1.5.dp)
+        }
+        Surface(
+            Modifier.fillMaxWidth(0.95f), color = bc,
+            shape = RoundedCornerShape(topStart = 4.dp, topEnd = 12.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
+            border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
+        ) {
+            if (text.isNotEmpty()) {
+                Text(text + " \u258A", color = t1, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
+            } else {
+                Text("\u258A", color = ac, fontSize = 13.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(12.dp))
+            }
         }
     }
 }
