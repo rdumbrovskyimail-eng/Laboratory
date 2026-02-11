@@ -4,29 +4,18 @@ import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// REQUEST MODELS
+// REQUEST MODELS v4.0 (TOOL USE + TYPED CONTENT)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Запрос к Claude API.
- * https://docs.anthropic.com/en/api/messages
- *
- * ✅ ИСПРАВЛЕНО v2.3:
- * - @EncodeDefault на обязательных полях (model, max_tokens, messages, stream)
- * - Nullable поля (system, temperature, top_p, etc.) НЕ сериализуются если null
- *   благодаря explicitNulls=false + encodeDefaults=false в Json конфиге
- * - Это исправляет ошибки:
- *   * "temperature: Input should be a valid number" (null передавался в JSON)
- *   * "system: Input should be a valid list" (null передавался в JSON)
- */
 @OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ClaudeRequest(
     @EncodeDefault
     @SerialName("model")
-    val model: String = "claude-opus-4-6", // ✅ ИЗМЕНЕНО: было "claude-opus-4-5-20250514"
+    val model: String = "claude-opus-4-6",
 
     @EncodeDefault
     @SerialName("max_tokens")
@@ -56,24 +45,34 @@ data class ClaudeRequest(
     val stopSequences: List<String>? = null,
 
     @SerialName("metadata")
-    val metadata: ClaudeMetadata? = null
+    val metadata: ClaudeMetadata? = null,
+
+    @SerialName("tools")
+    val tools: List<JsonObject>? = null,
+
+    @SerialName("tool_choice")
+    val toolChoice: JsonObject? = null
 )
 
 /**
  * Сообщение в разговоре.
+ *
+ * isJsonContent=true означает что content — уже сериализованный JSON array
+ * (tool_use / tool_result блоки). Это ТИПОБЕЗОПАСНАЯ замена startsWith("[") хака.
  */
 @Serializable
 data class ClaudeMessage(
     @SerialName("role")
-    val role: String, // "user" или "assistant"
+    val role: String,
 
     @SerialName("content")
-    val content: String
+    val content: String,
+
+    // НЕ сериализуется в JSON — используется только локально для buildRequestJson
+    @kotlinx.serialization.Transient
+    val isJsonContent: Boolean = false
 )
 
-/**
- * Метаданные запроса (опционально).
- */
 @Serializable
 data class ClaudeMetadata(
     @SerialName("user_id")
@@ -81,22 +80,19 @@ data class ClaudeMetadata(
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// RESPONSE MODELS (Non-streaming)
+// RESPONSE MODELS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Ответ от Claude API (non-streaming).
- */
 @Serializable
 data class ClaudeResponse(
     @SerialName("id")
     val id: String,
 
     @SerialName("type")
-    val type: String, // "message"
+    val type: String,
 
     @SerialName("role")
-    val role: String, // "assistant"
+    val role: String,
 
     @SerialName("content")
     val content: List<ContentBlock>,
@@ -105,7 +101,7 @@ data class ClaudeResponse(
     val model: String,
 
     @SerialName("stop_reason")
-    val stopReason: String?, // "end_turn", "max_tokens", "stop_sequence"
+    val stopReason: String?,
 
     @SerialName("stop_sequence")
     val stopSequence: String?,
@@ -114,25 +110,27 @@ data class ClaudeResponse(
     val usage: Usage
 )
 
-/**
- * Блок контента в ответе.
- */
 @Serializable
 data class ContentBlock(
     @SerialName("type")
-    val type: String, // "text"
+    val type: String,
 
     @SerialName("text")
-    val text: String? = null
-)
+    val text: String? = null,
 
-/**
- * Использование токенов v2.1 (UPDATED)
- *
- * ✅ НОВОЕ: Поддержка Prompt Caching
- * - cache_creation_input_tokens: токены, добавленные в кеш
- * - cache_read_input_tokens: токены, прочитанные из кеша (экономия 90%)
- */
+    @SerialName("id")
+    val id: String? = null,
+
+    @SerialName("name")
+    val name: String? = null,
+
+    @SerialName("input")
+    val input: JsonObject? = null
+) {
+    val isText: Boolean get() = type == "text"
+    val isToolUse: Boolean get() = type == "tool_use"
+}
+
 @Serializable
 data class Usage(
     @SerialName("input_tokens")
@@ -141,18 +139,13 @@ data class Usage(
     @SerialName("output_tokens")
     val outputTokens: Int,
 
-    // ✅ НОВОЕ: Кеш-статистика
     @SerialName("cache_creation_input_tokens")
-    val cacheCreationInputTokens: Int? = null,  // Токены, добавленные в кеш
+    val cacheCreationInputTokens: Int? = null,
 
     @SerialName("cache_read_input_tokens")
-    val cacheReadInputTokens: Int? = null  // Токены, прочитанные из кеша
+    val cacheReadInputTokens: Int? = null
 ) {
-    /**
-     * ✅ НОВОЕ: Вычисляемые свойства
-     */
-    val totalTokens: Int
-        get() = inputTokens + outputTokens
+    val totalTokens: Int get() = inputTokens + outputTokens
 
     val hasCacheData: Boolean
         get() = cacheCreationInputTokens != null || cacheReadInputTokens != null
@@ -163,26 +156,17 @@ data class Usage(
         } else 0.0
 
     override fun toString(): String = buildString {
-        append("Usage(")
-        append("input=$inputTokens, ")
-        append("output=$outputTokens")
-        if (cacheReadInputTokens != null) {
-            append(", cached=$cacheReadInputTokens")
-        }
-        if (cacheCreationInputTokens != null) {
-            append(", created_cache=$cacheCreationInputTokens")
-        }
+        append("Usage(in=$inputTokens, out=$outputTokens")
+        cacheReadInputTokens?.let { append(", cached=$it") }
+        cacheCreationInputTokens?.let { append(", written=$it") }
         append(")")
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STREAMING EVENTS (SSE)
+// STREAMING EVENTS (SSE) v4.0
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Базовый SSE event.
- */
 @Serializable
 data class StreamEvent(
     @SerialName("type")
@@ -207,9 +191,6 @@ data class StreamEvent(
     val error: StreamError? = null
 )
 
-/**
- * Сообщение в stream event.
- */
 @Serializable
 data class StreamMessage(
     @SerialName("id")
@@ -228,9 +209,6 @@ data class StreamMessage(
     val usage: Usage? = null
 )
 
-/**
- * Delta (кусочек текста) в streaming.
- */
 @Serializable
 data class StreamDelta(
     @SerialName("type")
@@ -239,6 +217,9 @@ data class StreamDelta(
     @SerialName("text")
     val text: String? = null,
 
+    @SerialName("partial_json")
+    val partialJson: String? = null,
+
     @SerialName("stop_reason")
     val stopReason: String? = null,
 
@@ -246,9 +227,6 @@ data class StreamDelta(
     val stopSequence: String? = null
 )
 
-/**
- * Ошибка в stream.
- */
 @Serializable
 data class StreamError(
     @SerialName("type")
@@ -262,25 +240,19 @@ data class StreamError(
 // ERROR RESPONSE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Ответ с ошибкой от API.
- */
 @Serializable
 data class ClaudeErrorResponse(
     @SerialName("type")
-    val type: String, // "error"
+    val type: String,
 
     @SerialName("error")
     val error: ClaudeError
 )
 
-/**
- * Детали ошибки.
- */
 @Serializable
 data class ClaudeError(
     @SerialName("type")
-    val type: String, // "invalid_request_error", "authentication_error", "rate_limit_error", etc.
+    val type: String,
 
     @SerialName("message")
     val message: String
