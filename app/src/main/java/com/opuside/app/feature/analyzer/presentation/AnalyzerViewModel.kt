@@ -10,6 +10,7 @@ import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.ChatDao
 import com.opuside.app.core.database.entity.ChatMessageEntity
+import com.opuside.app.core.database.entity.MessageRole
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,28 +20,19 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v8.0 (ZERO-LATENCY STREAMING)
+ * Analyzer ViewModel v8.1 (ZERO-LATENCY STREAMING + COPY CHAT)
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * FIXES:
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * 1. ZERO-LATENCY: sendMessage → HTTP POST мгновенно
- *    - DB insert и history read выполняются ПЕРЕД отправкой
- *    - НЕТ repo tree loading, НЕТ file pre-loading
- *    - Первый emit = StreamingStarted → UI сразу показывает streaming bubble
- *
- * 2. CANCELLATION GUARD: sendJob?.cancel() предотвращает двойную отправку
- *    - Быстрые тапы на Send не создают параллельных запросов
- *
+ * 2. CANCELLATION GUARD: sendJob?.cancel()
  * 3. BOUNDED OPS LOG: максимум MAX_OPS_LOG_SIZE записей
- *    - Нет memory leak на длинных сессиях
- *
  * 4. TOOL CALL UI: отображает tool calls в операционном логе
- *
- * 5. FIXED CACHE TIMER: стартует на StreamingStarted, не на Completed
- *
- * 6. FIXED DUPLICATE KEYS: UUID для операционного лога вместо timestamp
+ * 5. FIXED CACHE TIMER: стартует на StreamingStarted
+ * 6. FIXED DUPLICATE KEYS: UUID для операционного лога
+ * 7. COPY FULL CHAT: getChatAsText() для копирования всего чата
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -61,7 +53,7 @@ class AnalyzerViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════
 
     data class OperationLogItem(
-        val id: String = UUID.randomUUID().toString(),  // ✅ FIXED: Уникальный ID вместо timestamp как ключа
+        val id: String = UUID.randomUUID().toString(),
         val icon: String,
         val message: String,
         val timestamp: Long = System.currentTimeMillis(),
@@ -180,6 +172,40 @@ class AnalyzerViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) { delay(3600_000); try { repositoryAnalyzer.cleanupOldSessions() } catch (_: Exception) {} }
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // COPY CHAT — форматирование всего чата в текст
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * Получает все сообщения текущей сессии и форматирует в читаемый текст.
+     * Возвращает строку для копирования в буфер обмена.
+     */
+    suspend fun getChatAsText(): String {
+        val allMessages = chatDao.getSession(sessionId)
+            .filter { !it.isStreaming && it.content.isNotBlank() }
+
+        if (allMessages.isEmpty()) return ""
+
+        val sb = StringBuilder()
+        sb.appendLine("═══ Analyzer Chat ═══")
+        sb.appendLine("Model: ${_selectedModel.value.displayName}")
+        sb.appendLine("═".repeat(30))
+        sb.appendLine()
+
+        allMessages.forEach { msg ->
+            val role = when (msg.role) {
+                MessageRole.USER -> "👤 You"
+                MessageRole.ASSISTANT -> "🤖 Claude"
+                MessageRole.SYSTEM -> "⚙️ System"
+            }
+            sb.appendLine("── $role ──")
+            sb.appendLine(msg.content)
+            sb.appendLine()
+        }
+
+        return sb.toString().trimEnd()
     }
 
     // ═══════════════════════════════════════════════════════════════════
