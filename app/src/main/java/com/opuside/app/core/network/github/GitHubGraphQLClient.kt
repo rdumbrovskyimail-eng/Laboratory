@@ -31,15 +31,14 @@ import javax.inject.Singleton
 class GitHubGraphQLClient @Inject constructor(
     @Named("github") private val httpClient: HttpClient,
     private val json: Json,
-    private val gitHubClient: GitHubApiClient // ✅ ДОБАВЛЕНО: Для получения размеров файлов
+    private val gitHubClient: GitHubApiClient
 ) {
     companion object {
         private const val GRAPHQL_URL = "https://api.github.com/graphql"
         private const val MAX_FILES_PER_REQUEST = 20
-        private const val MAX_BATCH_SIZE_BYTES = 500_000 // ✅ ДОБАВЛЕНО: 500KB на batch
+        private const val MAX_BATCH_SIZE_BYTES = 500_000
     }
 
-    // ✅ ИСПРАВЛЕНО: Проблема №4 - Валидация BuildConfig полей
     private val owner: String
         get() = BuildConfig.GITHUB_OWNER.takeIf { it.isNotBlank() }
             ?: throw IllegalStateException("GITHUB_OWNER not configured in local.properties")
@@ -56,34 +55,22 @@ class GitHubGraphQLClient @Inject constructor(
     // BATCH FILE LOADING
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Загрузить несколько файлов одним запросом.
-     * 
-     * ✅ ИСПРАВЛЕНО: Проблема №10 - Разбиение на batches по размеру
-     * 
-     * @param paths Список путей к файлам (макс 20)
-     * @param ref Ветка или коммит (опционально)
-     * @return Map<путь, содержимое>
-     */
     suspend fun getMultipleFiles(
         paths: List<String>,
         ref: String = "HEAD"
     ): Result<Map<String, FileContent>> {
         if (paths.isEmpty()) return Result.success(emptyMap())
 
-        // ✅ ДОБАВЛЕНО: Проблема №10 - Получаем размеры файлов через REST API
         val filesWithSize = mutableListOf<Pair<String, Int>>()
         for (path in paths) {
             val result = gitHubClient.getFileContent(path, ref)
             result.onSuccess { content ->
                 filesWithSize.add(path to (content.size ?: 0))
             }.onFailure {
-                // Если не удалось получить размер, считаем файл небольшим
                 filesWithSize.add(path to 1000)
             }
         }
 
-        // ✅ ДОБАВЛЕНО: Проблема №10 - Делим на batches по размеру и количеству
         val batches = mutableListOf<List<String>>()
         var currentBatch = mutableListOf<String>()
         var currentSize = 0
@@ -104,14 +91,12 @@ class GitHubGraphQLClient @Inject constructor(
             batches.add(currentBatch)
         }
 
-        // ✅ ДОБАВЛЕНО: Проблема №10 - Загружаем batches последовательно
         val allFiles = mutableMapOf<String, FileContent>()
         for (batch in batches) {
             val result = loadBatch(batch, ref)
             result.onSuccess { files ->
                 allFiles.putAll(files)
             }.onFailure { error ->
-                // Если хотя бы один batch провалился, возвращаем ошибку
                 return Result.failure(error)
             }
         }
@@ -119,9 +104,6 @@ class GitHubGraphQLClient @Inject constructor(
         return Result.success(allFiles)
     }
 
-    /**
-     * ✅ ДОБАВЛЕНО: Проблема №10 - Загрузка одного batch
-     */
     private suspend fun loadBatch(
         paths: List<String>,
         ref: String
@@ -131,7 +113,6 @@ class GitHubGraphQLClient @Inject constructor(
             return Result.failure(IllegalArgumentException("Max $MAX_FILES_PER_REQUEST files per request"))
         }
 
-        // Строим GraphQL запрос с алиасами для каждого файла
         val query = buildBatchQuery(paths, ref)
 
         return try {
@@ -151,7 +132,6 @@ class GitHubGraphQLClient @Inject constructor(
 
             val responseBody = response.body<JsonObject>()
             
-            // Проверяем ошибки GraphQL
             responseBody["errors"]?.let { errors ->
                 val errorMessages = errors.jsonArray.mapNotNull { 
                     it.jsonObject["message"]?.jsonPrimitive?.content 
@@ -164,7 +144,6 @@ class GitHubGraphQLClient @Inject constructor(
                 }
             }
 
-            // Парсим результаты
             val data = responseBody["data"]?.jsonObject
                 ?: return Result.failure(GitHubApiException("no_data", "No data in response"))
             
@@ -185,7 +164,7 @@ class GitHubGraphQLClient @Inject constructor(
                     
                     results[path] = FileContent(
                         path = path,
-                        content = text ?: "", // ✅ ИСПРАВЛЕНО: Пустая строка для binary
+                        content = text ?: "",
                         isBinary = isBinary,
                         byteSize = byteSize,
                         oid = oid
@@ -200,9 +179,6 @@ class GitHubGraphQLClient @Inject constructor(
         }
     }
 
-    /**
-     * Загрузить дерево директории.
-     */
     suspend fun getDirectoryTree(
         path: String = "",
         ref: String = "HEAD",
@@ -290,9 +266,6 @@ class GitHubGraphQLClient @Inject constructor(
         }
     }
 
-    /**
-     * Получить информацию о последнем коммите.
-     */
     suspend fun getLastCommit(ref: String = "HEAD"): Result<CommitInfo> {
         val query = """
             query {
@@ -347,12 +320,8 @@ class GitHubGraphQLClient @Inject constructor(
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Проблема №18 (BUG #18) - Добавлен escaping для путей с кавычками.
-     */
     private fun buildBatchQuery(paths: List<String>, ref: String): String {
         val fileQueries = paths.mapIndexed { index, path ->
-            // ✅ ДОБАВЛЕНО: Escaping для кавычек и обратных слэшей
             val escapedPath = path.replace("\\", "\\\\").replace("\"", "\\\"")
             """
             file$index: object(expression: "$ref:$escapedPath") {
@@ -396,7 +365,7 @@ data class FileContent(
 data class TreeEntry(
     val name: String,
     val path: String,
-    val type: String, // "blob" или "tree"
+    val type: String,
     val mode: Int,
     val oid: String?,
     val byteSize: Int? = null,
