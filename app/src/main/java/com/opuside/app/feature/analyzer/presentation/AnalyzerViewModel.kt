@@ -20,21 +20,24 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v8.2 (FIX: PROPER CACHE DISABLE)
+ * Analyzer ViewModel v8.3 (CONVERSATION HISTORY CONTROL)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * КРИТИЧНОЕ ИСПРАВЛЕНИЕ:
+ * НОВОЕ: Независимое управление историей разговора
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 🐛 ПРОБЛЕМА: При выключении Cache Mode старый кеш Claude продолжал работать 5 минут.
- *    Даже с enableCaching=false, Claude API использовал закешированный контекст.
+ * 🔧 ИСПРАВЛЕНИЕ: Добавлен переключатель conversationHistoryEnabled
  *
- * ✅ РЕШЕНИЕ: При toggleCacheMode() → OFF автоматически вызываем startNewSession(),
- *    чтобы полностью сбросить историю и гарантировать чистое состояние без кеша.
+ * ✅ РЕЖИМЫ:
+ * 1. История OFF, Cache OFF (ECO/MAX) — каждый запрос независимый, дешево
+ * 2. История ON, Cache OFF (ECO/MAX) — диалог с памятью, без кеша
+ * 3. История OFF, Cache ON — работа с файлами без контекста диалога
+ * 4. История ON, Cache ON — полный диалог с кешированием (максимальная экономия)
  *
- * РЕЖИМЫ:
- * 1. ECO/MAX (Cache OFF) — каждый запрос независимый, БЕЗ кеша, инкогнито
- * 2. CACHE (Cache ON) — кеширование включено, макс. лимиты, экономия на повторах
+ * 💰 СТОИМОСТЬ:
+ * - История OFF: каждый запрос ~250 input токенов
+ * - История ON: input растёт (250 → 700 → 1500...)
+ * - Cache ON: первый раз 1.25×, потом 0.1× (экономия до 90%)
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -66,6 +69,13 @@ class AnalyzerViewModel @Inject constructor(
 
     private val _operationsLog = MutableStateFlow<List<OperationLogItem>>(emptyList())
     val operationsLog: StateFlow<List<OperationLogItem>> = _operationsLog.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CONVERSATION HISTORY MODE
+    // ═══════════════════════════════════════════════════════════════════
+
+    private val _conversationHistoryEnabled = MutableStateFlow(false)
+    val conversationHistoryEnabled: StateFlow<Boolean> = _conversationHistoryEnabled.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════
     // ECO / MAX OUTPUT MODE
@@ -204,6 +214,16 @@ class AnalyzerViewModel @Inject constructor(
         }
 
         return sb.toString().trimEnd()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CONVERSATION HISTORY TOGGLE
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun toggleConversationHistory() {
+        _conversationHistoryEnabled.value = !_conversationHistoryEnabled.value
+        val status = if (_conversationHistoryEnabled.value) "ON" else "OFF"
+        addOperation("💬", "Conversation History: $status", OperationLogType.INFO)
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -422,10 +442,16 @@ class AnalyzerViewModel @Inject constructor(
                 content = message
             ))
 
-            // DB read history — fast (~10ms)
-            val historyMessages = chatDao.getSession(sessionId)
-                .filter { it.role != com.opuside.app.core.database.entity.MessageRole.SYSTEM }
-                .filter { !it.isStreaming && it.content.isNotBlank() }
+            // DB read history — зависит от conversationHistoryEnabled
+            val historyMessages = if (_conversationHistoryEnabled.value) {
+                // История ВКЛЮЧЕНА — загружаем все сообщения
+                chatDao.getSession(sessionId)
+                    .filter { it.role != com.opuside.app.core.database.entity.MessageRole.SYSTEM }
+                    .filter { !it.isStreaming && it.content.isNotBlank() }
+            } else {
+                // История ВЫКЛЮЧЕНА — только текущий запрос (пустая история)
+                emptyList()
+            }
 
             var fullResponse = ""
 
