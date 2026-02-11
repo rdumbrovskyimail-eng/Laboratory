@@ -21,7 +21,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🤖 REPOSITORY ANALYZER v8.0 (ZERO-LATENCY + PARALLEL TOOLS)
+ * 🤖 REPOSITORY ANALYZER v9.0 (CACHE WITHOUT HISTORY + INPUT 1 TOKEN)
+ *
+ * NEW FEATURES:
+ * - Cache без истории — каждый запрос помнит первый кеш
+ * - Input = 1 токен для тестирования кеша
+ * - Хранилище кеша на уровне сессии
  *
  * ZERO-LATENCY PIPELINE:
  *   sendMessage() → scanFilesV2() → HTTP POST → readUTF8Line() → emit INSTANT
@@ -48,12 +53,24 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // CACHE WITHOUT HISTORY — хранилище кеша
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    private data class CachedContext(
+        val systemPrompt: String,
+        val tools: List<JsonObject>,
+        val timestamp: Long = System.currentTimeMillis()
+    )
+    
+    private val sessionCacheMap = mutableMapOf<String, CachedContext>()
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // SESSION MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════════════
 
     private val sessionManager = ClaudeModelConfig.SessionManager
 
-    init { Log.i(TAG, "RepositoryAnalyzer v8.0 initialized") }
+    init { Log.i(TAG, "RepositoryAnalyzer v9.0 initialized (Cache Without History)") }
 
     fun createSession(sessionId: String, model: ClaudeModelConfig.ClaudeModel): ClaudeModelConfig.ChatSession {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
@@ -78,15 +95,25 @@ class RepositoryAnalyzer @Inject constructor(
 
     fun getActiveSessions(): List<ClaudeModelConfig.ChatSession> =
         sessionManager.getAllActiveSessions()
+    
+    fun clearCacheForSession(sessionId: String) {
+        sessionCacheMap.remove(sessionId)
+        Log.i(TAG, "Cleared cache for session: $sessionId")
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MAIN ENTRY POINT — ZERO LATENCY
+    // MAIN ENTRY POINT — ZERO LATENCY + CACHE WITHOUT HISTORY
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
      * Мгновенно отправляет запрос Claude с полной историей.
      * НЕТ предварительной загрузки файлов/дерева — Claude запрашивает сам через tools.
      * Первый emit — StreamingStarted, далее Delta с текстом.
+     * 
+     * CACHE WITHOUT HISTORY:
+     * - Первый запрос создает кеш (system + tools)
+     * - Последующие запросы используют кеш первого запроса
+     * - История НЕ передается при enableCaching=true
      */
     suspend fun scanFilesV2(
         sessionId: String,
@@ -114,17 +141,49 @@ class RepositoryAnalyzer @Inject constructor(
             val tools = toolExecutor.toolDefinitions  // lazy — allocated once
 
             // ═══════════════════════════════════════════════════════════════
+            // CACHE WITHOUT HISTORY
+            // ═══════════════════════════════════════════════════════════════
+            val useCacheWithoutHistory = enableCaching && conversationHistory.isEmpty()
+            
+            if (useCacheWithoutHistory) {
+                sessionCacheMap[sessionId] = CachedContext(
+                    systemPrompt = systemPrompt,
+                    tools = tools
+                )
+                Log.i(TAG, "📦 Cache created for session: $sessionId")
+            }
+            
+            val cachedContext = sessionCacheMap[sessionId]
+            val effectiveSystemPrompt = if (enableCaching && cachedContext != null) {
+                Log.i(TAG, "📦 Using cached system prompt for session: $sessionId")
+                cachedContext.systemPrompt
+            } else {
+                systemPrompt
+            }
+            
+            val effectiveTools = if (enableCaching && cachedContext != null) {
+                Log.i(TAG, "📦 Using cached tools for session: $sessionId")
+                cachedContext.tools
+            } else {
+                tools
+            }
+
+            // ═══════════════════════════════════════════════════════════════
             // STEP 2: Build messages (МГНОВЕННО — чистый CPU)
             // ═══════════════════════════════════════════════════════════════
             val claudeMessages = mutableListOf<ClaudeMessage>()
-            for (msg in conversationHistory) {
-                val role = when (msg.role) {
-                    MessageRole.USER -> "user"
-                    MessageRole.ASSISTANT -> "assistant"
-                    else -> continue
+            
+            // CACHE WITHOUT HISTORY: не добавляем историю при кешировании
+            if (!useCacheWithoutHistory) {
+                for (msg in conversationHistory) {
+                    val role = when (msg.role) {
+                        MessageRole.USER -> "user"
+                        MessageRole.ASSISTANT -> "assistant"
+                        else -> continue
+                    }
+                    if (msg.content.isBlank()) continue
+                    claudeMessages.add(ClaudeMessage(role, msg.content))
                 }
-                if (msg.content.isBlank()) continue
-                claudeMessages.add(ClaudeMessage(role, msg.content))
             }
 
             val enrichedQuery = if (filePaths.isNotEmpty()) {
@@ -161,10 +220,10 @@ class RepositoryAnalyzer @Inject constructor(
                 claudeClient.streamMessage(
                     model = model.modelId,
                     messages = currentMessages,
-                    systemPrompt = systemPrompt,
+                    systemPrompt = effectiveSystemPrompt,
                     maxTokens = maxTokens,
                     enableCaching = enableCaching,
-                    tools = tools
+                    tools = effectiveTools
                 ).collect { result ->
                     when (result) {
                         is StreamingResult.Started -> {
