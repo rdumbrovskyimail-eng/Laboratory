@@ -31,12 +31,28 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.ai.ClaudeModelConfig
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+private object DarkColors {
+    val bg = Color(0xFF0D1117); val surface = Color(0xFF161B22); val border = Color(0xFF30363D)
+    val green = Color(0xFF3FB950); val blue = Color(0xFF58A6FF); val yellow = Color(0xFFD29922)
+    val red = Color(0xFFF85149); val text1 = Color(0xFFE6EDF3); val text2 = Color(0xFF8B949E); val input = Color(0xFF1C2128)
+}
+
+private object LightColors {
+    val bg = Color(0xFFF8FAFE); val surface = Color(0xFFFFFFFF); val border = Color(0xFFD0D7DE)
+    val green = Color(0xFF1A7F37); val blue = Color(0xFF0969DA); val blueSoft = Color(0xFFDDF4FF)
+    val yellow = Color(0xFF9A6700); val red = Color(0xFFCF222E); val text1 = Color(0xFF1F2328)
+    val text2 = Color(0xFF656D76); val input = Color(0xFFEFF2F5)
+}
+
+private val opsTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AnalyzerScreen(
-    viewModel: AnalyzerViewModel = hiltViewModel()
-) {
+fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val messages by viewModel.messages.collectAsState(initial = emptyList())
     val isStreaming by viewModel.isStreaming.collectAsState()
     val chatError by viewModel.chatError.collectAsState()
@@ -63,28 +79,24 @@ fun AnalyzerScreen(
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val imeVisible = imeBottomPx > 0
 
+    val cm = cacheModeEnabled
+    val bg = if (cm) LightColors.bg else DarkColors.bg
+    val sf = if (cm) LightColors.surface else DarkColors.surface
+    val bd = if (cm) LightColors.border else DarkColors.border
+    val ac = if (cm) LightColors.blue else DarkColors.blue
+    val gr = if (cm) LightColors.green else DarkColors.green
+    val yl = if (cm) LightColors.yellow else DarkColors.yellow
+    val rd = if (cm) LightColors.red else DarkColors.red
+    val t1 = if (cm) LightColors.text1 else DarkColors.text1
+    val t2 = if (cm) LightColors.text2 else DarkColors.text2
+    val inp = if (cm) LightColors.input else DarkColors.input
+
     val hasStreamingBubble = isStreaming && streamingText != null
     val totalItems = messages.size + (if (hasStreamingBubble) 1 else 0)
-    LaunchedEffect(totalItems, streamingText) {
-        if (totalItems > 0) chatListState.animateScrollToItem(totalItems - 1)
-    }
+    LaunchedEffect(totalItems) { if (totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) }
     LaunchedEffect(imeVisible) { if (imeVisible && totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) }
     LaunchedEffect(operationsLog.size) { if (operationsLog.isNotEmpty()) opsListState.animateScrollToItem(operationsLog.size - 1) }
 
-    val dBg = Color(0xFF0D1117); val dSurf = Color(0xFF161B22); val dBord = Color(0xFF30363D)
-    val dGreen = Color(0xFF3FB950); val dBlue = Color(0xFF58A6FF); val dYellow = Color(0xFFD29922)
-    val dRed = Color(0xFFF85149); val dTxt1 = Color(0xFFE6EDF3); val dTxt2 = Color(0xFF8B949E)
-    val dInp = Color(0xFF1C2128)
-    val lBg = Color(0xFFF8FAFE); val lSurf = Color(0xFFFFFFFF); val lBord = Color(0xFFD0D7DE)
-    val lBlue = Color(0xFF0969DA); val lBlueSoft = Color(0xFFDDF4FF); val lGreen = Color(0xFF1A7F37)
-    val lYellow = Color(0xFF9A6700); val lRed = Color(0xFFCF222E); val lTxt1 = Color(0xFF1F2328)
-    val lTxt2 = Color(0xFF656D76); val lInp = Color(0xFFEFF2F5)
-
-    val cm = cacheModeEnabled
-    val bg = if (cm) lBg else dBg; val sf = if (cm) lSurf else dSurf; val bd = if (cm) lBord else dBord
-    val ac = if (cm) lBlue else dBlue; val gr = if (cm) lGreen else dGreen; val yl = if (cm) lYellow else dYellow
-    val rd = if (cm) lRed else dRed; val t1 = if (cm) lTxt1 else dTxt1; val t2 = if (cm) lTxt2 else dTxt2
-    val inp = if (cm) lInp else dInp
     val cacheButtonEnabled = !ecoOutputMode || cacheModeEnabled
     val ecoButtonEnabled = !cacheModeEnabled
 
@@ -97,7 +109,7 @@ fun AnalyzerScreen(
                             Text("Analyzer", fontWeight = FontWeight.Bold, fontSize = 18.sp)
                             if (cm) {
                                 Spacer(Modifier.width(8.dp))
-                                Surface(shape = RoundedCornerShape(4.dp), color = lBlueSoft) {
+                                Surface(shape = RoundedCornerShape(4.dp), color = LightColors.blueSoft) {
                                     Text("CACHE", Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                         fontSize = 10.sp, fontWeight = FontWeight.Bold, color = ac)
                                 }
@@ -107,7 +119,7 @@ fun AnalyzerScreen(
                             Text("${selectedModel.emoji} ${selectedModel.displayName}",
                                 style = MaterialTheme.typography.labelSmall, color = t2)
                             sessionTokens?.let {
-                                Text(" • ${"%,d".format(it.totalTokens)} tok • €${String.format("%.3f", it.totalCostEUR)}",
+                                Text(" | ${"%,d".format(it.totalTokens)} tok | EUR${String.format("%.3f", it.totalCostEUR)}",
                                     style = MaterialTheme.typography.labelSmall, color = t2)
                             }
                         }
@@ -123,7 +135,7 @@ fun AnalyzerScreen(
                     IconButton(onClick = { showSessionStats = true }) { Icon(Icons.Default.Analytics, "Stats", tint = t2) }
                     IconButton(onClick = { viewModel.startNewSession() }) { Icon(Icons.Default.RestartAlt, "New", tint = t2) }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = bg, titleContentColor = t1, actionIconContentColor = t2)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = bg, titleContentColor = t1)
             )
         },
         containerColor = bg
@@ -131,22 +143,20 @@ fun AnalyzerScreen(
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
             AnimatedVisibility(visible = cm) {
                 CacheStatusBar(cacheTimerMs, cacheIsWarmed, cacheTotalReadTokens, cacheTotalWriteTokens,
-                    cacheTotalSavingsEUR, cacheHitCount, viewModel, ac, gr, rd, t1, t2, bd, lBlueSoft)
+                    cacheTotalSavingsEUR, cacheHitCount, viewModel, ac, gr, rd, t1, t2, bd)
             }
 
-            // OPS LOG
             Box(Modifier.fillMaxWidth().weight(if (cm) 0.22f else 0.28f).background(sf)) {
                 Column {
                     Row(Modifier.fillMaxWidth().background(inp).padding(horizontal = 12.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("\u2699\uFE0F", fontSize = 14.sp); Spacer(Modifier.width(6.dp))
-                            Text("OPERATIONS LOG", color = t2, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("OPS", color = t2, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(8.dp).clip(CircleShape).background(if (cm) ac else if (ecoOutputMode) gr else rd))
                             Spacer(Modifier.width(4.dp))
-                            Text(if (cm) "CACHE MAX" else if (ecoOutputMode) "ECO" else "MAX",
+                            Text(if (cm) "CACHE" else if (ecoOutputMode) "ECO" else "MAX",
                                 color = if (cm) ac else if (ecoOutputMode) gr else rd,
                                 fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                             Spacer(Modifier.width(8.dp))
@@ -157,12 +167,12 @@ fun AnalyzerScreen(
                     }
                     if (operationsLog.isEmpty()) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("Операции...", color = t2, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                            Text("...", color = t2, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                         }
                     } else {
                         LazyColumn(state = opsListState, modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                            items(operationsLog) { OpLogRow(it, t1, t2, gr, rd, yl) }
+                            items(operationsLog, key = { it.timestamp }) { item -> OpLogRow(item, t1, t2, gr, rd, yl) }
                         }
                     }
                 }
@@ -170,13 +180,11 @@ fun AnalyzerScreen(
 
             HorizontalDivider(color = bd, thickness = 2.dp)
 
-            // CHAT + INPUT
             Column(Modifier.fillMaxWidth().weight(if (cm) 0.78f else 0.72f)) {
                 AnimatedVisibility(visible = chatError != null) {
                     Surface(Modifier.fillMaxWidth().padding(8.dp),
                         color = if (cm) Color(0xFFFFF0F0) else Color(0xFF3D1F1F), shape = RoundedCornerShape(8.dp)) {
                         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("\u274C", fontSize = 16.sp); Spacer(Modifier.width(8.dp))
                             Text(chatError ?: "", color = rd, fontSize = 13.sp, modifier = Modifier.weight(1f))
                             IconButton(onClick = { viewModel.dismissError() }, Modifier.size(24.dp)) {
                                 Icon(Icons.Default.Close, "X", tint = t2, modifier = Modifier.size(16.dp))
@@ -187,9 +195,7 @@ fun AnalyzerScreen(
 
                 LazyColumn(state = chatListState, modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                    items(messages, key = { it.id }) { msg -> MsgBubble(msg, cm, bg, sf, t1, t2, ac, gr, lBlueSoft) }
-
-                    // REAL-TIME STREAMING BUBBLE
+                    items(messages, key = { it.id }) { msg -> MsgBubble(msg, cm, sf, t1, t2, ac, gr) }
                     if (hasStreamingBubble) {
                         item(key = "streaming_bubble") {
                             StreamingBubble(text = streamingText ?: "", cm = cm, sf = sf, t1 = t1, t2 = t2, ac = ac)
@@ -197,7 +203,6 @@ fun AnalyzerScreen(
                     }
                 }
 
-                // INPUT BAR
                 Surface(Modifier.fillMaxWidth(), color = inp, tonalElevation = 2.dp) {
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { viewModel.toggleOutputMode() }, modifier = Modifier.size(40.dp), enabled = ecoButtonEnabled) {
@@ -212,10 +217,10 @@ fun AnalyzerScreen(
                             placeholder = {
                                 val maxTok = viewModel.getEffectiveMaxTokens()
                                 val label = when {
-                                    cm && cacheIsWarmed -> "CACHE MAX ${"%,d".format(maxTok)} [\uD83D\uDCE6]..."
-                                    cm -> "CACHE MAX ${"%,d".format(maxTok)}..."
-                                    ecoOutputMode -> "ECO \uD83D\uDFE2 8K..."
-                                    else -> "MAX \uD83D\uDD34 ${"%,d".format(maxTok)}..."
+                                    cm && cacheIsWarmed -> "CACHE ${"%,d".format(maxTok)}..."
+                                    cm -> "CACHE ${"%,d".format(maxTok)}..."
+                                    ecoOutputMode -> "ECO 8K..."
+                                    else -> "MAX ${"%,d".format(maxTok)}..."
                                 }
                                 Text(label, color = t2, fontSize = 13.sp)
                             },
@@ -244,20 +249,17 @@ fun AnalyzerScreen(
                                 containerColor = ac, contentColor = Color.White,
                                 disabledContainerColor = bd, disabledContentColor = t2),
                             modifier = Modifier.size(48.dp)
-                        ) {
-                            Icon(if (isStreaming) Icons.Default.HourglassTop else Icons.Default.Send, "Send")
-                        }
+                        ) { Icon(if (isStreaming) Icons.Default.HourglassTop else Icons.Default.Send, "Send") }
                     }
                 }
             }
         }
     }
 
-    // MODEL DIALOG
     if (showModelDialog) {
         AlertDialog(
             onDismissRequest = { showModelDialog = false },
-            title = { Text("Выбрать модель") },
+            title = { Text("Model") },
             text = {
                 LazyColumn(Modifier.heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(ClaudeModelConfig.ClaudeModel.entries.toList()) { model ->
@@ -266,21 +268,15 @@ fun AnalyzerScreen(
                         Surface(
                             onClick = { viewModel.selectModel(model); showModelDialog = false },
                             modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-                            color = when { isSel -> MaterialTheme.colorScheme.primaryContainer; isExp -> Color(0xFFFFF3E0); else -> MaterialTheme.colorScheme.surface },
-                            tonalElevation = if (isSel) 4.dp else 0.dp
+                            color = when { isSel -> MaterialTheme.colorScheme.primaryContainer; isExp -> Color(0xFFFFF3E0); else -> MaterialTheme.colorScheme.surface }
                         ) {
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text(model.emoji, fontSize = 20.sp); Spacer(Modifier.width(12.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(model.displayName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                        if (isExp) { Spacer(Modifier.width(6.dp)); Text("\u26A0\uFE0F 3\u00D7", fontSize = 10.sp, color = Color(0xFFE65100)) }
-                                    }
-                                    Text(model.description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("In: \$${model.inputPricePerM} | Out: \$${model.outputPricePerM} | Cache R: \$${model.cacheReadPricePerM}",
-                                        fontSize = 11.sp, color = if (isExp) Color(0xFFE65100) else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("Max output: ${"%,d".format(model.maxOutputTokens)} tok",
-                                        fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(model.displayName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                    Text("In: $${model.inputPricePerM} | Out: $${model.outputPricePerM} | CacheR: $${model.cacheReadPricePerM}",
+                                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text("Max out: ${"%,d".format(model.maxOutputTokens)} tok", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if (isSel) Icon(Icons.Default.CheckCircle, "Sel", tint = MaterialTheme.colorScheme.primary)
                             }
@@ -288,66 +284,54 @@ fun AnalyzerScreen(
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { showModelDialog = false }) { Text("Закрыть") } }
+            confirmButton = { TextButton(onClick = { showModelDialog = false }) { Text("Close") } }
         )
     }
 
     if (showSessionStats) {
         AlertDialog(
             onDismissRequest = { showSessionStats = false },
-            title = { Text("\uD83D\uDCCA Статистика") },
+            title = { Text("Stats") },
             text = {
                 val s = viewModel.getSessionStats()
-                if (s != null) Text(s, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
-                else Text("Нет сеанса")
+                if (s != null) Text(s, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp) else Text("No session")
             },
-            confirmButton = { TextButton(onClick = { showSessionStats = false }) { Text("Закрыть") } }
+            confirmButton = { TextButton(onClick = { showSessionStats = false }) { Text("Close") } }
         )
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// SUB-COMPOSABLES
-// ═══════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun CacheStatusBar(
     timerMs: Long, warmed: Boolean, readTok: Int, writeTok: Int, savEUR: Double, hits: Int,
-    vm: AnalyzerViewModel, accent: Color, green: Color, red: Color, txt1: Color, txt2: Color, border: Color, blueSoft: Color
+    vm: AnalyzerViewModel, accent: Color, green: Color, red: Color, txt1: Color, txt2: Color, border: Color
 ) {
     val prog = if (timerMs > 0) (timerMs.toFloat() / ClaudeModelConfig.CACHE_TTL_MS).coerceIn(0f, 1f) else 0f
-    val tc = when { timerMs <= 0 -> txt2; timerMs <= 60_000 -> red; timerMs <= 120_000 -> Color(0xFFD29922); else -> green }
-
-    Surface(Modifier.fillMaxWidth(), color = blueSoft, tonalElevation = 1.dp) {
+    val tc = when { timerMs <= 0 -> txt2; timerMs <= 60_000 -> red; timerMs <= 120_000 -> DarkColors.yellow; else -> green }
+    Surface(Modifier.fillMaxWidth(), color = LightColors.blueSoft, tonalElevation = 1.dp) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Timer, "T", tint = tc, modifier = Modifier.size(20.dp))
                     Spacer(Modifier.width(6.dp))
                     Text(vm.getCacheTimerFormatted(timerMs), fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = tc)
-                    Spacer(Modifier.width(8.dp))
-                    Text(when { !warmed -> "Ожидание..."; timerMs > 0 -> "TTL active"; else -> "TTL expired" }, fontSize = 11.sp, color = txt2)
                 }
-                Surface(shape = RoundedCornerShape(12.dp),
-                    color = if (warmed && timerMs > 0) green.copy(alpha = 0.15f) else red.copy(alpha = 0.15f)) {
-                    Text(if (warmed && timerMs > 0) "\u25CF CACHED" else "\u25CB EMPTY",
-                        Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                        fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                        color = if (warmed && timerMs > 0) green else red)
+                Surface(shape = RoundedCornerShape(12.dp), color = if (warmed && timerMs > 0) green.copy(alpha = 0.15f) else red.copy(alpha = 0.15f)) {
+                    Text(if (warmed && timerMs > 0) "CACHED" else "EMPTY", Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (warmed && timerMs > 0) green else red)
                 }
             }
             if (warmed) {
                 Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(progress = { prog },
-                    Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)), color = tc, trackColor = border)
+                LinearProgressIndicator(progress = { prog }, Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)), color = tc, trackColor = border)
             }
             if (writeTok > 0 || readTok > 0) {
                 Spacer(Modifier.height(6.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("\uD83D\uDCDD W:${"%,d".format(writeTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
-                    Text("\u26A1 R:${"%,d".format(readTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = accent)
-                    Text("\uD83C\uDFAF $hits", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
-                    Text("\uD83D\uDCB0 -\u20AC${String.format("%.4f", savEUR)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = green)
+                    Text("W:${"%,d".format(writeTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
+                    Text("R:${"%,d".format(readTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = accent)
+                    Text("Hits:$hits", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
+                    Text("-EUR${String.format("%.4f", savEUR)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = green)
                 }
             }
         }
@@ -360,18 +344,18 @@ private fun OpLogRow(item: AnalyzerViewModel.OperationLogItem, t1: Color, t2: Co
     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(item.icon, fontSize = 12.sp, modifier = Modifier.width(20.dp))
         Text(item.message, color = c, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Text(java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(item.timestamp)),
-            color = t2.copy(alpha = 0.5f), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+        Text(opsTimeFormat.format(Date(item.timestamp)), color = t2.copy(alpha = 0.5f), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
     }
 }
 
 @Composable
-private fun MsgBubble(msg: ChatMessageEntity, cm: Boolean, bg: Color, sf: Color, t1: Color, t2: Color, ac: Color, gr: Color, blueSoft: Color) {
-    val isU = msg.role == MessageRole.USER; val isS = msg.role == MessageRole.SYSTEM
+private fun MsgBubble(msg: ChatMessageEntity, cm: Boolean, sf: Color, t1: Color, t2: Color, ac: Color, gr: Color) {
+    val isU = msg.role == MessageRole.USER
+    val isS = msg.role == MessageRole.SYSTEM
     val bc = when { cm && isU -> Color(0xFFE8F0FE); cm && isS -> Color(0xFFE6F4EA); cm -> sf; isU -> Color(0xFF1A2332); isS -> Color(0xFF1A2E1A); else -> sf }
     val cc = if (isS) gr else t1
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = if (isU) Alignment.End else Alignment.Start) {
-        Text(when { isU -> "\uD83D\uDC64 You"; isS -> "\u2699\uFE0F System"; else -> "\uD83E\uDD16 Claude" },
+        Text(when { isU -> "You"; isS -> "System"; else -> "Claude" },
             color = t2, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
         Surface(
@@ -384,15 +368,12 @@ private fun MsgBubble(msg: ChatMessageEntity, cm: Boolean, bg: Color, sf: Color,
     }
 }
 
-/**
- * Real-time streaming bubble. Shows text as it arrives, no spinner.
- */
 @Composable
 private fun StreamingBubble(text: String, cm: Boolean, sf: Color, t1: Color, t2: Color, ac: Color) {
     val bc = if (cm) sf else Color(0xFF161B22)
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = Alignment.Start) {
         Row(Modifier.padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("\uD83E\uDD16 Claude", color = t2, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Text("Claude", color = t2, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             Spacer(Modifier.width(8.dp))
             CircularProgressIndicator(modifier = Modifier.size(10.dp), color = ac, strokeWidth = 1.5.dp)
         }
@@ -402,9 +383,9 @@ private fun StreamingBubble(text: String, cm: Boolean, sf: Color, t1: Color, t2:
             border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
         ) {
             if (text.isNotEmpty()) {
-                Text(text + " \u258A", color = t1, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
+                Text(text, color = t1, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
             } else {
-                Text("\u258A", color = ac, fontSize = 13.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(12.dp))
+                Text("|", color = ac, fontSize = 13.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(12.dp))
             }
         }
     }
