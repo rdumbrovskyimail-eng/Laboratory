@@ -117,18 +117,18 @@ class RepositoryAnalyzer @Inject constructor(
 
         try {
             val contents = gitHubClient.getContent(path).getOrNull() ?: return@buildString
-            val indent = "  ".repeat(depth)
+            val indentStr = "  ".repeat(depth)
 
             contents.forEach { item ->
                 when (item.type) {
                     "file" -> {
                         if (filesCollected.size < MAX_TREE_FILES) {
-                            appendLine("${indent}📄 ${item.name} (${formatSize(item.size)})")
+                            appendLine("${indentStr}📄 ${item.name} (${formatSize(item.size)})")
                             filesCollected.add(item.path)
                         }
                     }
                     "dir" -> {
-                        appendLine("${indent}📁 ${item.name}/")
+                        appendLine("${indentStr}📁 ${item.name}/")
                         // Рекурсивно обходим директорию
                         append(buildRepositoryTree(item.path, depth + 1, maxDepth, filesCollected))
                     }
@@ -136,7 +136,8 @@ class RepositoryAnalyzer @Inject constructor(
             }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to scan directory: $path", e)
-            appendLine("${indent}⚠️ [Error reading directory]")
+            val indentStr = "  ".repeat(depth)
+            appendLine("${indentStr}⚠️ [Error reading directory]")
         }
     }
 
