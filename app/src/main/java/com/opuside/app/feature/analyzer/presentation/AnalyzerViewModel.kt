@@ -20,22 +20,25 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v8.3 (CONVERSATION HISTORY CONTROL)
+ * Analyzer ViewModel v9.0 (CACHE WITHOUT HISTORY + INPUT 1 TOKEN)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * НОВОЕ: Независимое управление историей разговора
+ * НОВОЕ: Cache без истории — каждый запрос помнит первый кеш
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 🔧 ИСПРАВЛЕНИЕ: Добавлен переключатель conversationHistoryEnabled
+ * 🔧 ИЗМЕНЕНИЯ:
+ * - При включении Cache Mode автоматически отключается история
+ * - При выключении Cache Mode очищается кеш сессии
+ * - Input = 1 токен в режиме кеширования для тестирования
  *
  * ✅ РЕЖИМЫ:
  * 1. История OFF, Cache OFF (ECO/MAX) — каждый запрос независимый, дешево
  * 2. История ON, Cache OFF (ECO/MAX) — диалог с памятью, без кеша
- * 3. История OFF, Cache ON — работа с файлами без контекста диалога
- * 4. История ON, Cache ON — полный диалог с кешированием (максимальная экономия)
+ * 3. История OFF, Cache ON — работа с кешем без контекста диалога (НОВОЕ)
+ * 4. История ON, Cache ON — ЗАБЛОКИРОВАНО (история автоматически OFF)
  *
  * 💰 СТОИМОСТЬ:
- * - История OFF: каждый запрос ~250 input токенов
+ * - История OFF: каждый запрос ~1 input токен (в cache mode)
  * - История ON: input растёт (250 → 700 → 1500...)
  * - Cache ON: первый раз 1.25×, потом 0.1× (экономия до 90%)
  */
@@ -221,6 +224,10 @@ class AnalyzerViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════
 
     fun toggleConversationHistory() {
+        if (_cacheModeEnabled.value) {
+            addOperation("🔒", "История заблокирована в Cache Mode", OperationLogType.INFO)
+            return
+        }
         _conversationHistoryEnabled.value = !_conversationHistoryEnabled.value
         val status = if (_conversationHistoryEnabled.value) "ON" else "OFF"
         addOperation("💬", "Conversation History: $status", OperationLogType.INFO)
@@ -252,12 +259,13 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE MODE — ИСПРАВЛЕНО
+    // CACHE MODE — CACHE WITHOUT HISTORY
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ FIX: При выключении кеша автоматически сбрасываем сессию,
-     *    чтобы гарантировать полное отсутствие кеша в следующих запросах.
+     * ✅ CACHE WITHOUT HISTORY:
+     * - При включении Cache Mode автоматически отключается история
+     * - При выключении Cache Mode очищается кеш сессии
      */
     fun toggleCacheMode() {
         if (_ecoOutputMode.value && !_cacheModeEnabled.value) {
@@ -271,9 +279,10 @@ class AnalyzerViewModel @Inject constructor(
         if (newState) {
             // Включаем Cache Mode
             _ecoOutputMode.value = false
-            addOperation("📦", "CACHE MODE ON — output MAX: ${"%,d".format(_selectedModel.value.maxOutputTokens)} tok", OperationLogType.SUCCESS)
+            _conversationHistoryEnabled.value = false  // ✅ НОВОЕ: отключаем историю
+            addOperation("📦", "CACHE MODE ON — output MAX, history OFF", OperationLogType.SUCCESS)
         } else {
-            // ✅ КРИТИЧНОЕ ИСПРАВЛЕНИЕ: Выключаем Cache Mode → ПОЛНЫЙ СБРОС
+            // Выключаем Cache Mode
             stopCacheTimer()
             _cacheIsWarmed.value = false
             _cacheTotalReadTokens.value = 0
@@ -282,11 +291,13 @@ class AnalyzerViewModel @Inject constructor(
             _cacheHitCount.value = 0
             cacheExpiresAt = 0L
             
-            // ✅ КЛЮЧЕВОЕ: Начать новую сессию БЕЗ кеша
-            // Это гарантирует, что старый кеш Claude (5 мин TTL) не будет использован
+            // ✅ НОВОЕ: очищаем кеш сессии
+            repositoryAnalyzer.clearCacheForSession(_sessionId)
+            
+            // Начать новую сессию БЕЗ кеша
             startNewSession()
             
-            addOperation("📦", "CACHE MODE OFF — сессия сброшена (инкогнито)", OperationLogType.SUCCESS)
+            addOperation("📦", "CACHE MODE OFF — кеш очищен, сессия сброшена", OperationLogType.SUCCESS)
         }
     }
 
@@ -374,6 +385,10 @@ class AnalyzerViewModel @Inject constructor(
 
     fun startNewSession() {
         sendJob?.cancel()
+        
+        // ✅ НОВОЕ: очищаем кеш для старой сессии
+        repositoryAnalyzer.clearCacheForSession(_sessionId)
+        
         viewModelScope.launch {
             _currentSession.value?.let { repositoryAnalyzer.endSession(it.sessionId) }
 
@@ -443,6 +458,7 @@ class AnalyzerViewModel @Inject constructor(
             ))
 
             // DB read history — зависит от conversationHistoryEnabled
+            // ✅ В Cache Mode история всегда пустая (conversationHistoryEnabled = false)
             val historyMessages = if (_conversationHistoryEnabled.value) {
                 // История ВКЛЮЧЕНА — загружаем все сообщения
                 chatDao.getSession(sessionId)
