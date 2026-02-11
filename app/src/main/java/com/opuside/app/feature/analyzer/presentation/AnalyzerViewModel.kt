@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.ai.ClaudeModelConfig
 import com.opuside.app.core.ai.RepositoryAnalyzer
+import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.ChatDao
 import com.opuside.app.core.database.entity.ChatMessageEntity
@@ -18,16 +19,26 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v7.0 (FIXED CACHE TIMER)
+ * Analyzer ViewModel v8.0 (ZERO-LATENCY STREAMING)
  *
- * ✅ FIX 1: CACHE TIMER STARTS IMMEDIATELY
- *    - Таймер запускается на StreamingStarted, НЕ на Completed
- *    - Пользователь видит таймер сразу, без задержки 5-8 минут
- *    - Логика: если cache mode ON → таймер стартует при первом запросе
+ * ═══════════════════════════════════════════════════════════════════════════
+ * FIXES:
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * ✅ FIX 2: MESSAGE DUPLICATION (уже был исправлен)
- * ✅ FIX 3: CONVERSATION HISTORY + CACHE (уже был исправлен)
- * ✅ FIX 4: REAL-TIME STREAMING (уже был исправлен)
+ * 1. ZERO-LATENCY: sendMessage → HTTP POST мгновенно
+ *    - DB insert и history read выполняются ПЕРЕД отправкой
+ *    - НЕТ repo tree loading, НЕТ file pre-loading
+ *    - Первый emit = StreamingStarted → UI сразу показывает streaming bubble
+ *
+ * 2. CANCELLATION GUARD: sendJob?.cancel() предотвращает двойную отправку
+ *    - Быстрые тапы на Send не создают параллельных запросов
+ *
+ * 3. BOUNDED OPS LOG: максимум MAX_OPS_LOG_SIZE записей
+ *    - Нет memory leak на длинных сессиях
+ *
+ * 4. TOOL CALL UI: отображает tool calls в операционном логе
+ *
+ * 5. FIXED CACHE TIMER: стартует на StreamingStarted, не на Completed
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -40,10 +51,11 @@ class AnalyzerViewModel @Inject constructor(
     companion object {
         private const val TAG = "AnalyzerVM"
         private const val KEY_SESSION_ID = "session_id"
+        private const val MAX_OPS_LOG_SIZE = 500
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // OPERATIONS LOG
+    // OPERATIONS LOG — bounded
     // ═══════════════════════════════════════════════════════════════════
 
     data class OperationLogItem(
@@ -108,17 +120,11 @@ class AnalyzerViewModel @Inject constructor(
     val currentSession: StateFlow<ClaudeModelConfig.ChatSession?> = _currentSession.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════
-    // REPOSITORY
+    // FILE SELECTION
     // ═══════════════════════════════════════════════════════════════════
-
-    private val _repositoryStructure = MutableStateFlow<RepositoryAnalyzer.RepositoryStructure?>(null)
-    val repositoryStructure: StateFlow<RepositoryAnalyzer.RepositoryStructure?> = _repositoryStructure.asStateFlow()
 
     private val _selectedFiles = MutableStateFlow<Set<String>>(emptySet())
     val selectedFiles: StateFlow<Set<String>> = _selectedFiles.asStateFlow()
-
-    private val _scanEstimate = MutableStateFlow<RepositoryAnalyzer.ScanEstimate?>(null)
-    val scanEstimate: StateFlow<RepositoryAnalyzer.ScanEstimate?> = _scanEstimate.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════
     // CHAT
@@ -137,6 +143,9 @@ class AnalyzerViewModel @Inject constructor(
     private val _streamingText = MutableStateFlow<String?>(null)
     val streamingText: StateFlow<String?> = _streamingText.asStateFlow()
 
+    /** Cancellation guard: prevents concurrent sends */
+    private var sendJob: Job? = null
+
     val sessionTokens: StateFlow<ClaudeModelConfig.ModelCost?> = currentSession
         .map { it?.currentCost }
         .stateIn(viewModelScope, SharingStarted.Eagerly, null)
@@ -145,23 +154,15 @@ class AnalyzerViewModel @Inject constructor(
         .map { it?.isApproachingLongContext ?: false }
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
-    val isLongContext: StateFlow<Boolean> = currentSession
-        .map { it?.isLongContext ?: false }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
-
     // ═══════════════════════════════════════════════════════════════════
     // INIT
     // ═══════════════════════════════════════════════════════════════════
 
     init {
-        Log.i(TAG, "Init: session=$sessionId")
-
         viewModelScope.launch {
             val savedModelId = appSettings.claudeModel.first()
-            val model = ClaudeModelConfig.ClaudeModel.fromModelId(savedModelId)
-                ?: ClaudeModelConfig.ClaudeModel.getDefault()
+            val model = ClaudeModelConfig.ClaudeModel.fromModelId(savedModelId) ?: ClaudeModelConfig.ClaudeModel.getDefault()
             _selectedModel.value = model
-            Log.i(TAG, "Model: ${model.displayName}")
 
             val existing = repositoryAnalyzer.getSession(sessionId)
             if (existing != null && existing.model == model) {
@@ -172,12 +173,9 @@ class AnalyzerViewModel @Inject constructor(
             }
         }
 
-        // Auto-cleanup
+        // Auto-cleanup every hour
         viewModelScope.launch {
-            while (true) {
-                delay(3600_000)
-                try { repositoryAnalyzer.cleanupOldSessions() } catch (_: Exception) {}
-            }
+            while (true) { delay(3600_000); try { repositoryAnalyzer.cleanupOldSessions() } catch (_: Exception) {} }
         }
     }
 
@@ -187,16 +185,14 @@ class AnalyzerViewModel @Inject constructor(
 
     fun toggleOutputMode() {
         if (_cacheModeEnabled.value) {
-            addOperation("🔒", "ECO заблокирован: в Cache Mode всегда MAX output", OperationLogType.INFO)
+            addOperation("🔒", "ECO заблокирован в Cache Mode", OperationLogType.INFO)
             return
         }
         _ecoOutputMode.value = !_ecoOutputMode.value
-        val model = _selectedModel.value
-        val effectiveTokens = getEffectiveMaxTokens(model)
-        val modeName = if (_ecoOutputMode.value) "ECO 🟢" else "MAX 🔴"
+        val tok = getEffectiveMaxTokens()
         addOperation(
             if (_ecoOutputMode.value) "🟢" else "🔴",
-            "Output: $modeName (${"%,d".format(effectiveTokens)} tok)",
+            "Output: ${if (_ecoOutputMode.value) "ECO" else "MAX"} (${"%,d".format(tok)} tok)",
             OperationLogType.INFO
         )
     }
@@ -204,20 +200,17 @@ class AnalyzerViewModel @Inject constructor(
     fun getEffectiveMaxTokens(): Int = getEffectiveMaxTokens(_selectedModel.value)
 
     fun getEffectiveMaxTokens(model: ClaudeModelConfig.ClaudeModel): Int {
-        return if (_cacheModeEnabled.value) {
-            model.maxOutputTokens
-        } else {
-            model.getEffectiveOutputTokens(_ecoOutputMode.value)
-        }
+        return if (_cacheModeEnabled.value) model.maxOutputTokens
+        else model.getEffectiveOutputTokens(_ecoOutputMode.value)
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE MODE CONTROLS
+    // CACHE MODE
     // ═══════════════════════════════════════════════════════════════════
 
     fun toggleCacheMode() {
         if (_ecoOutputMode.value && !_cacheModeEnabled.value) {
-            addOperation("🔒", "Cache заблокирован: сначала выключите ECO (переключите на MAX)", OperationLogType.ERROR)
+            addOperation("🔒", "Cache заблокирован: сначала переключите на MAX", OperationLogType.ERROR)
             return
         }
 
@@ -226,9 +219,7 @@ class AnalyzerViewModel @Inject constructor(
 
         if (newState) {
             _ecoOutputMode.value = false
-            val model = _selectedModel.value
-            addOperation("📦", "CACHE MODE ON — output MAX: ${"%,d".format(model.maxOutputTokens)} tok", OperationLogType.SUCCESS)
-            Log.i(TAG, "Cache Mode ON, forced MAX output: ${model.maxOutputTokens}")
+            addOperation("📦", "CACHE MODE ON — output MAX: ${"%,d".format(_selectedModel.value.maxOutputTokens)} tok", OperationLogType.SUCCESS)
         } else {
             stopCacheTimer()
             _cacheIsWarmed.value = false
@@ -238,34 +229,13 @@ class AnalyzerViewModel @Inject constructor(
             _cacheHitCount.value = 0
             cacheExpiresAt = 0L
             addOperation("📦", "CACHE MODE OFF", OperationLogType.INFO)
-            Log.i(TAG, "Cache Mode OFF")
         }
     }
 
-    /**
-     * ✅ FIX: Start cache timer IMMEDIATELY when streaming starts.
-     * 
-     * Официальное поведение по Anthropic:
-     * 1. Первый запрос в cache mode → WRITE → TTL 5:00 стартует
-     * 2. Второй запрос (в течение 5 мин) → READ → TTL reset 5:00
-     * 3. Каждый cache hit → TTL reset 5:00
-     * 4. Если 5 мин прошло без запросов → cache expired
-     *
-     * Старая проблема: таймер стартовал в handleCacheResult() которая 
-     * вызывается ПОСЛЕ Completed (через 5-8 минут для больших файлов).
-     * Новое решение: таймер стартует в onStreamingStarted() если это
-     * первый запрос в cache mode.
-     */
     private fun startCacheTimerIfNeeded() {
         if (!_cacheModeEnabled.value) return
-        
-        // Если таймер уже идёт — не перезапускаем (это будет сделано в resetCacheTimer при cache hit)
-        if (_cacheIsWarmed.value && cacheTimerJob?.isActive == true) {
-            Log.d(TAG, "Cache timer already running, skipping start")
-            return
-        }
+        if (_cacheIsWarmed.value && cacheTimerJob?.isActive == true) return
 
-        // Запускаем новый таймер
         cacheTimerJob?.cancel()
         cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
         _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
@@ -277,28 +247,19 @@ class AnalyzerViewModel @Inject constructor(
                 if (remaining <= 0) {
                     _cacheTimerMs.value = 0
                     _cacheIsWarmed.value = false
-                    addOperation("⏰", "Cache TTL истёк! Следующий запрос = новый WRITE.", OperationLogType.ERROR)
-                    Log.w(TAG, "Cache TTL expired")
+                    addOperation("⏰", "Cache TTL истёк", OperationLogType.ERROR)
                     break
                 }
                 _cacheTimerMs.value = remaining
                 delay(1000)
             }
         }
-        Log.i(TAG, "Cache timer STARTED: 5:00 (immediate on streaming start)")
     }
 
-    /**
-     * Reset cache TTL to full 5 min (called on cache READ/hit).
-     */
     private fun resetCacheTimer() {
-        if (!_cacheIsWarmed.value) {
-            startCacheTimerIfNeeded()
-            return
-        }
+        if (!_cacheIsWarmed.value) { startCacheTimerIfNeeded(); return }
         cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
         _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
-        Log.i(TAG, "Cache timer RESET to 5:00 (cache hit)")
     }
 
     private fun stopCacheTimer() {
@@ -308,10 +269,6 @@ class AnalyzerViewModel @Inject constructor(
         cacheExpiresAt = 0L
     }
 
-    /**
-     * Handle cache usage results from Completed event.
-     * This UPDATES metrics but does NOT start the timer (it's already running).
-     */
     private fun handleCacheResult(cachedReadTokens: Int, cachedWriteTokens: Int, savingsEUR: Double) {
         if (cachedWriteTokens > 0) {
             _cacheTotalWriteTokens.value += cachedWriteTokens
@@ -321,18 +278,24 @@ class AnalyzerViewModel @Inject constructor(
             _cacheTotalReadTokens.value += cachedReadTokens
             _cacheHitCount.value += 1
             _cacheTotalSavingsEUR.value += savingsEUR
-            // Cache hit → reset TTL to full 5 min
             resetCacheTimer()
-            addOperation("⚡", "Cache HIT: ${"%,d".format(cachedReadTokens)} tok → TTL обновлён 5:00 (€${String.format("%.4f", savingsEUR)} saved)", OperationLogType.SUCCESS)
+            addOperation("⚡", "Cache HIT: ${"%,d".format(cachedReadTokens)} tok (€${String.format("%.4f", savingsEUR)} saved)", OperationLogType.SUCCESS)
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // OPERATIONS LOG
+    // OPS LOG — bounded to MAX_OPS_LOG_SIZE
     // ═══════════════════════════════════════════════════════════════════
 
     private fun addOperation(icon: String, message: String, type: OperationLogType = OperationLogType.INFO) {
-        _operationsLog.value = _operationsLog.value + OperationLogItem(icon, message, type = type)
+        _operationsLog.update { current ->
+            val newItem = OperationLogItem(icon, message, type = type)
+            if (current.size >= MAX_OPS_LOG_SIZE) {
+                current.drop(current.size - MAX_OPS_LOG_SIZE + 1) + newItem
+            } else {
+                current + newItem
+            }
+        }
     }
 
     fun clearOperationsLog() { _operationsLog.value = emptyList() }
@@ -342,17 +305,17 @@ class AnalyzerViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════
 
     fun selectModel(model: ClaudeModelConfig.ClaudeModel) {
-        Log.i(TAG, "Model → ${model.displayName}")
         _selectedModel.value = model
         viewModelScope.launch { appSettings.setClaudeModel(model.modelId) }
         startNewSession()
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // SESSION MANAGEMENT
+    // SESSION
     // ═══════════════════════════════════════════════════════════════════
 
     fun startNewSession() {
+        sendJob?.cancel()
         viewModelScope.launch {
             _currentSession.value?.let { repositoryAnalyzer.endSession(it.sessionId) }
 
@@ -361,11 +324,11 @@ class AnalyzerViewModel @Inject constructor(
             _sessionId = newSessionId
             _messagesSessionId.value = newSessionId
 
-            val newSession = repositoryAnalyzer.createSession(newSessionId, _selectedModel.value)
-            _currentSession.value = newSession
+            _currentSession.value = repositoryAnalyzer.createSession(newSessionId, _selectedModel.value)
             _selectedFiles.value = emptySet()
-            _scanEstimate.value = null
             _chatError.value = null
+            _isStreaming.value = false
+            _streamingText.value = null
 
             if (_cacheModeEnabled.value) {
                 stopCacheTimer()
@@ -374,7 +337,6 @@ class AnalyzerViewModel @Inject constructor(
                 _cacheTotalWriteTokens.value = 0
                 _cacheTotalSavingsEUR.value = 0.0
                 _cacheHitCount.value = 0
-                cacheExpiresAt = 0L
             }
 
             addOperation("🔄", "Новый сеанс: ${_selectedModel.value.displayName}", OperationLogType.SUCCESS)
@@ -384,57 +346,26 @@ class AnalyzerViewModel @Inject constructor(
     fun getSessionStats(): String? = _currentSession.value?.getDetailedStats()
 
     // ═══════════════════════════════════════════════════════════════════
-    // REPOSITORY OPERATIONS
+    // FILE SELECTION
     // ═══════════════════════════════════════════════════════════════════
 
-    fun loadRepositoryStructure(path: String = "") {
-        viewModelScope.launch {
-            repositoryAnalyzer.getRepositoryStructure(path).onSuccess {
-                _repositoryStructure.value = it
-            }.onFailure {
-                _chatError.value = "Failed to load repository: ${it.message}"
-            }
-        }
-    }
-
-    fun selectFiles(files: Set<String>) {
-        _selectedFiles.value = files
-        if (files.isNotEmpty()) updateScanEstimate() else _scanEstimate.value = null
-    }
-
-    fun addFile(filePath: String) {
-        _selectedFiles.value = _selectedFiles.value + filePath
-        updateScanEstimate()
-    }
-
-    fun removeFile(filePath: String) {
-        _selectedFiles.value = _selectedFiles.value - filePath
-        if (_selectedFiles.value.isNotEmpty()) updateScanEstimate() else _scanEstimate.value = null
-    }
-
-    fun clearSelectedFiles() {
-        _selectedFiles.value = emptySet()
-        _scanEstimate.value = null
-    }
-
-    private fun updateScanEstimate() {
-        viewModelScope.launch {
-            val files = _selectedFiles.value.toList()
-            if (files.isEmpty()) { _scanEstimate.value = null; return@launch }
-            repositoryAnalyzer.estimateScanCost(files, _selectedModel.value, sessionId)
-                .onSuccess { _scanEstimate.value = it }
-                .onFailure { _chatError.value = it.message }
-        }
-    }
+    fun selectFiles(files: Set<String>) { _selectedFiles.value = files }
+    fun addFile(filePath: String) { _selectedFiles.value = _selectedFiles.value + filePath }
+    fun removeFile(filePath: String) { _selectedFiles.value = _selectedFiles.value - filePath }
+    fun clearSelectedFiles() { _selectedFiles.value = emptySet() }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CHAT — FIXED CACHE TIMER START
+    // SEND MESSAGE — ZERO LATENCY + CANCELLATION GUARD
     // ═══════════════════════════════════════════════════════════════════
 
     fun sendMessage(message: String) {
         if (message.isBlank()) { _chatError.value = "Message cannot be empty"; return }
+        if (_isStreaming.value) return  // Already streaming — ignore tap
 
-        viewModelScope.launch {
+        // Cancel any previous send (race condition guard)
+        sendJob?.cancel()
+
+        sendJob = viewModelScope.launch {
             _isStreaming.value = true
             _chatError.value = null
             _streamingText.value = null
@@ -442,118 +373,116 @@ class AnalyzerViewModel @Inject constructor(
             val useModel = _selectedModel.value
             val isCacheMode = _cacheModeEnabled.value
             val maxTokens = getEffectiveMaxTokens(useModel)
-            val modeName = if (isCacheMode) "CACHE MAX" else if (_ecoOutputMode.value) "ECO" else "MAX"
+            val modeName = if (isCacheMode) "CACHE" else if (_ecoOutputMode.value) "ECO" else "MAX"
 
-            addOperation("📤", "$modeName ${"%,d".format(maxTokens)} tok: ${message.take(40)}...", OperationLogType.PROGRESS)
+            addOperation("📤", "$modeName ${"%,d".format(maxTokens)}: ${message.take(50)}...", OperationLogType.PROGRESS)
 
+            // DB write — fast (~5ms)
             chatDao.insert(ChatMessageEntity(
                 sessionId = sessionId,
                 role = com.opuside.app.core.database.entity.MessageRole.USER,
                 content = message
             ))
 
+            // DB read history — fast (~10ms)
             val historyMessages = chatDao.getSession(sessionId)
                 .filter { it.role != com.opuside.app.core.database.entity.MessageRole.SYSTEM }
                 .filter { !it.isStreaming && it.content.isNotBlank() }
 
+            // ═══════════════════════════════════════════════════════════
+            // МГНОВЕННО уходит в HTTP POST — нет предзагрузки файлов/дерева
+            // ═══════════════════════════════════════════════════════════
             var fullResponse = ""
 
-            repositoryAnalyzer.scanFilesV2(
-                sessionId = sessionId,
-                filePaths = _selectedFiles.value.toList(),
-                userQuery = message,
-                conversationHistory = historyMessages,
-                model = useModel,
-                maxTokens = maxTokens,
-                enableCaching = isCacheMode
-            ).collect { result ->
-                when (result) {
-                    is RepositoryAnalyzer.AnalysisResult.Loading -> {
-                        addOperation("⏳", result.message, OperationLogType.PROGRESS)
-                    }
-
-                    is RepositoryAnalyzer.AnalysisResult.StreamingStarted -> {
-                        _streamingText.value = ""
-                        
-                        // ✅ FIX: START TIMER IMMEDIATELY (first request or cache still warm)
-                        if (isCacheMode) {
-                            startCacheTimerIfNeeded()
+            try {
+                repositoryAnalyzer.scanFilesV2(
+                    sessionId = sessionId,
+                    filePaths = _selectedFiles.value.toList(),
+                    userQuery = message,
+                    conversationHistory = historyMessages,
+                    model = useModel,
+                    maxTokens = maxTokens,
+                    enableCaching = isCacheMode
+                ).collect { result ->
+                    when (result) {
+                        is RepositoryAnalyzer.AnalysisResult.Loading -> {
+                            addOperation("⏳", result.message, OperationLogType.PROGRESS)
                         }
-                    }
 
-                    is RepositoryAnalyzer.AnalysisResult.Streaming -> {
-                        fullResponse = result.text
-                        _streamingText.value = fullResponse
-                    }
+                        is RepositoryAnalyzer.AnalysisResult.StreamingStarted -> {
+                            _streamingText.value = ""
+                            if (isCacheMode) startCacheTimerIfNeeded()
+                        }
 
-                    is RepositoryAnalyzer.AnalysisResult.Completed -> {
-                        fullResponse = result.text
-                        _isStreaming.value = false
+                        is RepositoryAnalyzer.AnalysisResult.Streaming -> {
+                            fullResponse = result.text
+                            _streamingText.value = fullResponse
+                        }
 
-                        val assistantId = chatDao.insert(ChatMessageEntity(
-                            sessionId = sessionId,
-                            role = com.opuside.app.core.database.entity.MessageRole.ASSISTANT,
-                            content = fullResponse,
-                            isStreaming = false
-                        ))
-                        chatDao.finishStreaming(
-                            id = assistantId,
-                            finalContent = fullResponse,
-                            tokensUsed = result.cost.totalTokens
-                        )
+                        is RepositoryAnalyzer.AnalysisResult.ToolCallStarted -> {
+                            addOperation("🔧", "Tool: ${result.toolName}", OperationLogType.PROGRESS)
+                        }
 
-                        _streamingText.value = null
-                        _currentSession.value = result.session
+                        is RepositoryAnalyzer.AnalysisResult.ToolCallCompleted -> {
+                            val icon = if (result.isError) "❌" else "✅"
+                            val opInfo = result.operation?.let {
+                                when (it) {
+                                    is ToolExecutor.FileOperation.Created -> "Created: ${it.path}"
+                                    is ToolExecutor.FileOperation.Edited -> "Edited: ${it.path}"
+                                    is ToolExecutor.FileOperation.Deleted -> "Deleted: ${it.path}"
+                                    is ToolExecutor.FileOperation.DirectoryCreated -> "Dir: ${it.path}"
+                                }
+                            } ?: result.toolName
+                            addOperation(icon, opInfo, if (result.isError) OperationLogType.ERROR else OperationLogType.SUCCESS)
+                        }
 
-                        result.cost.let { cost ->
-                            addOperation("✅",
-                                "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)}",
-                                OperationLogType.SUCCESS
-                            )
+                        is RepositoryAnalyzer.AnalysisResult.Completed -> {
+                            fullResponse = result.text
+                            _isStreaming.value = false
 
-                            // Update cache metrics (timer is already running)
-                            if (isCacheMode) {
-                                handleCacheResult(cost.cachedReadTokens, cost.cachedWriteTokens, cost.cacheSavingsEUR)
+                            chatDao.insert(ChatMessageEntity(
+                                sessionId = sessionId,
+                                role = com.opuside.app.core.database.entity.MessageRole.ASSISTANT,
+                                content = fullResponse,
+                                isStreaming = false
+                            ))
+
+                            _streamingText.value = null
+                            _currentSession.value = result.session
+
+                            result.cost.let { cost ->
+                                val toolInfo = if (result.toolIterations > 1) " (${result.toolIterations} iterations)" else ""
+                                addOperation("✅",
+                                    "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)}$toolInfo",
+                                    OperationLogType.SUCCESS
+                                )
+
+                                if (isCacheMode) {
+                                    handleCacheResult(cost.cachedReadTokens, cost.cachedWriteTokens, cost.cacheSavingsEUR)
+                                }
                             }
+
+                            _selectedFiles.value = emptySet()
                         }
 
-                        val operations = repositoryAnalyzer.parseOperations(fullResponse)
-                        if (operations.isNotEmpty()) {
-                            addOperation("🔧", "${operations.size} операций", OperationLogType.INFO)
-                            executeClaudeOperations(operations)
+                        is RepositoryAnalyzer.AnalysisResult.Error -> {
+                            _isStreaming.value = false
+                            _streamingText.value = null
+                            _chatError.value = result.message
+                            addOperation("❌", result.message, OperationLogType.ERROR)
                         }
-
-                        _selectedFiles.value = emptySet()
-                        _scanEstimate.value = null
-                    }
-
-                    is RepositoryAnalyzer.AnalysisResult.Error -> {
-                        _isStreaming.value = false
-                        _streamingText.value = null
-                        _chatError.value = result.message
-                        addOperation("❌", result.message, OperationLogType.ERROR)
                     }
                 }
-            }
-        }
-    }
-
-    private fun executeClaudeOperations(operations: List<RepositoryAnalyzer.ParsedOperation>) {
-        viewModelScope.launch {
-            for (op in operations) {
-                val name = when (op.type) {
-                    RepositoryAnalyzer.OperationType.CREATE_FILE -> "📝 Create: ${op.path}"
-                    RepositoryAnalyzer.OperationType.EDIT_FILE -> "✏️ Edit: ${op.path}"
-                    RepositoryAnalyzer.OperationType.DELETE_FILE -> "🗑️ Delete: ${op.path}"
-                    RepositoryAnalyzer.OperationType.CREATE_FOLDER -> "📁 Folder: ${op.path}"
-                }
-                addOperation("⚙️", name, OperationLogType.PROGRESS)
-            }
-            val results = repositoryAnalyzer.executeOperations(sessionId, operations)
-            results.forEachIndexed { i, res ->
-                val op = operations[i]
-                res.onSuccess { addOperation("✅", "Done: ${op.path}", OperationLogType.SUCCESS) }
-                   .onFailure { addOperation("❌", "${op.path}: ${it.message}", OperationLogType.ERROR) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Job was cancelled (new session, new send) — clean up silently
+                _isStreaming.value = false
+                _streamingText.value = null
+                throw e  // Re-throw for proper coroutine cancellation
+            } catch (e: Exception) {
+                _isStreaming.value = false
+                _streamingText.value = null
+                _chatError.value = e.message
+                addOperation("❌", "Error: ${e.message}", OperationLogType.ERROR)
             }
         }
     }
@@ -569,8 +498,8 @@ class AnalyzerViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
+        sendJob?.cancel()
         cacheTimerJob?.cancel()
         _currentSession.value?.let { if (it.isActive) repositoryAnalyzer.endSession(it.sessionId) }
-        Log.i(TAG, "Cleared")
     }
 }
