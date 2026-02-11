@@ -17,15 +17,14 @@ import javax.inject.Singleton
 import com.opuside.app.core.network.github.GitHubApiClient
 
 /**
- * 🤖 REPOSITORY ANALYZER v6.0 (FIXED REPO ACCESS)
+ * 🤖 REPOSITORY ANALYZER v6.1 (FIXED CACHE ISOLATION)
  *
- * ✅ FIX: Claude теперь РЕАЛЬНО видит структуру репозитория
- *    - Автоматическая загрузка file tree при каждом запросе
- *    - Правдивый system prompt (без лжи про "FULL access")
- *    - GitHub config (owner/repo/branch) включён в контекст
- *    - Рекурсивное сканирование до 3 уровней вложенности
+ * ✅ FIX: В обычном режиме (enableCaching=false) добавляется уникальный UUID
+ *    в последнее user сообщение, чтобы гарантированно избежать автоматических
+ *    cache hits от Anthropic API.
  *
  * ✅ СОХРАНЕНО:
+ *    - Claude видит структуру репозитория
  *    - Все предыдущие исправления (cache, streaming, no duplication)
  */
 @Singleton
@@ -220,7 +219,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ✅ FIXED: scanFilesV2 — WITH REPO STRUCTURE
+    // ✅ FIXED: scanFilesV2 — WITH CACHE ISOLATION
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
@@ -228,6 +227,7 @@ class RepositoryAnalyzer @Inject constructor(
      * Accepts full conversation history so Claude remembers context.
      * 
      * ✅ NEW: Автоматически загружает структуру репозитория в контекст
+     * ✅ FIXED: Добавлен UUID в последнее user сообщение для изоляции кеша
      *
      * @param conversationHistory All previous messages from the session (USER + ASSISTANT)
      */
@@ -328,12 +328,38 @@ class RepositoryAnalyzer @Inject constructor(
 
             val sanitizedMessages = sanitizeMessageOrder(claudeMessages)
 
-            if (sanitizedMessages.isEmpty()) {
+            // ═══════════════════════════════════════════════════════════════════
+            // ✅ FIX: CACHE ISOLATION — Добавляем UUID в non-cache режиме
+            // ═══════════════════════════════════════════════════════════════════
+            // Anthropic может автоматически переиспользовать кеш даже без
+            // cache_control, если промпт совпадает с предыдущими запросами.
+            // Решение: добавляем уникальный ID в последнее user message,
+            // чтобы гарантированно избежать совпадений.
+            val finalMessages = if (!enableCaching && sanitizedMessages.isNotEmpty()) {
+                val mutableList = sanitizedMessages.toMutableList()
+                val lastIndex = mutableList.lastIndex
+                val lastMessage = mutableList[lastIndex]
+                
+                if (lastMessage.role == "user") {
+                    // Добавляем невидимый HTML-комментарий с UUID
+                    val uniqueId = java.util.UUID.randomUUID().toString().take(8)
+                    mutableList[lastIndex] = ClaudeMessage(
+                        role = "user",
+                        content = "${lastMessage.content}\n\n<!-- req:$uniqueId -->"
+                    )
+                    Log.d(TAG, "No-cache mode: added unique ID '$uniqueId' to prevent automatic cache hits")
+                }
+                mutableList.toList()
+            } else {
+                sanitizedMessages
+            }
+
+            if (finalMessages.isEmpty()) {
                 emit(AnalysisResult.Error("No messages to send"))
                 return@flow
             }
 
-            Log.i(TAG, "Sending ${sanitizedMessages.size} messages to Claude (history + current)")
+            Log.i(TAG, "Sending ${finalMessages.size} messages to Claude (history + current)")
 
             emit(AnalysisResult.Loading("Analyzing with ${model.displayName}..."))
 
@@ -346,7 +372,7 @@ class RepositoryAnalyzer @Inject constructor(
 
             claudeClient.streamMessage(
                 model = model.modelId,
-                messages = sanitizedMessages,
+                messages = finalMessages,  // ← Используем finalMessages вместо sanitizedMessages
                 systemPrompt = systemPrompt,
                 maxTokens = maxTokens,
                 enableCaching = enableCaching
