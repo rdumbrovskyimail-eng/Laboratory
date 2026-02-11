@@ -134,6 +134,16 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     }
                 },
                 actions = {
+                    // ═══ КНОПКА CONVERSATION HISTORY ═══
+                    val conversationHistoryEnabled by viewModel.conversationHistoryEnabled.collectAsState()
+                    IconButton(onClick = { viewModel.toggleConversationHistory() }) {
+                        Icon(
+                            Icons.Default.History, 
+                            "History",
+                            tint = if (conversationHistoryEnabled) ac else t2
+                        )
+                    }
+                    
                     // ═══ КНОПКА КОПИРОВАНИЯ ВСЕГО ЧАТА ═══
                     IconButton(onClick = {
                         coroutineScope.launch {
