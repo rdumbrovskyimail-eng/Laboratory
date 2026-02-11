@@ -172,7 +172,9 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     } else {
                         LazyColumn(state = opsListState, modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                            items(operationsLog, key = { it.timestamp }) { item -> OpLogRow(item, t1, t2, gr, rd, yl) }
+                            items(operationsLog, key = { it.id }) { item ->  // ✅ FIXED: Используем it.id вместо it.timestamp
+                                OpLogRow(item, t1, t2, gr, rd, yl)
+                            }
                         }
                     }
                 }
