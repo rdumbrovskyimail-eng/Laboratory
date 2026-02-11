@@ -1,6 +1,8 @@
 package com.opuside.app.core.di
 
 import com.opuside.app.BuildConfig
+import com.opuside.app.core.ai.RepoIndexManager
+import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.network.github.GitHubApiClient
@@ -23,20 +25,17 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Network Module v2.3 (FIX)
+ * Network Module v3.0 (ZERO-LATENCY STREAMING)
  *
- * ✅ ИСПРАВЛЕНО:
- * - provideJson(): explicitNulls = false, encodeDefaults = false
- *   Это гарантирует, что null-поля (temperature, system, top_p, etc.)
- *   НЕ попадают в JSON запрос.
- * - @EncodeDefault на обязательных полях в ClaudeRequest гарантирует,
- *   что model, max_tokens, messages, stream ВСЕГДА присутствуют в JSON.
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ИСПРАВЛЕНИЯ ДЛЯ МГНОВЕННОГО СТРИМИНГА:
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * БЫЛО (ОШИБКА):
- *   {"model":"...","max_tokens":10,"messages":[...],"system":null,"stream":false,"temperature":null,"top_p":null,"top_k":null,"stop_sequences":null,"metadata":null}
- *
- * СТАЛО (ПРАВИЛЬНО):
- *   {"model":"...","max_tokens":10,"messages":[...],"stream":false}
+ * 1. OkHttp: retryOnConnectionFailure(false) — нет скрытых задержек на retry
+ * 2. readTimeout = 120s — достаточно для длинных ответов Claude
+ * 3. Ktor HttpTimeout.socketTimeoutMillis = 120s — матчит OkHttp
+ * 4. Logging: sanitizeHeader для API key — безопасность
+ * 5. Добавлены провайдеры RepoIndexManager + ToolExecutor
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -49,8 +48,8 @@ object NetworkModule {
         return Json {
             ignoreUnknownKeys = true
             isLenient = true
-            encodeDefaults = false      // ← НЕ сериализовать поля с дефолтными значениями
-            explicitNulls = false        // ← НЕ сериализовать null-поля (КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ)
+            encodeDefaults = false
+            explicitNulls = false
             prettyPrint = false
             coerceInputValues = true
         }
@@ -65,6 +64,14 @@ object NetworkModule {
         }
     }
 
+    /**
+     * HTTP клиент для Claude API.
+     *
+     * КЛЮЧЕВОЕ для стриминга:
+     * - readTimeout = 120s (Claude может думать долго перед первым токеном)
+     * - Ktor socketTimeout = 120s (должен матчить OkHttp)
+     * - retryOnConnectionFailure(false) — нет скрытых retry задержек
+     */
     @Provides
     @Singleton
     @Named("anthropic")
@@ -72,9 +79,10 @@ object NetworkModule {
         return HttpClient(OkHttp) {
             engine {
                 config {
-                    connectTimeout(30, TimeUnit.SECONDS)
-                    readTimeout(60, TimeUnit.SECONDS)
-                    writeTimeout(60, TimeUnit.SECONDS)
+                    connectTimeout(15, TimeUnit.SECONDS)
+                    readTimeout(120, TimeUnit.SECONDS)    // Длинный: Claude думает
+                    writeTimeout(30, TimeUnit.SECONDS)
+                    retryOnConnectionFailure(false)        // Нет скрытых retry
                 }
             }
 
@@ -85,16 +93,18 @@ object NetworkModule {
             install(Logging) {
                 logger = object : Logger {
                     override fun log(message: String) {
+                        // Не логируем тела ответов (SSE flood)
                         android.util.Log.d("Claude-HTTP", message)
                     }
                 }
-                level = if (BuildConfig.DEBUG) LogLevel.INFO else LogLevel.NONE
+                level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
+                sanitizeHeader { name -> name.equals("x-api-key", ignoreCase = true) }
             }
 
             install(HttpTimeout) {
-                requestTimeoutMillis = 60_000
-                connectTimeoutMillis = 30_000
-                socketTimeoutMillis = 60_000
+                requestTimeoutMillis = 180_000     // 3 min для tool loops
+                connectTimeoutMillis = 15_000
+                socketTimeoutMillis = 120_000       // Матчит OkHttp readTimeout
             }
         }
     }
@@ -106,7 +116,7 @@ object NetworkModule {
         return HttpClient(OkHttp) {
             engine {
                 config {
-                    connectTimeout(30, TimeUnit.SECONDS)
+                    connectTimeout(15, TimeUnit.SECONDS)
                     readTimeout(30, TimeUnit.SECONDS)
                     writeTimeout(30, TimeUnit.SECONDS)
                 }
@@ -122,20 +132,18 @@ object NetworkModule {
                         android.util.Log.d("GitHub-HTTP", message)
                     }
                 }
-                level = if (BuildConfig.DEBUG) LogLevel.INFO else LogLevel.NONE
+                level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
+                sanitizeHeader { name -> name.equals("Authorization", ignoreCase = true) }
             }
 
             install(HttpTimeout) {
                 requestTimeoutMillis = 30_000
-                connectTimeoutMillis = 30_000
+                connectTimeoutMillis = 15_000
                 socketTimeoutMillis = 30_000
             }
         }
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Добавлен AppSettings в зависимости
-     */
     @Provides
     @Singleton
     fun provideClaudeApiClient(
@@ -166,5 +174,23 @@ object NetworkModule {
         gitHubClient: GitHubApiClient
     ): GitHubGraphQLClient {
         return GitHubGraphQLClient(httpClient, json, gitHubClient)
+    }
+
+    @Provides
+    @Singleton
+    fun provideRepoIndexManager(
+        gitHubClient: GitHubApiClient,
+        appSettings: AppSettings
+    ): RepoIndexManager {
+        return RepoIndexManager(gitHubClient, appSettings)
+    }
+
+    @Provides
+    @Singleton
+    fun provideToolExecutor(
+        repoIndexManager: RepoIndexManager,
+        gitHubClient: GitHubApiClient
+    ): ToolExecutor {
+        return ToolExecutor(repoIndexManager, gitHubClient)
     }
 }
