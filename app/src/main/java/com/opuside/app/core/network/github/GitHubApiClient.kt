@@ -1,6 +1,7 @@
 package com.opuside.app.core.network.github
 
 import android.util.Base64
+import android.util.Log
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.model.*
 import io.ktor.client.HttpClient
@@ -22,21 +23,12 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * ✅ КРИТИЧЕСКИ ИСПРАВЛЕНО (2026-02-06):
- * 
- * ПРОБЛЕМА: Crash при первом запуске приложения
- * ────────────────────────────────────────────────
- * ПРИЧИНА:
- * - getConfig() требовал наличия owner/repo/token
- * - При первом запуске они пустые
- * - Выбрасывался IllegalStateException
- * - Приложение крашилось
- * 
- * РЕШЕНИЕ:
- * - getConfig() возвращает null если настройки не заполнены
- * - Все API методы проверяют config на null
- * - Возвращают Result.failure с понятным сообщением
- * - UI показывает placeholder вместо краша
+ * GitHub API Client v2.0
+ *
+ * ✅ ДОБАВЛЕНО: getFullTree() — Git Trees API для загрузки полного дерева репозитория
+ *    одним запросом. Используется RepoIndexManager для быстрой индексации.
+ *
+ * ✅ СОХРАНЕНО: Все оригинальные методы без изменений.
  */
 @Singleton
 class GitHubApiClient @Inject constructor(
@@ -45,6 +37,7 @@ class GitHubApiClient @Inject constructor(
     private val appSettings: AppSettings
 ) {
     companion object {
+        private const val TAG = "GitHubApiClient"
         private const val BASE_URL = "https://api.github.com"
         private const val API_VERSION = "2022-11-28"
     }
@@ -56,9 +49,8 @@ class GitHubApiClient @Inject constructor(
     private suspend fun getConfig(): GitHubConfig? {
         val config = appSettings.gitHubConfig.first()
         
-        // Проверяем что ВСЕ обязательные поля заполнены
         if (config.owner.isBlank() || config.repo.isBlank() || config.token.isBlank()) {
-            android.util.Log.w("GitHubApiClient", "⚠️ GitHub not configured: owner=${config.owner.isNotBlank()}, repo=${config.repo.isNotBlank()}, token=${config.token.isNotBlank()}")
+            Log.w(TAG, "GitHub not configured: owner=${config.owner.isNotBlank()}, repo=${config.repo.isNotBlank()}, token=${config.token.isNotBlank()}")
             return null
         }
         
@@ -78,6 +70,59 @@ class GitHubApiClient @Inject constructor(
                 URLEncoder.encode(segment, StandardCharsets.UTF_8.toString())
                     .replace("+", "%20")
             }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ★ NEW: GIT TREES API — полное дерево одним запросом
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Загрузить полное дерево репозитория одним запросом.
+     *
+     * GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
+     *
+     * Возвращает ВСЕ файлы и директории за один HTTP запрос (~100-300ms).
+     * Используется RepoIndexManager для построения индекса.
+     *
+     * @param branch Ветка или SHA коммита
+     * @return GitHubTreeResponse с полным деревом
+     */
+    suspend fun getFullTree(branch: String): Result<GitHubTreeResponse> {
+        val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
+
+        return try {
+            val response = httpClient.get(
+                "$BASE_URL/repos/${config.owner}/${config.repo}/git/trees/$branch"
+            ) {
+                setupHeaders(config.token)
+                parameter("recursive", "1")
+            }
+
+            when (response.status) {
+                HttpStatusCode.OK -> {
+                    val tree = response.body<GitHubTreeResponse>()
+                    Log.i(TAG, "Tree loaded: ${tree.tree.size} items, truncated=${tree.truncated}")
+                    Result.success(tree)
+                }
+                HttpStatusCode.NotFound -> {
+                    Result.failure(GitHubApiException(
+                        type = "not_found",
+                        message = "Branch '$branch' not found",
+                        statusCode = 404
+                    ))
+                }
+                else -> {
+                    Result.failure(parseError(response))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "getFullTree failed", e)
+            Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
