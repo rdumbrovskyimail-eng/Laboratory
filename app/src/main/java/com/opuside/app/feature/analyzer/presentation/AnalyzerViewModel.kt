@@ -39,6 +39,8 @@ import javax.inject.Inject
  * 4. TOOL CALL UI: отображает tool calls в операционном логе
  *
  * 5. FIXED CACHE TIMER: стартует на StreamingStarted, не на Completed
+ *
+ * 6. FIXED DUPLICATE KEYS: UUID для операционного лога вместо timestamp
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -59,6 +61,7 @@ class AnalyzerViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════
 
     data class OperationLogItem(
+        val id: String = UUID.randomUUID().toString(),  // ✅ FIXED: Уникальный ID вместо timestamp как ключа
         val icon: String,
         val message: String,
         val timestamp: Long = System.currentTimeMillis(),
@@ -289,7 +292,7 @@ class AnalyzerViewModel @Inject constructor(
 
     private fun addOperation(icon: String, message: String, type: OperationLogType = OperationLogType.INFO) {
         _operationsLog.update { current ->
-            val newItem = OperationLogItem(icon, message, type = type)
+            val newItem = OperationLogItem(icon = icon, message = message, type = type)
             if (current.size >= MAX_OPS_LOG_SIZE) {
                 current.drop(current.size - MAX_OPS_LOG_SIZE + 1) + newItem
             } else {
