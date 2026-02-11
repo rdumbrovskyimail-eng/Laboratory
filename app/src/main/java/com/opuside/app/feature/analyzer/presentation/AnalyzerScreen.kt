@@ -19,8 +19,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -31,6 +33,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.ai.ClaudeModelConfig
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -78,6 +81,11 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val density = LocalDensity.current
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val imeVisible = imeBottomPx > 0
+    val clipboardManager = LocalClipboardManager.current
+    val coroutineScope = rememberCoroutineScope()
+
+    // Snackbar для подтверждения копирования
+    val snackbarHostState = remember { SnackbarHostState() }
 
     val cm = cacheModeEnabled
     val bg = if (cm) LightColors.bg else DarkColors.bg
@@ -126,6 +134,20 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     }
                 },
                 actions = {
+                    // ═══ КНОПКА КОПИРОВАНИЯ ВСЕГО ЧАТА ═══
+                    IconButton(onClick = {
+                        coroutineScope.launch {
+                            val chatText = viewModel.getChatAsText()
+                            if (chatText.isNotEmpty()) {
+                                clipboardManager.setText(AnnotatedString(chatText))
+                                snackbarHostState.showSnackbar("✅ Чат скопирован", duration = SnackbarDuration.Short)
+                            } else {
+                                snackbarHostState.showSnackbar("Чат пуст", duration = SnackbarDuration.Short)
+                            }
+                        }
+                    }) {
+                        Icon(Icons.Default.CopyAll, "Copy chat", tint = t2)
+                    }
                     IconButton(onClick = { viewModel.toggleCacheMode() }, enabled = cacheButtonEnabled) {
                         Icon(Icons.Default.Cached, "Cache", tint = when {
                             !cacheButtonEnabled -> t2.copy(alpha = 0.3f); cm -> ac; else -> t2
@@ -137,6 +159,16 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = bg, titleContentColor = t1)
             )
+        },
+        snackbarHost = {
+            SnackbarHost(snackbarHostState) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    containerColor = if (cm) LightColors.surface else DarkColors.surface,
+                    contentColor = t1,
+                    shape = RoundedCornerShape(12.dp)
+                )
+            }
         },
         containerColor = bg
     ) { padding ->
@@ -172,7 +204,7 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     } else {
                         LazyColumn(state = opsListState, modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                            items(operationsLog, key = { it.id }) { item ->  // ✅ FIXED: Используем it.id вместо it.timestamp
+                            items(operationsLog, key = { it.id }) { item ->
                                 OpLogRow(item, t1, t2, gr, rd, yl)
                             }
                         }
@@ -197,7 +229,20 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
 
                 LazyColumn(state = chatListState, modifier = Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                    items(messages, key = { it.id }) { msg -> MsgBubble(msg, cm, sf, t1, t2, ac, gr) }
+                    items(messages, key = { it.id }) { msg ->
+                        MsgBubble(
+                            msg = msg,
+                            cm = cm,
+                            sf = sf,
+                            t1 = t1,
+                            t2 = t2,
+                            ac = ac,
+                            gr = gr,
+                            clipboardManager = clipboardManager,
+                            snackbarHostState = snackbarHostState,
+                            coroutineScope = coroutineScope
+                        )
+                    }
                     if (hasStreamingBubble) {
                         item(key = "streaming_bubble") {
                             StreamingBubble(text = streamingText ?: "", cm = cm, sf = sf, t1 = t1, t2 = t2, ac = ac)
@@ -351,9 +396,21 @@ private fun OpLogRow(item: AnalyzerViewModel.OperationLogItem, t1: Color, t2: Co
 }
 
 @Composable
-private fun MsgBubble(msg: ChatMessageEntity, cm: Boolean, sf: Color, t1: Color, t2: Color, ac: Color, gr: Color) {
+private fun MsgBubble(
+    msg: ChatMessageEntity,
+    cm: Boolean,
+    sf: Color,
+    t1: Color,
+    t2: Color,
+    ac: Color,
+    gr: Color,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+    snackbarHostState: SnackbarHostState,
+    coroutineScope: kotlinx.coroutines.CoroutineScope
+) {
     val isU = msg.role == MessageRole.USER
     val isS = msg.role == MessageRole.SYSTEM
+    val isAssistant = msg.role == MessageRole.ASSISTANT
     val bc = when { cm && isU -> Color(0xFFE8F0FE); cm && isS -> Color(0xFFE6F4EA); cm -> sf; isU -> Color(0xFF1A2332); isS -> Color(0xFF1A2E1A); else -> sf }
     val cc = if (isS) gr else t1
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = if (isU) Alignment.End else Alignment.Start) {
@@ -366,6 +423,43 @@ private fun MsgBubble(msg: ChatMessageEntity, cm: Boolean, sf: Color, t1: Color,
             border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
         ) {
             Text(msg.content, color = cc, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
+        }
+        // ═══ КНОПКА КОПИРОВАНИЯ ПОД ОТВЕТОМ CLAUDE ═══
+        if (isAssistant && msg.content.isNotBlank()) {
+            var copied by remember { mutableStateOf(false) }
+            Row(
+                modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(msg.content))
+                        copied = true
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("✅ Ответ скопирован", duration = SnackbarDuration.Short)
+                            kotlinx.coroutines.delay(2000)
+                            copied = false
+                        }
+                    },
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                        contentDescription = "Copy response",
+                        tint = if (copied) gr else t2,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+                AnimatedVisibility(visible = copied) {
+                    Text(
+                        "Copied",
+                        color = gr,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.padding(start = 2.dp)
+                    )
+                }
+            }
         }
     }
 }
