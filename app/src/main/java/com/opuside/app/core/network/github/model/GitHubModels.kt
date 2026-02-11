@@ -4,6 +4,53 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// GIT TREES API (★ NEW — используется RepoIndexManager)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Ответ Git Trees API: GET /repos/{owner}/{repo}/git/trees/{sha}?recursive=1
+ * Возвращает полное дерево репозитория за один запрос.
+ */
+@Serializable
+data class GitHubTreeResponse(
+    @SerialName("sha")
+    val sha: String,
+
+    @SerialName("url")
+    val url: String,
+
+    @SerialName("tree")
+    val tree: List<GitHubTreeItem>,
+
+    @SerialName("truncated")
+    val truncated: Boolean
+)
+
+/**
+ * Элемент в дереве Git Trees API.
+ */
+@Serializable
+data class GitHubTreeItem(
+    @SerialName("path")
+    val path: String,
+
+    @SerialName("mode")
+    val mode: String,
+
+    @SerialName("type")
+    val type: String,  // "blob" or "tree"
+
+    @SerialName("sha")
+    val sha: String,
+
+    @SerialName("size")
+    val size: Int? = null,
+
+    @SerialName("url")
+    val url: String? = null
+)
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // REPOSITORY CONTENT
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -125,7 +172,7 @@ data class CreateOrUpdateFileRequest(
     val content: String, // Base64 encoded
     
     @SerialName("sha")
-    val sha: String? = null, // Требуется для обновления существующего файла
+    val sha: String? = null,
     
     @SerialName("branch")
     val branch: String? = null
@@ -183,9 +230,6 @@ data class GitHubAuthor(
 // GITHUB ACTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Список workflow runs.
- */
 @Serializable
 data class WorkflowRunsResponse(
     @SerialName("total_count")
@@ -195,9 +239,6 @@ data class WorkflowRunsResponse(
     val workflowRuns: List<WorkflowRun>
 )
 
-/**
- * Информация о запуске workflow.
- */
 @Serializable
 data class WorkflowRun(
     @SerialName("id")
@@ -213,10 +254,10 @@ data class WorkflowRun(
     val headSha: String,
     
     @SerialName("status")
-    val status: String, // "queued", "in_progress", "completed"
+    val status: String,
     
     @SerialName("conclusion")
-    val conclusion: String?, // "success", "failure", "cancelled", "skipped", etc.
+    val conclusion: String?,
     
     @SerialName("workflow_id")
     val workflowId: Long,
@@ -234,9 +275,6 @@ data class WorkflowRun(
     val runStartedAt: String?
 )
 
-/**
- * Список workflows.
- */
 @Serializable
 data class WorkflowsResponse(
     @SerialName("total_count")
@@ -246,9 +284,6 @@ data class WorkflowsResponse(
     val workflows: List<Workflow>
 )
 
-/**
- * Информация о workflow.
- */
 @Serializable
 data class Workflow(
     @SerialName("id")
@@ -261,27 +296,21 @@ data class Workflow(
     val path: String,
     
     @SerialName("state")
-    val state: String, // "active", "deleted", "disabled_fork", etc.
+    val state: String,
     
     @SerialName("html_url")
     val htmlUrl: String
 )
 
-/**
- * Запрос на запуск workflow.
- */
 @Serializable
 data class WorkflowDispatchRequest(
     @SerialName("ref")
-    val ref: String, // Ветка или тег
+    val ref: String,
     
     @SerialName("inputs")
     val inputs: Map<String, String>? = null
 )
 
-/**
- * Jobs в workflow run.
- */
 @Serializable
 data class WorkflowJobsResponse(
     @SerialName("total_count")
@@ -291,9 +320,6 @@ data class WorkflowJobsResponse(
     val jobs: List<WorkflowJob>
 )
 
-/**
- * Job в workflow.
- */
 @Serializable
 data class WorkflowJob(
     @SerialName("id")
@@ -318,9 +344,6 @@ data class WorkflowJob(
     val steps: List<WorkflowStep>?
 )
 
-/**
- * Шаг в job.
- */
 @Serializable
 data class WorkflowStep(
     @SerialName("name")
@@ -340,9 +363,6 @@ data class WorkflowStep(
 // ARTIFACTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Список артефактов.
- */
 @Serializable
 data class ArtifactsResponse(
     @SerialName("total_count")
@@ -352,9 +372,6 @@ data class ArtifactsResponse(
     val artifacts: List<Artifact>
 )
 
-/**
- * Артефакт сборки.
- */
 @Serializable
 data class Artifact(
     @SerialName("id")
@@ -383,9 +400,6 @@ data class Artifact(
 // GRAPHQL
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * GraphQL запрос.
- */
 @Serializable
 data class GraphQLRequest(
     @SerialName("query")
@@ -395,9 +409,6 @@ data class GraphQLRequest(
     val variables: Map<String, String>? = null
 )
 
-/**
- * GraphQL ответ.
- */
 @Serializable
 data class GraphQLResponse<T>(
     @SerialName("data")
@@ -407,9 +418,6 @@ data class GraphQLResponse<T>(
     val errors: List<GraphQLError>? = null
 )
 
-/**
- * GraphQL ошибка.
- */
 @Serializable
 data class GraphQLError(
     @SerialName("message")
@@ -426,9 +434,6 @@ data class GraphQLError(
 // ERROR
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * GitHub API ошибка.
- */
 @Serializable
 data class GitHubError(
     @SerialName("message")
