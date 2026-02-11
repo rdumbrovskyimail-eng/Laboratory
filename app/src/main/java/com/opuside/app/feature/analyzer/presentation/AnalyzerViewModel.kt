@@ -20,19 +20,21 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v8.1 (ZERO-LATENCY STREAMING + COPY CHAT)
+ * Analyzer ViewModel v8.2 (FIX: PROPER CACHE DISABLE)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * FIXES:
+ * КРИТИЧНОЕ ИСПРАВЛЕНИЕ:
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 1. ZERO-LATENCY: sendMessage → HTTP POST мгновенно
- * 2. CANCELLATION GUARD: sendJob?.cancel()
- * 3. BOUNDED OPS LOG: максимум MAX_OPS_LOG_SIZE записей
- * 4. TOOL CALL UI: отображает tool calls в операционном логе
- * 5. FIXED CACHE TIMER: стартует на StreamingStarted
- * 6. FIXED DUPLICATE KEYS: UUID для операционного лога
- * 7. COPY FULL CHAT: getChatAsText() для копирования всего чата
+ * 🐛 ПРОБЛЕМА: При выключении Cache Mode старый кеш Claude продолжал работать 5 минут.
+ *    Даже с enableCaching=false, Claude API использовал закешированный контекст.
+ *
+ * ✅ РЕШЕНИЕ: При toggleCacheMode() → OFF автоматически вызываем startNewSession(),
+ *    чтобы полностью сбросить историю и гарантировать чистое состояние без кеша.
+ *
+ * РЕЖИМЫ:
+ * 1. ECO/MAX (Cache OFF) — каждый запрос независимый, БЕЗ кеша, инкогнито
+ * 2. CACHE (Cache ON) — кеширование включено, макс. лимиты, экономия на повторах
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -178,10 +180,6 @@ class AnalyzerViewModel @Inject constructor(
     // COPY CHAT — форматирование всего чата в текст
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Получает все сообщения текущей сессии и форматирует в читаемый текст.
-     * Возвращает строку для копирования в буфер обмена.
-     */
     suspend fun getChatAsText(): String {
         val allMessages = chatDao.getSession(sessionId)
             .filter { !it.isStreaming && it.content.isNotBlank() }
@@ -234,9 +232,13 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE MODE
+    // CACHE MODE — ИСПРАВЛЕНО
     // ═══════════════════════════════════════════════════════════════════
 
+    /**
+     * ✅ FIX: При выключении кеша автоматически сбрасываем сессию,
+     *    чтобы гарантировать полное отсутствие кеша в следующих запросах.
+     */
     fun toggleCacheMode() {
         if (_ecoOutputMode.value && !_cacheModeEnabled.value) {
             addOperation("🔒", "Cache заблокирован: сначала переключите на MAX", OperationLogType.ERROR)
@@ -247,9 +249,11 @@ class AnalyzerViewModel @Inject constructor(
         _cacheModeEnabled.value = newState
 
         if (newState) {
+            // Включаем Cache Mode
             _ecoOutputMode.value = false
             addOperation("📦", "CACHE MODE ON — output MAX: ${"%,d".format(_selectedModel.value.maxOutputTokens)} tok", OperationLogType.SUCCESS)
         } else {
+            // ✅ КРИТИЧНОЕ ИСПРАВЛЕНИЕ: Выключаем Cache Mode → ПОЛНЫЙ СБРОС
             stopCacheTimer()
             _cacheIsWarmed.value = false
             _cacheTotalReadTokens.value = 0
@@ -257,7 +261,12 @@ class AnalyzerViewModel @Inject constructor(
             _cacheTotalSavingsEUR.value = 0.0
             _cacheHitCount.value = 0
             cacheExpiresAt = 0L
-            addOperation("📦", "CACHE MODE OFF", OperationLogType.INFO)
+            
+            // ✅ КЛЮЧЕВОЕ: Начать новую сессию БЕЗ кеша
+            // Это гарантирует, что старый кеш Claude (5 мин TTL) не будет использован
+            startNewSession()
+            
+            addOperation("📦", "CACHE MODE OFF — сессия сброшена (инкогнито)", OperationLogType.SUCCESS)
         }
     }
 
@@ -418,9 +427,6 @@ class AnalyzerViewModel @Inject constructor(
                 .filter { it.role != com.opuside.app.core.database.entity.MessageRole.SYSTEM }
                 .filter { !it.isStreaming && it.content.isNotBlank() }
 
-            // ═══════════════════════════════════════════════════════════
-            // МГНОВЕННО уходит в HTTP POST — нет предзагрузки файлов/дерева
-            // ═══════════════════════════════════════════════════════════
             var fullResponse = ""
 
             try {
