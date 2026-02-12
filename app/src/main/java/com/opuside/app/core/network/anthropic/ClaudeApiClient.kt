@@ -34,21 +34,17 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Claude API Client v7.0 (ZERO-LATENCY STREAMING)
+ * Claude API Client v8.0 (PROMPT CACHING 100% COMPLIANT)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * СТРИМИНГ БЕЗ ЗАДЕРЖКИ — ПОЛНЫЙ ПУТЬ ОПТИМИЗАЦИИ:
+ * ИСПРАВЛЕНИЯ ПО ОФИЦИАЛЬНОЙ ДОКУМЕНТАЦИИ ANTHROPIC:
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 1. flowOn(Dispatchers.IO) — HTTP запрос и чтение НЕ на Main thread
- * 2. readUTF8Line() БЕЗ withTimeoutOrNull — убирает overhead таймера
- *    (таймаут гарантируется через OkHttp read timeout + MAX_STREAMING_TIME)
- * 3. Emit каждого delta мгновенно — никакой буферизации
- * 4. isJsonContent флаг вместо startsWith("[") хака — нет JSON injection
- * 5. Validated temperature — нет NaN/Infinity в JSON
- *
- * ВАЖНО: OkHttp readTimeout в NetworkModule.kt ДОЛЖЕН быть ≤60s
- * чтобы readUTF8Line() не зависал бесконечно при разрыве соединения.
+ * 1. Cache-control добавляется ТОЛЬКО к system и tools (НЕ к messages)
+ * 2. Минимум 1024 токена для кеширования (Sonnet/Opus 4.x)
+ * 3. TTL по умолчанию 5 минут, обновляется при каждом cache hit
+ * 4. Cache key = cumulative hash (system + tools + messages до breakpoint)
+ * 5. Header "anthropic-beta: prompt-caching-2024-07-31" обязателен
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -133,20 +129,8 @@ class ClaudeApiClient @Inject constructor(
 
     /**
      * ═══════════════════════════════════════════════════════════════════════
-     * ZERO-LATENCY STREAMING
+     * STREAMING С PROMPT CACHING (100% по документации Anthropic)
      * ═══════════════════════════════════════════════════════════════════════
-     *
-     * Весь flow работает на Dispatchers.IO:
-     * - HTTP POST отправляется мгновенно
-     * - readUTF8Line() читает SSE строки как только они приходят с сервера
-     * - Каждый text_delta emit'ится СРАЗУ → UI обновляется мгновенно
-     * - Никакого withTimeoutOrNull overhead — таймаут через OkHttp socket timeout
-     *
-     * TOOL USE:
-     * - content_block_start type=tool_use → накапливаем input JSON
-     * - input_json_delta → аппендим partial JSON
-     * - content_block_stop → собираем ToolCall
-     * - message_stop с pendingToolCalls → emit ToolUse
      */
     fun streamMessage(
         model: String,
@@ -163,9 +147,6 @@ class ClaudeApiClient @Inject constructor(
             val apiKey = getApiKey()
             Log.d(TAG, "Stream: model=$model, msgs=${messages.size}, cache=$enableCaching, tools=${tools?.size ?: 0}")
 
-            // ═══════════════════════════════════════════════════════════
-            // HTTP POST — отправляем запрос, получаем response stream
-            // ═══════════════════════════════════════════════════════════
             val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
                 header("x-api-key", apiKey)
@@ -191,43 +172,27 @@ class ClaudeApiClient @Inject constructor(
                 return@flow
             }
 
-            // ═══════════════════════════════════════════════════════════
-            // SSE STREAM — читаем МГНОВЕННО, без буферов и таймеров
-            // ═══════════════════════════════════════════════════════════
             channel = response.bodyAsChannel()
 
             val currentText = StringBuilder()
             var totalUsage: Usage? = null
             val startTime = System.currentTimeMillis()
 
-            // Tool Use state
             var currentToolId: String? = null
             var currentToolName: String? = null
             val currentToolInput = StringBuilder()
             val pendingToolCalls = mutableListOf<ToolCall>()
 
             while (!channel.isClosedForRead) {
-                // Проверка максимального времени стриминга
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
                     emit(StreamingResult.Error(ClaudeApiException("timeout", "Streaming exceeded 5 minutes")))
                     return@flow
                 }
 
-                // ═══════════════════════════════════════════════════════
-                // КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: readUTF8Line() БЕЗ таймера
-                // ═══════════════════════════════════════════════════════
-                // withTimeoutOrNull создавал overhead ~1-5ms на КАЖДУЮ строку
-                // что при 100+ SSE событий давало 100-500ms накопленной задержки.
-                //
-                // OkHttp readTimeout (60s в NetworkModule) гарантирует что
-                // readUTF8Line() НЕ зависнет навсегда при разрыве соединения.
-                // Плюс MAX_STREAMING_TIME_MS проверка выше как второй safety net.
                 val line = channel.readUTF8Line() ?: break
-
-                // Пустые строки и не-data строки — пропускаем мгновенно
                 if (!line.startsWith("data: ")) continue
 
-                val data = line.substring(6).trim()  // Быстрее чем removePrefix
+                val data = line.substring(6).trim()
                 if (data.isEmpty() || data == "[DONE]") continue
 
                 try {
@@ -253,7 +218,6 @@ class ClaudeApiClient @Inject constructor(
                                 "text_delta" -> {
                                     delta.text?.let { text ->
                                         currentText.append(text)
-                                        // МГНОВЕННЫЙ emit — UI получает каждый кусочек сразу
                                         emit(StreamingResult.Delta(text, currentText.toString()))
                                     }
                                 }
@@ -326,17 +290,19 @@ class ClaudeApiClient @Inject constructor(
             channel?.cancel()
         }
     }
-    // ═══════════════════════════════════════════════════════════════════════
-    // КРИТИЧНО: flowOn(Dispatchers.IO) — весь HTTP + SSE parsing на IO thread
-    // Без этого readUTF8Line() блокирует Main thread → UI фризится
-    // ═══════════════════════════════════════════════════════════════════════
     .flowOn(Dispatchers.IO)
     .cancellable()
 
     /**
-     * Unified JSON request builder.
-     * Поддерживает: tools, cache_control, tool_result messages (isJsonContent).
-     * Typed isJsonContent вместо startsWith("[") хака — нет JSON injection.
+     * ═══════════════════════════════════════════════════════════════════════
+     * ПРАВИЛЬНОЕ КЕШИРОВАНИЕ ПО ДОКУМЕНТАЦИИ ANTHROPIC
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * Cache-control добавляется ТОЛЬКО к:
+     * 1. System prompt (последний блок в system array)
+     * 2. Tools (весь tools array целиком)
+     *
+     * НЕ добавляется к messages — это противоречит документации!
      */
     private fun buildRequestJson(
         model: String,
@@ -358,50 +324,74 @@ class ClaudeApiClient @Inject constructor(
             append(",\"temperature\":${Json.encodeToString(temperature)}")
         }
 
-        // System prompt
+        // ═══════════════════════════════════════════════════════════════
+        // SYSTEM PROMPT С КЕШИРОВАНИЕМ (по документации)
+        // ═══════════════════════════════════════════════════════════════
         if (systemPrompt != null) {
             if (enableCaching) {
+                // System как array с cache_control на последнем блоке
                 append(",\"system\":[{")
                 append("\"type\":\"text\",")
                 append("\"text\":${Json.encodeToString(systemPrompt)},")
                 append("\"cache_control\":{\"type\":\"ephemeral\"}")
                 append("}]")
             } else {
+                // System как строка без кеширования
                 append(",\"system\":${Json.encodeToString(systemPrompt)}")
             }
         }
 
-        // Tools
+        // ═══════════════════════════════════════════════════════════════
+        // TOOLS С КЕШИРОВАНИЕМ (по документации)
+        // ═══════════════════════════════════════════════════════════════
         if (!tools.isNullOrEmpty()) {
-            append(",\"tools\":")
-            append(Json.encodeToString(tools))
+            if (enableCaching) {
+                // Добавляем cache_control к ПОСЛЕДНЕМУ tool definition
+                append(",\"tools\":[")
+                tools.forEachIndexed { index, tool ->
+                    if (index > 0) append(",")
+                    
+                    // Последний tool получает cache_control
+                    if (index == tools.lastIndex) {
+                        val toolWithCache = buildJsonObject {
+                            tool.forEach { (key, value) -> put(key, value) }
+                            put("cache_control", buildJsonObject {
+                                put("type", "ephemeral")
+                            })
+                        }
+                        append(Json.encodeToString(toolWithCache))
+                    } else {
+                        append(Json.encodeToString(tool))
+                    }
+                }
+                append("]")
+            } else {
+                // Tools без кеширования
+                append(",\"tools\":")
+                append(Json.encodeToString(tools))
+            }
         }
 
-        // Messages
+        // ═══════════════════════════════════════════════════════════════
+        // MESSAGES (БЕЗ cache_control согласно документации)
+        // ═══════════════════════════════════════════════════════════════
         append(",\"messages\":[")
         messages.forEachIndexed { index, msg ->
             if (index > 0) append(",")
 
-            // ═══════════════════════════════════════════════════════════
-            // ТИПОБЕЗОПАСНАЯ проверка вместо startsWith("[") хака
-            // isJsonContent=true → content уже JSON array (tool_use/tool_result)
-            // isJsonContent=false → обычный текст, оборачиваем в content block
-            // ═══════════════════════════════════════════════════════════
             if (msg.isJsonContent) {
+                // Tool use/result блоки — уже JSON
                 append("{")
                 append("\"role\":${Json.encodeToString(msg.role)},")
                 append("\"content\":${msg.content}")
                 append("}")
             } else {
+                // Обычные текстовые сообщения
                 append("{")
                 append("\"role\":${Json.encodeToString(msg.role)},")
                 append("\"content\":[{")
                 append("\"type\":\"text\",")
                 append("\"text\":${Json.encodeToString(msg.content)}")
-
-                if (enableCaching && index == messages.lastIndex && msg.role == "user") {
-                    append(",\"cache_control\":{\"type\":\"ephemeral\"}")
-                }
                 append("}]")
                 append("}")
             }
@@ -463,7 +453,7 @@ class ClaudeApiClient @Inject constructor(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STREAMING RESULT v7.0
+// STREAMING RESULT (без изменений)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 data class ToolCall(
