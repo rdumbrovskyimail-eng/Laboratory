@@ -127,14 +127,15 @@ jobs:
         retention-days: 1
         if-no-files-found: ignore
     
-    - name: Upload APK
-      if: success() && github.ref == 'refs/heads/main'
-      uses: actions/upload-artifact@v4
-      with:
-        name: app-debug
-        path: app/build/outputs/apk/debug/*.apk
-        retention-days: 3
-        if-no-files-found: warn
+    # ОТКЛЮЧЕНО: Артефакты больше не загружаются, APK доступен только через Release
+    # - name: Upload APK
+    #   if: success() && github.ref == 'refs/heads/main'
+    #   uses: actions/upload-artifact@v4
+    #   with:
+    #     name: app-debug
+    #     path: app/build/outputs/apk/debug/*.apk
+    #     retention-days: 3
+    #     if-no-files-found: warn
     
     - name: Create Release
       if: success() && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -151,7 +152,7 @@ jobs:
           **Build #:** ${{ github.run_number }}
           
           ### 📦 Download
-          Debug APK included below
+          Скачайте APK файл ниже ⬇️
           
         files: app/build/outputs/apk/debug/*.apk
         fail_on_unmatched_files: false
