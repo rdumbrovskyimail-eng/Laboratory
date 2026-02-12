@@ -13,29 +13,24 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.*
 import java.time.Duration
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🤖 REPOSITORY ANALYZER v9.0 (CACHE WITHOUT HISTORY + INPUT 1 TOKEN)
+ * 🤖 REPOSITORY ANALYZER v10.0 (PROMPT CACHING 100% COMPLIANT)
  *
- * NEW FEATURES:
- * - Cache без истории — каждый запрос помнит первый кеш
- * - Input = 1 токен для тестирования кеша
- * - Хранилище кеша на уровне сессии
+ * ИСПРАВЛЕНИЯ ПО ОФИЦИАЛЬНОЙ ДОКУМЕНТАЦИИ ANTHROPIC:
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * ZERO-LATENCY PIPELINE:
- *   sendMessage() → scanFilesV2() → HTTP POST → readUTF8Line() → emit INSTANT
- *   NO tree loading, NO context building, NO Loading emit before stream.
- *   Claude загружает контекст через tool_use по мере необходимости.
- *
- * PARALLEL TOOL EXECUTION:
- *   Read-only tools (list_files, read_files, search_in_files) → async/awaitAll
- *   Write tools (create, edit, delete) → sequential for consistency
+ * 1. Cache создается ОДИН РАЗ при первом запросе в session
+ * 2. Cache НЕ перезаписывается при последующих запросах
+ * 3. System + Tools кешируются (НЕ messages!)
+ * 4. Таймер сбрасывается при каждом cache hit (бесплатно)
+ * 5. Минимум 1024 токена для кеширования
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
@@ -53,13 +48,13 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE WITHOUT HISTORY — хранилище кеша
+    // CACHE STORAGE (хранит system + tools для сессии)
     // ═══════════════════════════════════════════════════════════════════════════
     
     private data class CachedContext(
         val systemPrompt: String,
         val tools: List<JsonObject>,
-        val timestamp: Long = System.currentTimeMillis()
+        val createdAt: Long = System.currentTimeMillis()
     )
     
     private val sessionCacheMap = mutableMapOf<String, CachedContext>()
@@ -70,7 +65,7 @@ class RepositoryAnalyzer @Inject constructor(
 
     private val sessionManager = ClaudeModelConfig.SessionManager
 
-    init { Log.i(TAG, "RepositoryAnalyzer v9.0 initialized (Cache Without History)") }
+    init { Log.i(TAG, "RepositoryAnalyzer v10.0 initialized (Prompt Caching Compliant)") }
 
     fun createSession(sessionId: String, model: ClaudeModelConfig.ClaudeModel): ClaudeModelConfig.ChatSession {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
@@ -96,24 +91,28 @@ class RepositoryAnalyzer @Inject constructor(
     fun getActiveSessions(): List<ClaudeModelConfig.ChatSession> =
         sessionManager.getAllActiveSessions()
     
+    /**
+     * Очищает кеш для сессии (вызывается при startNewSession)
+     */
     fun clearCacheForSession(sessionId: String) {
         sessionCacheMap.remove(sessionId)
-        Log.i(TAG, "Cleared cache for session: $sessionId")
+        Log.i(TAG, "📦 Cache cleared for session: $sessionId")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MAIN ENTRY POINT — ZERO LATENCY + CACHE WITHOUT HISTORY
+    // MAIN ENTRY POINT — PROMPT CACHING 100% COMPLIANT
     // ═══════════════════════════════════════════════════════════════════════════
 
     /**
-     * Мгновенно отправляет запрос Claude с полной историей.
-     * НЕТ предварительной загрузки файлов/дерева — Claude запрашивает сам через tools.
-     * Первый emit — StreamingStarted, далее Delta с текстом.
-     * 
-     * CACHE WITHOUT HISTORY:
-     * - Первый запрос создает кеш (system + tools)
-     * - Последующие запросы используют кеш первого запроса
-     * - История НЕ передается при enableCaching=true
+     * ═══════════════════════════════════════════════════════════════════════
+     * ПРАВИЛЬНОЕ КЕШИРОВАНИЕ (по документации Anthropic):
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * 1. Первый запрос: создаем cache (system + tools)
+     * 2. Последующие запросы: используем СУЩЕСТВУЮЩИЙ cache
+     * 3. История НЕ влияет на кеш (кешируются только system + tools)
+     * 4. Cache refresh бесплатный при каждом hit
+     * 5. Минимум 1024 токена для кеша (проверяется автоматически API)
      */
     suspend fun scanFilesV2(
         sessionId: String,
@@ -141,51 +140,43 @@ class RepositoryAnalyzer @Inject constructor(
             val tools = toolExecutor.toolDefinitions  // lazy — allocated once
 
             // ═══════════════════════════════════════════════════════════════
-            // CACHE WITHOUT HISTORY
+            // CACHE LOGIC: создаем ОДИН РАЗ, потом только используем
             // ═══════════════════════════════════════════════════════════════
-            val useCacheWithoutHistory = enableCaching && conversationHistory.isEmpty()
-            
-            if (useCacheWithoutHistory) {
+            if (enableCaching && sessionCacheMap[sessionId] == null) {
+                // Первый запрос — создаем кеш
                 sessionCacheMap[sessionId] = CachedContext(
                     systemPrompt = systemPrompt,
                     tools = tools
                 )
-                Log.i(TAG, "📦 Cache created for session: $sessionId")
+                Log.i(TAG, "📦 Cache CREATED for session: $sessionId")
             }
             
+            // Используем кеш (если есть) или обычные данные
             val cachedContext = sessionCacheMap[sessionId]
-            val effectiveSystemPrompt = if (enableCaching && cachedContext != null) {
-                Log.i(TAG, "📦 Using cached system prompt for session: $sessionId")
-                cachedContext.systemPrompt
-            } else {
-                systemPrompt
-            }
+            val effectiveSystemPrompt = cachedContext?.systemPrompt ?: systemPrompt
+            val effectiveTools = cachedContext?.tools ?: tools
             
-            val effectiveTools = if (enableCaching && cachedContext != null) {
-                Log.i(TAG, "📦 Using cached tools for session: $sessionId")
-                cachedContext.tools
-            } else {
-                tools
+            if (cachedContext != null) {
+                Log.i(TAG, "📦 Cache HIT for session: $sessionId (age: ${(System.currentTimeMillis() - cachedContext.createdAt) / 1000}s)")
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // STEP 2: Build messages (МГНОВЕННО — чистый CPU)
+            // STEP 2: Build messages
             // ═══════════════════════════════════════════════════════════════
             val claudeMessages = mutableListOf<ClaudeMessage>()
             
-            // CACHE WITHOUT HISTORY: не добавляем историю при кешировании
-            if (!useCacheWithoutHistory) {
-                for (msg in conversationHistory) {
-                    val role = when (msg.role) {
-                        MessageRole.USER -> "user"
-                        MessageRole.ASSISTANT -> "assistant"
-                        else -> continue
-                    }
-                    if (msg.content.isBlank()) continue
-                    claudeMessages.add(ClaudeMessage(role, msg.content))
+            // Добавляем историю (если включена)
+            for (msg in conversationHistory) {
+                val role = when (msg.role) {
+                    MessageRole.USER -> "user"
+                    MessageRole.ASSISTANT -> "assistant"
+                    else -> continue
                 }
+                if (msg.content.isBlank()) continue
+                claudeMessages.add(ClaudeMessage(role, msg.content))
             }
 
+            // Текущий запрос
             val enrichedQuery = if (filePaths.isNotEmpty()) {
                 "$userQuery\n\n[User has selected these files: ${filePaths.joinToString(", ")}]"
             } else {
@@ -200,8 +191,7 @@ class RepositoryAnalyzer @Inject constructor(
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // STEP 3: TOOL LOOP — мгновенно уходит в HTTP POST
-            // НЕТ Loading emit — UI получит StreamingStarted напрямую
+            // STEP 3: TOOL LOOP
             // ═══════════════════════════════════════════════════════════════
             var currentMessages = sanitizedMessages.toMutableList()
             var fullResponseText = ""
@@ -259,9 +249,6 @@ class RepositoryAnalyzer @Inject constructor(
                                 emit(AnalysisResult.ToolCallStarted(tc.name, tc.input.toString().take(100)))
                             }
 
-                            // ═══════════════════════════════════════════════
-                            // PARALLEL TOOL EXECUTION
-                            // ═══════════════════════════════════════════════
                             val toolResults = executeToolsOptimal(result.toolCalls)
 
                             for (i in toolResults.indices) {
@@ -270,7 +257,6 @@ class RepositoryAnalyzer @Inject constructor(
                                 emit(AnalysisResult.ToolCallCompleted(tc.name, tr.isError, tr.operation))
                             }
 
-                            // Append to conversation for next iteration
                             val assistantContent = buildAssistantToolUseContent(result.textSoFar, result.toolCalls)
                             currentMessages.add(ClaudeMessage("assistant", assistantContent, isJsonContent = true))
 
@@ -319,7 +305,6 @@ class RepositoryAnalyzer @Inject constructor(
             }
 
             if (iteration >= MAX_TOOL_ITERATIONS && !fullResponseText.isBlank()) {
-                // Reached limit but have partial text — emit as completed
                 val cost = model.calculateCost(totalInputTokens, totalOutputTokens,
                     totalCachedReadTokens, totalCachedWriteTokens)
                 emit(AnalysisResult.Completed(
@@ -339,7 +324,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PARALLEL TOOL EXECUTION
+    // PARALLEL TOOL EXECUTION (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     private suspend fun executeToolsOptimal(toolCalls: List<ToolCall>): List<ToolExecutor.ToolResult> {
@@ -357,7 +342,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // JSON BUILDERS (typed isJsonContent)
+    // JSON BUILDERS (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     private fun buildAssistantToolUseContent(textBefore: String, toolCalls: List<ToolCall>): String {
@@ -393,7 +378,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // SYSTEM PROMPT (~200 tokens — минимум для instant TTFB)
+    // SYSTEM PROMPT (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     private fun buildMinimalSystemPrompt(): String = """
@@ -418,7 +403,7 @@ RULES:
     """.trimIndent()
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MESSAGE SANITIZATION — NO PHANTOM MESSAGES
+    // MESSAGE SANITIZATION (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     private fun sanitizeMessageOrder(messages: List<ClaudeMessage>): List<ClaudeMessage> {
@@ -434,12 +419,10 @@ RULES:
             }
         }
 
-        // Must start with user
         while (result.isNotEmpty() && result.first().role != "user") {
             result.removeAt(0)
         }
 
-        // Must end with user
         while (result.isNotEmpty() && result.last().role != "user") {
             result.removeAt(result.lastIndex)
         }
@@ -448,7 +431,7 @@ RULES:
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ANALYSIS RESULT
+    // ANALYSIS RESULT (без изменений)
     // ═══════════════════════════════════════════════════════════════════════════
 
     sealed class AnalysisResult {
