@@ -20,27 +20,16 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v9.0 (CACHE WITHOUT HISTORY + INPUT 1 TOKEN)
+ * Analyzer ViewModel v10.0 (PROMPT CACHING 100% COMPLIANT)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * НОВОЕ: Cache без истории — каждый запрос помнит первый кеш
+ * ИСПРАВЛЕНИЯ ПО ОФИЦИАЛЬНОЙ ДОКУМЕНТАЦИИ ANTHROPIC:
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 🔧 ИЗМЕНЕНИЯ:
- * - При включении Cache Mode автоматически отключается история
- * - При выключении Cache Mode очищается кеш сессии
- * - Input = 1 токен в режиме кеширования для тестирования
- *
- * ✅ РЕЖИМЫ:
- * 1. История OFF, Cache OFF (ECO/MAX) — каждый запрос независимый, дешево
- * 2. История ON, Cache OFF (ECO/MAX) — диалог с памятью, без кеша
- * 3. История OFF, Cache ON — работа с кешем без контекста диалога (НОВОЕ)
- * 4. История ON, Cache ON — ЗАБЛОКИРОВАНО (история автоматически OFF)
- *
- * 💰 СТОИМОСТЬ:
- * - История OFF: каждый запрос ~1 input токен (в cache mode)
- * - История ON: input растёт (250 → 700 → 1500...)
- * - Cache ON: первый раз 1.25×, потом 0.1× (экономия до 90%)
+ * 1. Cache создается при первом запросе в Cache Mode
+ * 2. Таймер сбрасывается при каждом cache hit (бесплатно)
+ * 3. Cache очищается при выключении Cache Mode
+ * 4. История работает независимо от кеша
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -57,7 +46,7 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // OPERATIONS LOG — bounded
+    // OPERATIONS LOG
     // ═══════════════════════════════════════════════════════════════════
 
     data class OperationLogItem(
@@ -153,7 +142,6 @@ class AnalyzerViewModel @Inject constructor(
     private val _streamingText = MutableStateFlow<String?>(null)
     val streamingText: StateFlow<String?> = _streamingText.asStateFlow()
 
-    /** Cancellation guard: prevents concurrent sends */
     private var sendJob: Job? = null
 
     val sessionTokens: StateFlow<ClaudeModelConfig.ModelCost?> = currentSession
@@ -183,14 +171,13 @@ class AnalyzerViewModel @Inject constructor(
             }
         }
 
-        // Auto-cleanup every hour
         viewModelScope.launch {
             while (true) { delay(3600_000); try { repositoryAnalyzer.cleanupOldSessions() } catch (_: Exception) {} }
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // COPY CHAT — форматирование всего чата в текст
+    // COPY CHAT
     // ═══════════════════════════════════════════════════════════════════
 
     suspend fun getChatAsText(): String {
@@ -224,10 +211,6 @@ class AnalyzerViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════
 
     fun toggleConversationHistory() {
-        if (_cacheModeEnabled.value) {
-            addOperation("🔒", "История заблокирована в Cache Mode", OperationLogType.INFO)
-            return
-        }
         _conversationHistoryEnabled.value = !_conversationHistoryEnabled.value
         val status = if (_conversationHistoryEnabled.value) "ON" else "OFF"
         addOperation("💬", "Conversation History: $status", OperationLogType.INFO)
@@ -259,13 +242,18 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE MODE — CACHE WITHOUT HISTORY
+    // CACHE MODE — 100% ПО ДОКУМЕНТАЦИИ
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * ✅ CACHE WITHOUT HISTORY:
-     * - При включении Cache Mode автоматически отключается история
-     * - При выключении Cache Mode очищается кеш сессии
+     * ═══════════════════════════════════════════════════════════════════
+     * ПРАВИЛЬНОЕ КЕШИРОВАНИЕ (по документации Anthropic):
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * 1. Включаем Cache Mode → output MAX, таймер НЕ запускается
+     * 2. Первый запрос → создается кеш (system + tools), запускается таймер
+     * 3. Последующие запросы → cache hit, таймер СБРАСЫВАЕТСЯ (бесплатно)
+     * 4. Выключаем Cache Mode → очищаем кеш сессии, сбрасываем таймер
      */
     fun toggleCacheMode() {
         if (_ecoOutputMode.value && !_cacheModeEnabled.value) {
@@ -279,8 +267,7 @@ class AnalyzerViewModel @Inject constructor(
         if (newState) {
             // Включаем Cache Mode
             _ecoOutputMode.value = false
-            _conversationHistoryEnabled.value = false  // ✅ НОВОЕ: отключаем историю
-            addOperation("📦", "CACHE MODE ON — output MAX, history OFF", OperationLogType.SUCCESS)
+            addOperation("📦", "CACHE MODE ON — кеш будет создан при первом запросе", OperationLogType.SUCCESS)
         } else {
             // Выключаем Cache Mode
             stopCacheTimer()
@@ -291,20 +278,25 @@ class AnalyzerViewModel @Inject constructor(
             _cacheHitCount.value = 0
             cacheExpiresAt = 0L
             
-            // ✅ НОВОЕ: очищаем кеш сессии
+            // Очищаем кеш сессии
             repositoryAnalyzer.clearCacheForSession(_sessionId)
             
-            // Начать новую сессию БЕЗ кеша
-            startNewSession()
-            
-            addOperation("📦", "CACHE MODE OFF — кеш очищен, сессия сброшена", OperationLogType.SUCCESS)
+            addOperation("📦", "CACHE MODE OFF — кеш очищен", OperationLogType.SUCCESS)
         }
     }
 
+    /**
+     * Запускает таймер при первом запросе (когда кеш создается)
+     */
     private fun startCacheTimerIfNeeded() {
         if (!_cacheModeEnabled.value) return
-        if (_cacheIsWarmed.value && cacheTimerJob?.isActive == true) return
+        if (_cacheIsWarmed.value && cacheTimerJob?.isActive == true) {
+            // Таймер уже работает — сбрасываем его (cache hit)
+            resetCacheTimer()
+            return
+        }
 
+        // Первый запрос — запускаем таймер
         cacheTimerJob?.cancel()
         cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
         _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
@@ -323,12 +315,21 @@ class AnalyzerViewModel @Inject constructor(
                 delay(1000)
             }
         }
+        
+        addOperation("⏰", "Cache timer started (5 min)", OperationLogType.SUCCESS)
     }
 
+    /**
+     * Сбрасывает таймер при cache hit (бесплатно)
+     */
     private fun resetCacheTimer() {
-        if (!_cacheIsWarmed.value) { startCacheTimerIfNeeded(); return }
+        if (!_cacheIsWarmed.value) { 
+            startCacheTimerIfNeeded()
+            return 
+        }
         cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
         _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
+        addOperation("⏰", "Cache timer refreshed (free)", OperationLogType.SUCCESS)
     }
 
     private fun stopCacheTimer() {
@@ -338,22 +339,28 @@ class AnalyzerViewModel @Inject constructor(
         cacheExpiresAt = 0L
     }
 
+    /**
+     * Обрабатывает результаты кеширования из API
+     */
     private fun handleCacheResult(cachedReadTokens: Int, cachedWriteTokens: Int, savingsEUR: Double) {
         if (cachedWriteTokens > 0) {
+            // Первый запрос — кеш создан
             _cacheTotalWriteTokens.value += cachedWriteTokens
+            startCacheTimerIfNeeded()  // Запускаем таймер
             addOperation("📝", "Cache WRITE: ${"%,d".format(cachedWriteTokens)} tok", OperationLogType.SUCCESS)
         }
         if (cachedReadTokens > 0) {
+            // Cache hit — сбрасываем таймер (бесплатно)
             _cacheTotalReadTokens.value += cachedReadTokens
             _cacheHitCount.value += 1
             _cacheTotalSavingsEUR.value += savingsEUR
-            resetCacheTimer()
+            resetCacheTimer()  // Сбрасываем таймер
             addOperation("⚡", "Cache HIT: ${"%,d".format(cachedReadTokens)} tok (€${String.format("%.4f", savingsEUR)} saved)", OperationLogType.SUCCESS)
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // OPS LOG — bounded to MAX_OPS_LOG_SIZE
+    // OPS LOG
     // ═══════════════════════════════════════════════════════════════════
 
     private fun addOperation(icon: String, message: String, type: OperationLogType = OperationLogType.INFO) {
@@ -386,7 +393,7 @@ class AnalyzerViewModel @Inject constructor(
     fun startNewSession() {
         sendJob?.cancel()
         
-        // ✅ НОВОЕ: очищаем кеш для старой сессии
+        // Очищаем кеш для старой сессии
         repositoryAnalyzer.clearCacheForSession(_sessionId)
         
         viewModelScope.launch {
@@ -428,14 +435,13 @@ class AnalyzerViewModel @Inject constructor(
     fun clearSelectedFiles() { _selectedFiles.value = emptySet() }
 
     // ═══════════════════════════════════════════════════════════════════
-    // SEND MESSAGE — ZERO LATENCY + CANCELLATION GUARD
+    // SEND MESSAGE
     // ═══════════════════════════════════════════════════════════════════
 
     fun sendMessage(message: String) {
         if (message.isBlank()) { _chatError.value = "Message cannot be empty"; return }
-        if (_isStreaming.value) return  // Already streaming — ignore tap
+        if (_isStreaming.value) return
 
-        // Cancel any previous send (race condition guard)
         sendJob?.cancel()
 
         sendJob = viewModelScope.launch {
@@ -450,22 +456,18 @@ class AnalyzerViewModel @Inject constructor(
 
             addOperation("📤", "$modeName ${"%,d".format(maxTokens)}: ${message.take(50)}...", OperationLogType.PROGRESS)
 
-            // DB write — fast (~5ms)
             chatDao.insert(ChatMessageEntity(
                 sessionId = sessionId,
-                role = com.opuside.app.core.database.entity.MessageRole.USER,
+                role = MessageRole.USER,
                 content = message
             ))
 
-            // DB read history — зависит от conversationHistoryEnabled
-            // ✅ В Cache Mode история всегда пустая (conversationHistoryEnabled = false)
+            // Загружаем историю (если включена)
             val historyMessages = if (_conversationHistoryEnabled.value) {
-                // История ВКЛЮЧЕНА — загружаем все сообщения
                 chatDao.getSession(sessionId)
-                    .filter { it.role != com.opuside.app.core.database.entity.MessageRole.SYSTEM }
+                    .filter { it.role != MessageRole.SYSTEM }
                     .filter { !it.isStreaming && it.content.isNotBlank() }
             } else {
-                // История ВЫКЛЮЧЕНА — только текущий запрос (пустая история)
                 emptyList()
             }
 
@@ -488,7 +490,6 @@ class AnalyzerViewModel @Inject constructor(
 
                         is RepositoryAnalyzer.AnalysisResult.StreamingStarted -> {
                             _streamingText.value = ""
-                            if (isCacheMode) startCacheTimerIfNeeded()
                         }
 
                         is RepositoryAnalyzer.AnalysisResult.Streaming -> {
@@ -519,7 +520,7 @@ class AnalyzerViewModel @Inject constructor(
 
                             chatDao.insert(ChatMessageEntity(
                                 sessionId = sessionId,
-                                role = com.opuside.app.core.database.entity.MessageRole.ASSISTANT,
+                                role = MessageRole.ASSISTANT,
                                 content = fullResponse,
                                 isStreaming = false
                             ))
@@ -551,10 +552,9 @@ class AnalyzerViewModel @Inject constructor(
                     }
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
-                // Job was cancelled (new session, new send) — clean up silently
                 _isStreaming.value = false
                 _streamingText.value = null
-                throw e  // Re-throw for proper coroutine cancellation
+                throw e
             } catch (e: Exception) {
                 _isStreaming.value = false
                 _streamingText.value = null
