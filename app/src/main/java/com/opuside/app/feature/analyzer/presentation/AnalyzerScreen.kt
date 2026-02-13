@@ -1,8 +1,13 @@
 package com.opuside.app.feature.analyzer.presentation
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -20,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
@@ -71,6 +77,12 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val cacheTotalSavingsEUR by viewModel.cacheTotalSavingsEUR.collectAsState()
     val cacheHitCount by viewModel.cacheHitCount.collectAsState()
     val streamingText by viewModel.streamingText.collectAsState()
+    val thinkingEnabled by viewModel.thinkingEnabled.collectAsState()
+    val sendToolsEnabled by viewModel.sendToolsEnabled.collectAsState()
+    val sendSystemPromptEnabled by viewModel.sendSystemPromptEnabled.collectAsState()
+    val longContextEnabled by viewModel.longContextEnabled.collectAsState()
+    val attachedFileName by viewModel.attachedFileName.collectAsState()
+    val attachedFileSize by viewModel.attachedFileSize.collectAsState()
 
     var userInput by remember { mutableStateOf("") }
     var showModelDialog by remember { mutableStateOf(false) }
@@ -98,6 +110,33 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val t1 = if (cm) LightColors.text1 else DarkColors.text1
     val t2 = if (cm) LightColors.text2 else DarkColors.text2
     val inp = if (cm) LightColors.input else DarkColors.input
+
+    val context = LocalContext.current
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        try {
+            val cursor = context.contentResolver.query(uri, null, null, null, null)
+            val fileName = cursor?.use {
+                if (it.moveToFirst()) {
+                    val idx = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) it.getString(idx) else "file.txt"
+                } else "file.txt"
+            } ?: "file.txt"
+
+            val inputStream = context.contentResolver.openInputStream(uri)
+            val bytes = inputStream?.readBytes() ?: return@rememberLauncherForActivityResult
+            inputStream.close()
+
+            val content = String(bytes, Charsets.UTF_8)
+            viewModel.attachFile(fileName, content, bytes.size.toLong())
+        } catch (e: Exception) {
+            viewModel.addOperation("❌", "Ошибка чтения файла: ${e.message}",
+                AnalyzerViewModel.OperationLogType.ERROR)
+        }
+    }
 
     val hasStreamingBubble = isStreaming && streamingText != null
     val totalItems = messages.size + (if (hasStreamingBubble) 1 else 0)
@@ -129,6 +168,85 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                             sessionTokens?.let {
                                 Text(" | ${"%,d".format(it.totalTokens)} tok | EUR${String.format("%.3f", it.totalCostEUR)}",
                                     style = MaterialTheme.typography.labelSmall, color = t2)
+                            }
+                        }
+                        
+                        // ═══ TOGGLES ROW ═══
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 2.dp)
+                        ) {
+                            // Thinking toggle
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable { viewModel.toggleThinking() }
+                            ) {
+                                Box(
+                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
+                                        .background(if (thinkingEnabled) Color(0xFFFF6B00) else Color.Transparent)
+                                        .border(1.dp, if (thinkingEnabled) Color(0xFFFF6B00) else t2, RoundedCornerShape(3.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (thinkingEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(3.dp))
+                                Text("🧠", fontSize = 10.sp)
+                                Spacer(Modifier.width(6.dp))
+                            }
+
+                            // Tools toggle
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable { viewModel.toggleSendTools() }
+                            ) {
+                                Box(
+                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
+                                        .background(if (sendToolsEnabled) ac else Color.Transparent)
+                                        .border(1.dp, if (sendToolsEnabled) ac else t2, RoundedCornerShape(3.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (sendToolsEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(3.dp))
+                                Text("🔧", fontSize = 10.sp)
+                                Spacer(Modifier.width(6.dp))
+                            }
+
+                            // System Prompt toggle
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable { viewModel.toggleSendSystemPrompt() }
+                            ) {
+                                Box(
+                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
+                                        .background(if (sendSystemPromptEnabled) ac else Color.Transparent)
+                                        .border(1.dp, if (sendSystemPromptEnabled) ac else t2, RoundedCornerShape(3.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (sendSystemPromptEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(3.dp))
+                                Text("📋", fontSize = 10.sp)
+                                Spacer(Modifier.width(6.dp))
+                            }
+
+                            // Long Context toggle
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable { viewModel.toggleLongContext() }
+                            ) {
+                                Box(
+                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
+                                        .background(if (longContextEnabled) Color(0xFFFF4444) else Color.Transparent)
+                                        .border(1.dp, if (longContextEnabled) Color(0xFFFF4444) else t2, RoundedCornerShape(3.dp)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (longContextEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(Modifier.width(3.dp))
+                                Text("1M", fontSize = 9.sp, fontWeight = FontWeight.Bold,
+                                    color = if (longContextEnabled) Color(0xFFFF4444) else t2,
+                                    fontFamily = FontFamily.Monospace)
                             }
                         }
                     }
@@ -269,6 +387,38 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     }
                 }
 
+                // Индикатор прикреплённого файла
+                AnimatedVisibility(visible = attachedFileName != null) {
+                    Surface(
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                        color = if (cm) Color(0xFFE8F5E9) else Color(0xFF1A2E1A),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("📎", fontSize = 14.sp)
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "${attachedFileName ?: ""} (${attachedFileSize / 1024}KB)",
+                                color = gr,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            IconButton(
+                                onClick = { viewModel.detachFile() },
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Icon(Icons.Default.Close, "Detach", tint = t2, modifier = Modifier.size(14.dp))
+                            }
+                        }
+                    }
+                }
+
                 Surface(Modifier.fillMaxWidth(), color = inp, tonalElevation = 2.dp) {
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { viewModel.toggleOutputMode() }, modifier = Modifier.size(40.dp), enabled = ecoButtonEnabled) {
@@ -277,6 +427,26 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                                 Box(Modifier.size(12.dp).clip(CircleShape).background(if (ecoButtonEnabled) dotColor else dotColor.copy(alpha = 0.3f)))
                             }
                         }
+                        
+                        // Кнопка прикрепления файла
+                        IconButton(
+                            onClick = {
+                                if (attachedFileName != null) {
+                                    viewModel.detachFile()
+                                } else {
+                                    filePickerLauncher.launch(arrayOf("text/*"))
+                                }
+                            },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (attachedFileName != null) Icons.Default.AttachFile else Icons.Default.AttachFile,
+                                contentDescription = "Attach file",
+                                tint = if (attachedFileName != null) gr else t2,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        
                         OutlinedTextField(
                             value = userInput, onValueChange = { userInput = it },
                             modifier = Modifier.weight(1f),
@@ -430,6 +600,19 @@ private fun MsgBubble(
     val isU = msg.role == MessageRole.USER
     val isS = msg.role == MessageRole.SYSTEM
     val isAssistant = msg.role == MessageRole.ASSISTANT
+
+    // Защита от зависания UI на больших ответах
+    val MAX_DISPLAY_CHARS = 16_000
+    val isLongContent = msg.content.length > MAX_DISPLAY_CHARS
+    var contentExpanded by remember { mutableStateOf(false) }
+
+    val displayContent = if (isLongContent && !contentExpanded) {
+        msg.content.take(MAX_DISPLAY_CHARS) + 
+            "\n\n─── Показано ${MAX_DISPLAY_CHARS / 1024}KB из ${msg.content.length / 1024}KB ───"
+    } else {
+        msg.content
+    }
+
     val bc = when { cm && isU -> Color(0xFFE8F0FE); cm && isS -> Color(0xFFE6F4EA); cm -> sf; isU -> Color(0xFF1A2332); isS -> Color(0xFF1A2E1A); else -> sf }
     val cc = if (isS) gr else t1
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = if (isU) Alignment.End else Alignment.Start) {
@@ -441,8 +624,26 @@ private fun MsgBubble(
             shape = RoundedCornerShape(topStart = if (isU) 12.dp else 4.dp, topEnd = if (isU) 4.dp else 12.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
             border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
         ) {
-            Text(msg.content, color = cc, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
+            Text(displayContent, color = cc, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
         }
+        
+        // Кнопка "Показать всё" для длинных ответов
+        if (isAssistant && isLongContent) {
+            TextButton(
+                onClick = { contentExpanded = !contentExpanded },
+                modifier = Modifier.padding(start = 4.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(
+                    text = if (contentExpanded) "⬆ Свернуть" 
+                           else "⬇ Показать всё (${msg.content.length / 1024}KB)",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = ac
+                )
+            }
+        }
+        
         // ═══ КНОПКА КОПИРОВАНИЯ ПОД ОТВЕТОМ CLAUDE ═══
         if (isAssistant && msg.content.isNotBlank()) {
             var copied by remember { mutableStateOf(false) }
@@ -497,8 +698,15 @@ private fun StreamingBubble(text: String, cm: Boolean, sf: Color, t1: Color, t2:
             shape = RoundedCornerShape(topStart = 4.dp, topEnd = 12.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
             border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
         ) {
-            if (text.isNotEmpty()) {
-                Text(text, color = t1, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
+            // При стриминге показываем только хвост — иначе UI зависнет на больших ответах
+            val displayText = if (text.length > 8192) {
+                "⏳ Получено ${text.length / 1024}KB...\n${"─".repeat(30)}\n${text.takeLast(8192)}"
+            } else {
+                text
+            }
+            
+            if (displayText.isNotEmpty()) {
+                Text(displayText, color = t1, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
             } else {
                 Text("|", color = ac, fontSize = 13.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(12.dp))
             }
