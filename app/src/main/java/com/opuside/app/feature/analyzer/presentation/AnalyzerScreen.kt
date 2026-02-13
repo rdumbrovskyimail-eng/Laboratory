@@ -4,10 +4,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,7 +21,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -44,24 +46,74 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private object DarkColors {
-    val bg = Color(0xFF0D1117); val surface = Color(0xFF161B22); val border = Color(0xFF30363D)
-    val green = Color(0xFF3FB950); val blue = Color(0xFF58A6FF); val yellow = Color(0xFFD29922)
-    val red = Color(0xFFF85149); val text1 = Color(0xFFE6EDF3); val text2 = Color(0xFF8B949E); val input = Color(0xFF1C2128)
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// ПРОФЕССИОНАЛЬНАЯ ЦВЕТОВАЯ СХЕМА
+// ═══════════════════════════════════════════════════════════════════════════
 
-private object LightColors {
-    val bg = Color(0xFFF8FAFE); val surface = Color(0xFFFFFFFF); val border = Color(0xFFD0D7DE)
-    val green = Color(0xFF1A7F37); val blue = Color(0xFF0969DA); val blueSoft = Color(0xFFDDF4FF)
-    val yellow = Color(0xFF9A6700); val red = Color(0xFFCF222E); val text1 = Color(0xFF1F2328)
-    val text2 = Color(0xFF656D76); val input = Color(0xFFEFF2F5)
+private object ProColors {
+    // Dark Theme - Основные цвета
+    val darkBg = Color(0xFF0A0E14)
+    val darkSurface = Color(0xFF12171E)
+    val darkSurfaceVariant = Color(0xFF1A1F26)
+    val darkBorder = Color(0xFF2D3339)
+    
+    // Light Theme - Основные цвета
+    val lightBg = Color(0xFFF5F7FA)
+    val lightSurface = Color(0xFFFFFFFF)
+    val lightSurfaceVariant = Color(0xFFF8FAFB)
+    val lightBorder = Color(0xFFE1E4E8)
+    
+    // Акцентные цвета
+    val blue = Color(0xFF4A9EFF)
+    val blueLight = Color(0xFF6BB3FF)
+    val blueDark = Color(0xFF3B7FCC)
+    val blueSoft = Color(0xFFE8F4FF)
+    val blueSoftDark = Color(0xFF1A2332)
+    
+    val green = Color(0xFF4CAF50)
+    val greenLight = Color(0xFF66BB6A)
+    val greenSoft = Color(0xFFE8F5E9)
+    val greenSoftDark = Color(0xFF1A2E1A)
+    
+    val orange = Color(0xFFFF9800)
+    val orangeLight = Color(0xFFFFAB40)
+    val orangeSoft = Color(0xFFFFF3E0)
+    val orangeSoftDark = Color(0xFF2E2416)
+    
+    val red = Color(0xFFE53935)
+    val redLight = Color(0xFFEF5350)
+    val redSoft = Color(0xFFFFEBEE)
+    val redSoftDark = Color(0xFF2E1A1A)
+    
+    val purple = Color(0xFF9C27B0)
+    val purpleLight = Color(0xFFAB47BC)
+    val purpleSoft = Color(0xFFF3E5F5)
+    val purpleSoftDark = Color(0xFF261A2E)
+    
+    val yellow = Color(0xFFFFC107)
+    val yellowSoft = Color(0xFFFFF9E6)
+    val yellowSoftDark = Color(0xFF2E2816)
+    
+    // Текст
+    val darkText1 = Color(0xFFE8EDF3)
+    val darkText2 = Color(0xFF8B949E)
+    val darkText3 = Color(0xFF6E7681)
+    
+    val lightText1 = Color(0xFF1A1F26)
+    val lightText2 = Color(0xFF586069)
+    val lightText3 = Color(0xFF8B949E)
 }
 
 private val opsTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ГЛАВНЫЙ COMPOSABLE
+// ═══════════════════════════════════════════════════════════════════════════
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
+    // State
     val messages by viewModel.messages.collectAsState(initial = emptyList())
     val isStreaming by viewModel.isStreaming.collectAsState()
     val chatError by viewModel.chatError.collectAsState()
@@ -83,10 +135,13 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val longContextEnabled by viewModel.longContextEnabled.collectAsState()
     val attachedFileName by viewModel.attachedFileName.collectAsState()
     val attachedFileSize by viewModel.attachedFileSize.collectAsState()
+    val conversationHistoryEnabled by viewModel.conversationHistoryEnabled.collectAsState()
 
     var userInput by remember { mutableStateOf("") }
     var showModelDialog by remember { mutableStateOf(false) }
     var showSessionStats by remember { mutableStateOf(false) }
+    var showSettingsPanel by remember { mutableStateOf(false) }
+    
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -95,24 +150,11 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val imeVisible = imeBottomPx > 0
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
-
-    // Snackbar для подтверждения копирования
     val snackbarHostState = remember { SnackbarHostState() }
-
-    val cm = cacheModeEnabled
-    val bg = if (cm) LightColors.bg else DarkColors.bg
-    val sf = if (cm) LightColors.surface else DarkColors.surface
-    val bd = if (cm) LightColors.border else DarkColors.border
-    val ac = if (cm) LightColors.blue else DarkColors.blue
-    val gr = if (cm) LightColors.green else DarkColors.green
-    val yl = if (cm) LightColors.yellow else DarkColors.yellow
-    val rd = if (cm) LightColors.red else DarkColors.red
-    val t1 = if (cm) LightColors.text1 else DarkColors.text1
-    val t2 = if (cm) LightColors.text2 else DarkColors.text2
-    val inp = if (cm) LightColors.input else DarkColors.input
 
     val context = LocalContext.current
 
+    // File picker
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -133,441 +175,649 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
             val content = String(bytes, Charsets.UTF_8)
             viewModel.attachFile(fileName, content, bytes.size.toLong())
         } catch (e: Exception) {
-            viewModel.addOperation("❌", "Ошибка чтения файла: ${e.message}",
+            viewModel.addOperation("❌", "File error: ${e.message}",
                 AnalyzerViewModel.OperationLogType.ERROR)
         }
     }
 
+    // Colors
+    val cm = cacheModeEnabled
+    val bg = if (cm) ProColors.lightBg else ProColors.darkBg
+    val sf = if (cm) ProColors.lightSurface else ProColors.darkSurface
+    val sfVar = if (cm) ProColors.lightSurfaceVariant else ProColors.darkSurfaceVariant
+    val bd = if (cm) ProColors.lightBorder else ProColors.darkBorder
+    val t1 = if (cm) ProColors.lightText1 else ProColors.darkText1
+    val t2 = if (cm) ProColors.lightText2 else ProColors.darkText2
+    val t3 = if (cm) ProColors.lightText3 else ProColors.darkText3
+    val ac = ProColors.blue
+    val acLight = ProColors.blueLight
+    val gr = ProColors.green
+    val grLight = ProColors.greenLight
+    val rd = ProColors.red
+    val rdLight = ProColors.redLight
+    val yl = ProColors.yellow
+    val or = ProColors.orange
+    val pu = ProColors.purple
+
+    // Auto scroll
     val hasStreamingBubble = isStreaming && streamingText != null
     val totalItems = messages.size + (if (hasStreamingBubble) 1 else 0)
-    LaunchedEffect(totalItems) { if (totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) }
-    LaunchedEffect(imeVisible) { if (imeVisible && totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) }
-    LaunchedEffect(operationsLog.size) { if (operationsLog.isNotEmpty()) opsListState.animateScrollToItem(operationsLog.size - 1) }
-
-    val cacheButtonEnabled = !ecoOutputMode || cacheModeEnabled
-    val ecoButtonEnabled = !cacheModeEnabled
+    LaunchedEffect(totalItems) { 
+        if (totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) 
+    }
+    LaunchedEffect(imeVisible) { 
+        if (imeVisible && totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) 
+    }
+    LaunchedEffect(operationsLog.size) { 
+        if (operationsLog.isNotEmpty()) opsListState.animateScrollToItem(operationsLog.size - 1) 
+    }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Analyzer", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                            if (cm) {
-                                Spacer(Modifier.width(8.dp))
-                                Surface(shape = RoundedCornerShape(4.dp), color = LightColors.blueSoft) {
-                                    Text("CACHE", Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        fontSize = 10.sp, fontWeight = FontWeight.Bold, color = ac)
-                                }
-                            }
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("${selectedModel.emoji} ${selectedModel.displayName}",
-                                style = MaterialTheme.typography.labelSmall, color = t2)
-                            sessionTokens?.let {
-                                Text(" | ${"%,d".format(it.totalTokens)} tok | EUR${String.format("%.3f", it.totalCostEUR)}",
-                                    style = MaterialTheme.typography.labelSmall, color = t2)
-                            }
-                        }
-                        
-                        // ═══ TOGGLES ROW ═══
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(top = 2.dp)
-                        ) {
-                            // Thinking toggle
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.clickable { viewModel.toggleThinking() }
-                            ) {
-                                Box(
-                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
-                                        .background(if (thinkingEnabled) Color(0xFFFF6B00) else Color.Transparent)
-                                        .border(1.dp, if (thinkingEnabled) Color(0xFFFF6B00) else t2, RoundedCornerShape(3.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (thinkingEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(Modifier.width(3.dp))
-                                Text("🧠", fontSize = 10.sp)
-                                Spacer(Modifier.width(6.dp))
-                            }
-
-                            // Tools toggle
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.clickable { viewModel.toggleSendTools() }
-                            ) {
-                                Box(
-                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
-                                        .background(if (sendToolsEnabled) ac else Color.Transparent)
-                                        .border(1.dp, if (sendToolsEnabled) ac else t2, RoundedCornerShape(3.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (sendToolsEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(Modifier.width(3.dp))
-                                Text("🔧", fontSize = 10.sp)
-                                Spacer(Modifier.width(6.dp))
-                            }
-
-                            // System Prompt toggle
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.clickable { viewModel.toggleSendSystemPrompt() }
-                            ) {
-                                Box(
-                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
-                                        .background(if (sendSystemPromptEnabled) ac else Color.Transparent)
-                                        .border(1.dp, if (sendSystemPromptEnabled) ac else t2, RoundedCornerShape(3.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (sendSystemPromptEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(Modifier.width(3.dp))
-                                Text("📋", fontSize = 10.sp)
-                                Spacer(Modifier.width(6.dp))
-                            }
-
-                            // Long Context toggle
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.clickable { viewModel.toggleLongContext() }
-                            ) {
-                                Box(
-                                    Modifier.size(14.dp).clip(RoundedCornerShape(3.dp))
-                                        .background(if (longContextEnabled) Color(0xFFFF4444) else Color.Transparent)
-                                        .border(1.dp, if (longContextEnabled) Color(0xFFFF4444) else t2, RoundedCornerShape(3.dp)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (longContextEnabled) Text("✓", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                }
-                                Spacer(Modifier.width(3.dp))
-                                Text("1M", fontSize = 9.sp, fontWeight = FontWeight.Bold,
-                                    color = if (longContextEnabled) Color(0xFFFF4444) else t2,
-                                    fontFamily = FontFamily.Monospace)
-                            }
+            ProfessionalTopBar(
+                selectedModel = selectedModel,
+                sessionTokens = sessionTokens,
+                cacheModeEnabled = cacheModeEnabled,
+                thinkingEnabled = thinkingEnabled,
+                sendToolsEnabled = sendToolsEnabled,
+                sendSystemPromptEnabled = sendSystemPromptEnabled,
+                longContextEnabled = longContextEnabled,
+                conversationHistoryEnabled = conversationHistoryEnabled,
+                onToggleThinking = { viewModel.toggleThinking() },
+                onToggleTools = { viewModel.toggleSendTools() },
+                onToggleSystemPrompt = { viewModel.toggleSendSystemPrompt() },
+                onToggleLongContext = { viewModel.toggleLongContext() },
+                onToggleHistory = { viewModel.toggleConversationHistory() },
+                onCopyChat = {
+                    coroutineScope.launch {
+                        val text = viewModel.getChatAsText()
+                        if (text.isNotEmpty()) {
+                            clipboardManager.setText(AnnotatedString(text))
+                            snackbarHostState.showSnackbar("✅ Chat copied")
                         }
                     }
                 },
-                actions = {
-                    // ═══ КНОПКА CONVERSATION HISTORY ═══
-                    val conversationHistoryEnabled by viewModel.conversationHistoryEnabled.collectAsState()
-                    IconButton(
-                        onClick = { viewModel.toggleConversationHistory() },
-                        enabled = !cacheModeEnabled
-                    ) {
-                        Icon(
-                            Icons.Default.History, 
-                            "History",
-                            tint = if (conversationHistoryEnabled) {
-                                ac
-                            } else if (cacheModeEnabled) {
-                                t2.copy(alpha = 0.3f)
-                            } else {
-                                t2
-                            }
-                        )
-                    }
-                    
-                    // ═══ КНОПКА КОПИРОВАНИЯ ВСЕГО ЧАТА ═══
-                    IconButton(onClick = {
-                        coroutineScope.launch {
-                            val chatText = viewModel.getChatAsText()
-                            if (chatText.isNotEmpty()) {
-                                clipboardManager.setText(AnnotatedString(chatText))
-                                snackbarHostState.showSnackbar("✅ Чат скопирован", duration = SnackbarDuration.Short)
-                            } else {
-                                snackbarHostState.showSnackbar("Чат пуст", duration = SnackbarDuration.Short)
-                            }
-                        }
-                    }) {
-                        Icon(Icons.Default.CopyAll, "Copy chat", tint = t2)
-                    }
-                    IconButton(onClick = { viewModel.toggleCacheMode() }, enabled = cacheButtonEnabled) {
-                        Icon(Icons.Default.Cached, "Cache", tint = when {
-                            !cacheButtonEnabled -> t2.copy(alpha = 0.3f); cm -> ac; else -> t2
-                        })
-                    }
-                    IconButton(onClick = { showModelDialog = true }) { Icon(Icons.Default.Psychology, "Model", tint = t2) }
-                    IconButton(onClick = { showSessionStats = true }) { Icon(Icons.Default.Analytics, "Stats", tint = t2) }
-                    IconButton(onClick = { viewModel.startNewSession() }) { Icon(Icons.Default.RestartAlt, "New", tint = t2) }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = bg, titleContentColor = t1)
+                onToggleCache = { viewModel.toggleCacheMode() },
+                onShowModel = { showModelDialog = true },
+                onShowStats = { showSessionStats = true },
+                onNewSession = { viewModel.startNewSession() },
+                onToggleSettings = { showSettingsPanel = !showSettingsPanel },
+                cm = cm,
+                bg = bg,
+                t1 = t1,
+                t2 = t2,
+                t3 = t3,
+                ac = ac,
+                gr = gr,
+                rd = rd,
+                or = or,
+                pu = pu
             )
         },
         snackbarHost = {
             SnackbarHost(snackbarHostState) { data ->
                 Snackbar(
                     snackbarData = data,
-                    containerColor = if (cm) LightColors.surface else DarkColors.surface,
+                    containerColor = sf,
                     contentColor = t1,
-                    shape = RoundedCornerShape(12.dp)
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.padding(12.dp)
                 )
             }
         },
         containerColor = bg
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
-            AnimatedVisibility(visible = cm) {
-                CacheStatusBar(cacheTimerMs, cacheIsWarmed, cacheTotalReadTokens, cacheTotalWriteTokens,
-                    cacheTotalSavingsEUR, cacheHitCount, viewModel, ac, gr, rd, t1, t2, bd)
-            }
-
-            Box(Modifier.fillMaxWidth().weight(if (cm) 0.22f else 0.28f).background(sf)) {
-                Column {
-                    Row(Modifier.fillMaxWidth().background(inp).padding(horizontal = 12.dp, vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("OPS", color = t2, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(8.dp).clip(CircleShape).background(if (cm) ac else if (ecoOutputMode) gr else rd))
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (cm) "CACHE" else if (ecoOutputMode) "ECO" else "MAX",
-                                color = if (cm) ac else if (ecoOutputMode) gr else rd,
-                                fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                            Spacer(Modifier.width(8.dp))
-                            IconButton(onClick = { viewModel.clearOperationsLog() }, Modifier.size(20.dp)) {
-                                Icon(Icons.Default.DeleteSweep, "Clear", tint = t2, modifier = Modifier.size(14.dp))
-                            }
-                        }
-                    }
-                    if (operationsLog.isEmpty()) {
-                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("...", color = t2, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        }
-                    } else {
-                        LazyColumn(state = opsListState, modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                            items(operationsLog, key = { it.id }) { item ->
-                                OpLogRow(item, t1, t2, gr, rd, yl)
-                            }
-                        }
-                    }
-                }
-            }
-
-            HorizontalDivider(color = bd, thickness = 2.dp)
-
-            Column(Modifier.fillMaxWidth().weight(if (cm) 0.78f else 0.72f)) {
-                AnimatedVisibility(visible = chatError != null) {
-                    Surface(Modifier.fillMaxWidth().padding(8.dp),
-                        color = if (cm) Color(0xFFFFF0F0) else Color(0xFF3D1F1F), shape = RoundedCornerShape(8.dp)) {
-                        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text(chatError ?: "", color = rd, fontSize = 13.sp, modifier = Modifier.weight(1f))
-                            IconButton(onClick = { viewModel.dismissError() }, Modifier.size(24.dp)) {
-                                Icon(Icons.Default.Close, "X", tint = t2, modifier = Modifier.size(16.dp))
-                            }
-                        }
-                    }
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            Column(Modifier.fillMaxSize().imePadding()) {
+                // Cache status bar
+                AnimatedVisibility(
+                    visible = cacheModeEnabled,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    CacheStatusBar(
+                        timerMs = cacheTimerMs,
+                        warmed = cacheIsWarmed,
+                        readTok = cacheTotalReadTokens,
+                        writeTok = cacheTotalWriteTokens,
+                        savEUR = cacheTotalSavingsEUR,
+                        hits = cacheHitCount,
+                        viewModel = viewModel,
+                        cm = cm,
+                        sf = sf,
+                        t1 = t1,
+                        t2 = t2,
+                        t3 = t3,
+                        ac = ac,
+                        gr = gr,
+                        rd = rd,
+                        yl = yl,
+                        bd = bd
+                    )
                 }
 
-                LazyColumn(state = chatListState, modifier = Modifier.weight(1f).fillMaxWidth(),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
-                    items(messages, key = { it.id }) { msg ->
-                        MsgBubble(
-                            msg = msg,
+                // Operations log
+                OperationsPanel(
+                    operationsLog = operationsLog,
+                    opsListState = opsListState,
+                    ecoOutputMode = ecoOutputMode,
+                    cacheModeEnabled = cacheModeEnabled,
+                    onClearLog = { viewModel.clearOperationsLog() },
+                    cm = cm,
+                    sf = sf,
+                    sfVar = sfVar,
+                    t1 = t1,
+                    t2 = t2,
+                    t3 = t3,
+                    ac = ac,
+                    gr = gr,
+                    rd = rd,
+                    yl = yl,
+                    bd = bd
+                )
+
+                Divider(color = bd, thickness = 1.dp)
+
+                // Chat area
+                Column(Modifier.fillMaxWidth().weight(1f)) {
+                    // Error banner
+                    AnimatedVisibility(
+                        visible = chatError != null,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        ErrorBanner(
+                            error = chatError ?: "",
+                            onDismiss = { viewModel.dismissError() },
+                            cm = cm,
+                            rd = rd,
+                            t1 = t1,
+                            t2 = t2
+                        )
+                    }
+
+                    // Messages
+                    LazyColumn(
+                        state = chatListState,
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(messages, key = { it.id }) { msg ->
+                            MessageBubble(
+                                msg = msg,
+                                cm = cm,
+                                sf = sf,
+                                sfVar = sfVar,
+                                t1 = t1,
+                                t2 = t2,
+                                t3 = t3,
+                                ac = ac,
+                                gr = gr,
+                                bd = bd,
+                                clipboardManager = clipboardManager,
+                                snackbarHostState = snackbarHostState,
+                                coroutineScope = coroutineScope
+                            )
+                        }
+                        if (hasStreamingBubble) {
+                            item(key = "streaming") {
+                                StreamingBubble(
+                                    text = streamingText ?: "",
+                                    cm = cm,
+                                    sf = sf,
+                                    t1 = t1,
+                                    t2 = t2,
+                                    ac = ac
+                                )
+                            }
+                        }
+                    }
+
+                    // Attached file indicator
+                    AnimatedVisibility(
+                        visible = attachedFileName != null,
+                        enter = expandVertically() + fadeIn(),
+                        exit = shrinkVertically() + fadeOut()
+                    ) {
+                        AttachedFileCard(
+                            fileName = attachedFileName ?: "",
+                            fileSize = attachedFileSize,
+                            onDetach = { viewModel.detachFile() },
                             cm = cm,
                             sf = sf,
                             t1 = t1,
                             t2 = t2,
-                            ac = ac,
                             gr = gr,
-                            clipboardManager = clipboardManager,
-                            snackbarHostState = snackbarHostState,
-                            coroutineScope = coroutineScope
+                            bd = bd
                         )
                     }
-                    if (hasStreamingBubble) {
-                        item(key = "streaming_bubble") {
-                            StreamingBubble(text = streamingText ?: "", cm = cm, sf = sf, t1 = t1, t2 = t2, ac = ac)
-                        }
-                    }
-                }
 
-                // Индикатор прикреплённого файла
-                AnimatedVisibility(visible = attachedFileName != null) {
-                    Surface(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                        color = if (cm) Color(0xFFE8F5E9) else Color(0xFF1A2E1A),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("📎", fontSize = 14.sp)
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                text = "${attachedFileName ?: ""} (${attachedFileSize / 1024}KB)",
-                                color = gr,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            IconButton(
-                                onClick = { viewModel.detachFile() },
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Icon(Icons.Default.Close, "Detach", tint = t2, modifier = Modifier.size(14.dp))
+                    // Input area
+                    InputArea(
+                        userInput = userInput,
+                        onInputChange = { userInput = it },
+                        isStreaming = isStreaming,
+                        ecoOutputMode = ecoOutputMode,
+                        cacheModeEnabled = cacheModeEnabled,
+                        cacheIsWarmed = cacheIsWarmed,
+                        attachedFileName = attachedFileName,
+                        maxTokens = viewModel.getEffectiveMaxTokens(),
+                        onToggleMode = { viewModel.toggleOutputMode() },
+                        onAttachFile = {
+                            if (attachedFileName != null) viewModel.detachFile()
+                            else filePickerLauncher.launch(arrayOf("text/*"))
+                        },
+                        onSend = {
+                            if (userInput.isNotBlank() && !isStreaming) {
+                                viewModel.sendMessage(userInput.trim())
+                                userInput = ""
+                                focusManager.clearFocus()
                             }
-                        }
-                    }
+                        },
+                        cm = cm,
+                        sf = sf,
+                        sfVar = sfVar,
+                        t1 = t1,
+                        t2 = t2,
+                        ac = ac,
+                        gr = gr,
+                        rd = rd,
+                        bd = bd
+                    )
                 }
+            }
 
-                Surface(Modifier.fillMaxWidth(), color = inp, tonalElevation = 2.dp) {
-                    Row(Modifier.padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { viewModel.toggleOutputMode() }, modifier = Modifier.size(40.dp), enabled = ecoButtonEnabled) {
-                            Box(contentAlignment = Alignment.Center) {
-                                val dotColor = when { cm -> ac; ecoOutputMode -> gr; else -> rd }
-                                Box(Modifier.size(12.dp).clip(CircleShape).background(if (ecoButtonEnabled) dotColor else dotColor.copy(alpha = 0.3f)))
-                            }
-                        }
-                        
-                        // Кнопка прикрепления файла
-                        IconButton(
-                            onClick = {
-                                if (attachedFileName != null) {
-                                    viewModel.detachFile()
-                                } else {
-                                    filePickerLauncher.launch(arrayOf("text/*"))
-                                }
-                            },
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (attachedFileName != null) Icons.Default.AttachFile else Icons.Default.AttachFile,
-                                contentDescription = "Attach file",
-                                tint = if (attachedFileName != null) gr else t2,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        
-                        OutlinedTextField(
-                            value = userInput, onValueChange = { userInput = it },
-                            modifier = Modifier.weight(1f),
-                            placeholder = {
-                                val maxTok = viewModel.getEffectiveMaxTokens()
-                                val label = when {
-                                    cm && cacheIsWarmed -> "CACHE ${"%,d".format(maxTok)}..."
-                                    cm -> "CACHE ${"%,d".format(maxTok)}..."
-                                    ecoOutputMode -> "ECO 8K..."
-                                    else -> "MAX ${"%,d".format(maxTok)}..."
-                                }
-                                Text(label, color = t2, fontSize = 13.sp)
-                            },
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = ac, unfocusedBorderColor = bd,
-                                cursorColor = ac, focusedTextColor = t1, unfocusedTextColor = t1),
-                            maxLines = 5,
-                            textStyle = LocalTextStyle.current.copy(fontSize = 14.sp, fontFamily = FontFamily.Monospace),
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                            keyboardActions = KeyboardActions(onSend = {
-                                if (userInput.isNotBlank() && !isStreaming) {
-                                    viewModel.sendMessage(userInput.trim()); userInput = ""; focusManager.clearFocus()
-                                }
-                            }),
-                            shape = RoundedCornerShape(12.dp)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        FilledIconButton(
-                            onClick = {
-                                if (userInput.isNotBlank() && !isStreaming) {
-                                    viewModel.sendMessage(userInput.trim()); userInput = ""; focusManager.clearFocus()
-                                }
-                            },
-                            enabled = userInput.isNotBlank() && !isStreaming,
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = ac, contentColor = Color.White,
-                                disabledContainerColor = bd, disabledContentColor = t2),
-                            modifier = Modifier.size(48.dp)
-                        ) { Icon(if (isStreaming) Icons.Default.HourglassTop else Icons.Default.Send, "Send") }
-                    }
-                }
+            // Settings panel overlay
+            AnimatedVisibility(
+                visible = showSettingsPanel,
+                modifier = Modifier.align(Alignment.TopEnd),
+                enter = slideInHorizontally { it } + fadeIn(),
+                exit = slideOutHorizontally { it } + fadeOut()
+            ) {
+                SettingsPanel(
+                    thinkingEnabled = thinkingEnabled,
+                    thinkingBudget = viewModel.thinkingBudget.collectAsState().value,
+                    onToggleThinking = { viewModel.toggleThinking() },
+                    onSetThinkingBudget = { viewModel.setThinkingBudget(it) },
+                    onClose = { showSettingsPanel = false },
+                    cm = cm,
+                    sf = sf,
+                    t1 = t1,
+                    t2 = t2,
+                    ac = ac,
+                    bd = bd
+                )
             }
         }
     }
 
+    // Model selector dialog
     if (showModelDialog) {
-        AlertDialog(
-            onDismissRequest = { showModelDialog = false },
-            title = { Text("Model") },
-            text = {
-                LazyColumn(Modifier.heightIn(max = 480.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(ClaudeModelConfig.ClaudeModel.entries.toList()) { model ->
-                        val isSel = model == selectedModel
-                        val isExp = model == ClaudeModelConfig.ClaudeModel.OPUS_4_1 || model == ClaudeModelConfig.ClaudeModel.OPUS_4
-                        Surface(
-                            onClick = { viewModel.selectModel(model); showModelDialog = false },
-                            modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(8.dp),
-                            color = when { isSel -> MaterialTheme.colorScheme.primaryContainer; isExp -> Color(0xFFFFF3E0); else -> MaterialTheme.colorScheme.surface }
-                        ) {
-                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(model.emoji, fontSize = 20.sp); Spacer(Modifier.width(12.dp))
-                                Column(Modifier.weight(1f)) {
-                                    Text(model.displayName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-                                    Text("In: $${model.inputPricePerM} | Out: $${model.outputPricePerM} | CacheR: $${model.cacheReadPricePerM}",
-                                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    Text("Max out: ${"%,d".format(model.maxOutputTokens)} tok", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                                if (isSel) Icon(Icons.Default.CheckCircle, "Sel", tint = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                    }
-                }
+        ModelSelectorDialog(
+            selectedModel = selectedModel,
+            onSelectModel = { 
+                viewModel.selectModel(it)
+                showModelDialog = false
             },
-            confirmButton = { TextButton(onClick = { showModelDialog = false }) { Text("Close") } }
+            onDismiss = { showModelDialog = false },
+            cm = cm,
+            sf = sf,
+            t1 = t1,
+            t2 = t2,
+            ac = ac
         )
     }
 
+    // Stats dialog
     if (showSessionStats) {
-        AlertDialog(
-            onDismissRequest = { showSessionStats = false },
-            title = { Text("Stats") },
-            text = {
-                val s = viewModel.getSessionStats()
-                if (s != null) Text(s, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp) else Text("No session")
-            },
-            confirmButton = { TextButton(onClick = { showSessionStats = false }) { Text("Close") } }
+        StatsDialog(
+            stats = viewModel.getSessionStats(),
+            onDismiss = { showSessionStats = false },
+            cm = cm,
+            sf = sf,
+            t1 = t1,
+            t2 = t2
         )
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TOP BAR
+// ═══════════════════════════════════════════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProfessionalTopBar(
+    selectedModel: ClaudeModelConfig.ClaudeModel,
+    sessionTokens: ClaudeModelConfig.ModelCost?,
+    cacheModeEnabled: Boolean,
+    thinkingEnabled: Boolean,
+    sendToolsEnabled: Boolean,
+    sendSystemPromptEnabled: Boolean,
+    longContextEnabled: Boolean,
+    conversationHistoryEnabled: Boolean,
+    onToggleThinking: () -> Unit,
+    onToggleTools: () -> Unit,
+    onToggleSystemPrompt: () -> Unit,
+    onToggleLongContext: () -> Unit,
+    onToggleHistory: () -> Unit,
+    onCopyChat: () -> Unit,
+    onToggleCache: () -> Unit,
+    onShowModel: () -> Unit,
+    onShowStats: () -> Unit,
+    onNewSession: () -> Unit,
+    onToggleSettings: () -> Unit,
+    cm: Boolean,
+    bg: Color,
+    t1: Color,
+    t2: Color,
+    t3: Color,
+    ac: Color,
+    gr: Color,
+    rd: Color,
+    or: Color,
+    pu: Color
+) {
+    Surface(
+        color = bg,
+        shadowElevation = if (cm) 2.dp else 0.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            // Title row
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "ANALYZER",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Black,
+                        color = t1,
+                        letterSpacing = 1.sp
+                    )
+                    if (cacheModeEnabled) {
+                        Spacer(Modifier.width(8.dp))
+                        Surface(
+                            color = ProColors.blueSoft,
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, ProColors.blue)
+                        ) {
+                            Text(
+                                "CACHE",
+                                Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = ProColors.blue,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+                    }
+                </Row>
+
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(
+                        onClick = onToggleHistory,
+                        enabled = !cacheModeEnabled,
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.History,
+                            contentDescription = "History",
+                            tint = if (conversationHistoryEnabled) ac else if (cacheModeEnabled) t3.copy(alpha = 0.3f) else t2,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    IconButton(onClick = onCopyChat, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.CopyAll, "Copy", tint = t2, modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(onClick = onToggleCache, modifier = Modifier.size(40.dp)) {
+                        Icon(
+                            Icons.Default.Cached,
+                            "Cache",
+                            tint = if (cacheModeEnabled) ac else t2,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    IconButton(onClick = onShowModel, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Psychology, "Model", tint = t2, modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(onClick = onShowStats, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Analytics, "Stats", tint = t2, modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(onClick = onToggleSettings, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Settings, "Settings", tint = t2, modifier = Modifier.size(20.dp))
+                    }
+                    IconButton(onClick = onNewSession, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.RestartAlt, "New", tint = t2, modifier = Modifier.size(20.dp))
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            // Model & stats row
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(selectedModel.emoji, fontSize = 18.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        selectedModel.displayName,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = t1
+                    )
+                </Row>
+
+                sessionTokens?.let { cost ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "%,d".format(cost.totalTokens),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = ac,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text(" tok", fontSize = 11.sp, color = t3)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "€${String.format("%.4f", cost.totalCostEUR)}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = gr,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+
+            // Feature toggles
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                FeatureToggle(
+                    icon = "🧠",
+                    label = "Think",
+                    enabled = thinkingEnabled,
+                    color = or,
+                    onClick = onToggleThinking
+                )
+                FeatureToggle(
+                    icon = "🔧",
+                    label = "Tools",
+                    enabled = sendToolsEnabled,
+                    color = ac,
+                    onClick = onToggleTools
+                )
+                FeatureToggle(
+                    icon = "📋",
+                    label = "System",
+                    enabled = sendSystemPromptEnabled,
+                    color = pu,
+                    onClick = onToggleSystemPrompt
+                )
+                FeatureToggle(
+                    icon = "1M",
+                    label = "Long",
+                    enabled = longContextEnabled,
+                    color = rd,
+                    onClick = onToggleLongContext,
+                    isText = true
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FeatureToggle(
+    icon: String,
+    label: String,
+    enabled: Boolean,
+    color: Color,
+    onClick: () -> Unit,
+    isText: Boolean = false
+) {
+    Surface(
+        onClick = onClick,
+        color = if (enabled) color.copy(alpha = 0.15f) else Color.Transparent,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.5.dp, if (enabled) color else ProColors.darkBorder)
+    ) {
+        Row(
+            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (isText) {
+                Text(
+                    icon,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = if (enabled) color else ProColors.darkText3,
+                    fontFamily = FontFamily.Monospace
+                )
+            } else {
+                Text(icon, fontSize = 14.sp)
+            }
+            Text(
+                label,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = if (enabled) color else ProColors.darkText3
+            )
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CACHE STATUS BAR
+// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun CacheStatusBar(
-    timerMs: Long, warmed: Boolean, readTok: Int, writeTok: Int, savEUR: Double, hits: Int,
-    vm: AnalyzerViewModel, accent: Color, green: Color, red: Color, txt1: Color, txt2: Color, border: Color
+    timerMs: Long,
+    warmed: Boolean,
+    readTok: Int,
+    writeTok: Int,
+    savEUR: Double,
+    hits: Int,
+    viewModel: AnalyzerViewModel,
+    cm: Boolean,
+    sf: Color,
+    t1: Color,
+    t2: Color,
+    t3: Color,
+    ac: Color,
+    gr: Color,
+    rd: Color,
+    yl: Color,
+    bd: Color
 ) {
-    val prog = if (timerMs > 0) (timerMs.toFloat() / ClaudeModelConfig.CACHE_TTL_MS).coerceIn(0f, 1f) else 0f
-    val tc = when { timerMs <= 0 -> txt2; timerMs <= 60_000 -> red; timerMs <= 120_000 -> DarkColors.yellow; else -> green }
-    Surface(Modifier.fillMaxWidth(), color = LightColors.blueSoft, tonalElevation = 1.dp) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+    val progress = if (timerMs > 0) (timerMs.toFloat() / ClaudeModelConfig.CACHE_TTL_MS).coerceIn(0f, 1f) else 0f
+    val timerColor = when {
+        timerMs <= 0 -> t3
+        timerMs <= 60_000 -> rd
+        timerMs <= 120_000 -> yl
+        else -> gr
+    }
+
+    Surface(
+        color = ProColors.blueSoft,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Timer, "T", tint = tc, modifier = Modifier.size(20.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text(vm.getCacheTimerFormatted(timerMs), fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = tc)
-                }
-                Surface(shape = RoundedCornerShape(12.dp), color = if (warmed && timerMs > 0) green.copy(alpha = 0.15f) else red.copy(alpha = 0.15f)) {
-                    Text(if (warmed && timerMs > 0) "CACHED" else "EMPTY", Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                        fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (warmed && timerMs > 0) green else red)
+                    Icon(
+                        Icons.Default.Timer,
+                        "Timer",
+                        tint = timerColor,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        viewModel.getCacheTimerFormatted(timerMs),
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        color = timerColor,
+                        letterSpacing = 1.sp
+                    )
+                </Row>
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (warmed && timerMs > 0) ProColors.greenSoft else ProColors.redSoft,
+                    border = BorderStroke(1.5.dp, if (warmed && timerMs > 0) gr else rd)
+                ) {
+                    Text(
+                        if (warmed && timerMs > 0) "CACHED" else "EMPTY",
+                        Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (warmed && timerMs > 0) gr else rd,
+                        letterSpacing = 0.5.sp
+                    )
                 }
             }
+
             if (warmed) {
-                Spacer(Modifier.height(6.dp))
-                LinearProgressIndicator(progress = { prog }, Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)), color = tc, trackColor = border)
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
+                    color = timerColor,
+                    trackColor = bd
+                )
             }
+
             if (writeTok > 0 || readTok > 0) {
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("W:${"%,d".format(writeTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
-                    Text("R:${"%,d".format(readTok)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = accent)
-                    Text("Hits:$hits", fontSize = 10.sp, fontFamily = FontFamily.Monospace, color = txt2)
-                    Text("-EUR${String.format("%.4f", savEUR)}", fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, color = green)
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    StatChip("Write", "%,d".format(writeTok), t2, t3)
+                    StatChip("Read", "%,d".format(readTok), ac, ac.copy(alpha = 0.2f))
+                    StatChip("Hits", hits.toString(), yl, yl.copy(alpha = 0.2f))
+                    StatChip("Saved", "€${String.format("%.4f", savEUR)}", gr, gr.copy(alpha = 0.2f))
                 }
             }
         }
@@ -575,141 +825,893 @@ private fun CacheStatusBar(
 }
 
 @Composable
-private fun OpLogRow(item: AnalyzerViewModel.OperationLogItem, t1: Color, t2: Color, g: Color, r: Color, y: Color) {
-    val c = when (item.type) { AnalyzerViewModel.OperationLogType.SUCCESS -> g; AnalyzerViewModel.OperationLogType.ERROR -> r; AnalyzerViewModel.OperationLogType.PROGRESS -> y; else -> t2 }
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(item.icon, fontSize = 12.sp, modifier = Modifier.width(20.dp))
-        Text(item.message, color = c, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Text(opsTimeFormat.format(Date(item.timestamp)), color = t2.copy(alpha = 0.5f), fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+private fun StatChip(label: String, value: String, textColor: Color, bgColor: Color) {
+    Surface(
+        color = bgColor,
+        shape = RoundedCornerShape(6.dp)
+    ) {
+        Column(
+            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                label,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Medium,
+                color = textColor.copy(alpha = 0.7f)
+            )
+            Text(
+                value,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                color = textColor
+            )
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// OPERATIONS PANEL
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun OperationsPanel(
+    operationsLog: List<AnalyzerViewModel.OperationLogItem>,
+    opsListState: androidx.compose.foundation.lazy.LazyListState,
+    ecoOutputMode: Boolean,
+    cacheModeEnabled: Boolean,
+    onClearLog: () -> Unit,
+    cm: Boolean,
+    sf: Color,
+    sfVar: Color,
+    t1: Color,
+    t2: Color,
+    t3: Color,
+    ac: Color,
+    gr: Color,
+    rd: Color,
+    yl: Color,
+    bd: Color
+) {
+    Surface(
+        color = if (cm) sfVar else sf,
+        modifier = Modifier.fillMaxWidth().height(180.dp)
+    ) {
+        Column {
+            // Header
+            Surface(
+                color = if (cm) ProColors.lightBorder else ProColors.darkSurfaceVariant,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "OPERATIONS",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace,
+                            color = t2,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "(${operationsLog.size})",
+                            fontSize = 10.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = t3
+                        )
+                    }
+
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Surface(
+                            shape = CircleShape,
+                            color = when {
+                                cacheModeEnabled -> ac.copy(alpha = 0.2f)
+                                ecoOutputMode -> gr.copy(alpha = 0.2f)
+                                else -> rd.copy(alpha = 0.2f)
+                            }
+                        ) {
+                            Row(
+                                Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Box(
+                                    Modifier.size(6.dp).clip(CircleShape).background(
+                                        when {
+                                            cacheModeEnabled -> ac
+                                            ecoOutputMode -> gr
+                                            else -> rd
+                                        }
+                                    )
+                                )
+                                Text(
+                                    when {
+                                        cacheModeEnabled -> "CACHE"
+                                        ecoOutputMode -> "ECO"
+                                        else -> "MAX"
+                                    },
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = when {
+                                        cacheModeEnabled -> ac
+                                        ecoOutputMode -> gr
+                                        else -> rd
+                                    }
+                                )
+                            }
+                        }
+
+                        IconButton(onClick = onClearLog, modifier = Modifier.size(24.dp)) {
+                            Icon(
+                                Icons.Default.DeleteSweep,
+                                "Clear",
+                                tint = t3,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Log entries
+            if (operationsLog.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "Waiting for operations...",
+                        fontSize = 12.sp,
+                        color = t3,
+                        fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = opsListState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(operationsLog, key = { it.id }) { item ->
+                        OperationLogRow(item, t1, t2, t3, gr, rd, yl)
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun MsgBubble(
+private fun OperationLogRow(
+    item: AnalyzerViewModel.OperationLogItem,
+    t1: Color,
+    t2: Color,
+    t3: Color,
+    gr: Color,
+    rd: Color,
+    yl: Color
+) {
+    val color = when (item.type) {
+        AnalyzerViewModel.OperationLogType.SUCCESS -> gr
+        AnalyzerViewModel.OperationLogType.ERROR -> rd
+        AnalyzerViewModel.OperationLogType.PROGRESS -> yl
+        else -> t2
+    }
+
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(item.icon, fontSize = 13.sp, modifier = Modifier.width(24.dp))
+        Text(
+            item.message,
+            color = color,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            opsTimeFormat.format(Date(item.timestamp)),
+            color = t3,
+            fontSize = 9.sp,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ERROR BANNER
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ErrorBanner(
+    error: String,
+    onDismiss: () -> Unit,
+    cm: Boolean,
+    rd: Color,
+    t1: Color,
+    t2: Color
+) {
+    Surface(
+        color = if (cm) ProColors.redSoft else ProColors.redSoftDark,
+        modifier = Modifier.fillMaxWidth().padding(12.dp),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, rd)
+    ) {
+        Row(
+            Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.Error, "Error", tint = rd, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Text(
+                error,
+                color = rd,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, "Dismiss", tint = t2, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MESSAGE BUBBLE
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun MessageBubble(
     msg: ChatMessageEntity,
+    cm: Boolean,
+    sf: Color,
+    sfVar: Color,
+    t1: Color,
+    t2: Color,
+    t3: Color,
+    ac: Color,
+    gr: Color,
+    bd: Color,
+    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
+    snackbarHostState: SnackbarHostState,
+    coroutineScope: kotlinx.coroutines.CoroutineScope
+) {
+    val isUser = msg.role == MessageRole.USER
+    val isSystem = msg.role == MessageRole.SYSTEM
+    val isAssistant = msg.role == MessageRole.ASSISTANT
+
+    val MAX_DISPLAY_CHARS = 16_000
+    val isLong = msg.content.length > MAX_DISPLAY_CHARS
+    var expanded by remember { mutableStateOf(false) }
+
+    val displayContent = if (isLong && !expanded) {
+        msg.content.take(MAX_DISPLAY_CHARS) +
+                "\n\n─── Shown ${MAX_DISPLAY_CHARS / 1024}KB of ${msg.content.length / 1024}KB ───"
+    } else {
+        msg.content
+    }
+
+    val bgColor = when {
+        cm && isUser -> ProColors.blueSoft
+        cm && isSystem -> ProColors.greenSoft
+        cm -> sf
+        isUser -> ProColors.blueSoftDark
+        isSystem -> ProColors.greenSoftDark
+        else -> sfVar
+    }
+
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+    ) {
+        // Role label
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            when {
+                isUser -> {
+                    Text("👤", fontSize = 12.sp)
+                    Text("You", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = ac)
+                }
+                isSystem -> {
+                    Text("⚙️", fontSize = 12.sp)
+                    Text("System", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = gr)
+                }
+                else -> {
+                    Text("🤖", fontSize = 12.sp)
+                    Text("Claude", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = ProColors.purple)
+                }
+            }
+        }
+
+        // Message content
+        Surface(
+            color = bgColor,
+            shape = RoundedCornerShape(
+                topStart = if (isUser) 16.dp else 4.dp,
+                topEnd = if (isUser) 4.dp else 16.dp,
+                bottomStart = 16.dp,
+                bottomEnd = 16.dp
+            ),
+            border = if (cm) BorderStroke(1.dp, bd) else null,
+            shadowElevation = if (cm) 1.dp else 0.dp,
+            modifier = Modifier.fillMaxWidth(if (isUser) 0.88f else 0.96f)
+        ) {
+            SelectionContainer {
+                Text(
+                    displayContent,
+                    color = if (isSystem) gr else t1,
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.padding(14.dp)
+                )
+            }
+        }
+
+        // Actions
+        if (isAssistant) {
+            Row(
+                Modifier.padding(start = 12.dp, top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                var copied by remember { mutableStateOf(false) }
+
+                // Copy button
+                Surface(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(msg.content))
+                        copied = true
+                        coroutineScope.launch {
+                            snackbarHostState.showSnackbar("✅ Copied")
+                            kotlinx.coroutines.delay(2000)
+                            copied = false
+                        }
+                    },
+                    color = if (copied) gr.copy(alpha = 0.1f) else Color.Transparent,
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                            "Copy",
+                            tint = if (copied) gr else t3,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        if (copied) {
+                            Text(
+                                "Copied",
+                                fontSize = 10.sp,
+                                color = gr,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                // Expand button for long messages
+                if (isLong) {
+                    Surface(
+                        onClick = { expanded = !expanded },
+                        color = ac.copy(alpha = 0.1f),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                "Expand",
+                                tint = ac,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                if (expanded) "Collapse" else "Show all (${msg.content.length / 1024}KB)",
+                                fontSize = 10.sp,
+                                color = ac,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STREAMING BUBBLE
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun StreamingBubble(
+    text: String,
+    cm: Boolean,
+    sf: Color,
+    t1: Color,
+    t2: Color,
+    ac: Color
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "streaming")
+    val alpha by infiniteTransition.animateFloat(
+        initialValue = 0.3f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse"
+    )
+
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("🤖", fontSize = 12.sp)
+            Text("Claude", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = ProColors.purple)
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                color = ac.copy(alpha = alpha),
+                strokeWidth = 2.dp
+            )
+            Text("streaming...", fontSize = 10.sp, color = t2.copy(alpha = alpha))
+        }
+
+        Surface(
+            color = if (cm) sf else ProColors.darkSurfaceVariant,
+            shape = RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
+            border = if (cm) BorderStroke(1.dp, ProColors.lightBorder) else BorderStroke(1.dp, ac.copy(alpha = 0.3f)),
+            shadowElevation = if (cm) 1.dp else 0.dp,
+            modifier = Modifier.fillMaxWidth(0.96f)
+        ) {
+            val displayText = if (text.length > 8192) {
+                "⏳ Received ${text.length / 1024}KB...\n${"─".repeat(30)}\n${text.takeLast(8192)}"
+            } else {
+                text.ifEmpty { "█" }
+            }
+
+            SelectionContainer {
+                Text(
+                    displayText,
+                    color = t1,
+                    fontSize = 13.sp,
+                    fontFamily = FontFamily.Monospace,
+                    lineHeight = 20.sp,
+                    modifier = Modifier.padding(14.dp)
+                )
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ATTACHED FILE CARD
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun AttachedFileCard(
+    fileName: String,
+    fileSize: Long,
+    onDetach: () -> Unit,
+    cm: Boolean,
+    sf: Color,
+    t1: Color,
+    t2: Color,
+    gr: Color,
+    bd: Color
+) {
+    Surface(
+        color = if (cm) ProColors.greenSoft else ProColors.greenSoftDark,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(10.dp),
+        border = BorderStroke(1.dp, gr)
+    ) {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Default.AttachFile, "File", tint = gr, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    fileName,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = gr,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "${fileSize / 1024}KB",
+                    fontSize = 10.sp,
+                    color = gr.copy(alpha = 0.7f),
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            IconButton(onClick = onDetach, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Close, "Detach", tint = t2, modifier = Modifier.size(16.dp))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INPUT AREA
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun InputArea(
+    userInput: String,
+    onInputChange: (String) -> Unit,
+    isStreaming: Boolean,
+    ecoOutputMode: Boolean,
+    cacheModeEnabled: Boolean,
+    cacheIsWarmed: Boolean,
+    attachedFileName: String?,
+    maxTokens: Int,
+    onToggleMode: () -> Unit,
+    onAttachFile: () -> Unit,
+    onSend: () -> Unit,
+    cm: Boolean,
+    sf: Color,
+    sfVar: Color,
+    t1: Color,
+    t2: Color,
+    ac: Color,
+    gr: Color,
+    rd: Color,
+    bd: Color
+) {
+    Surface(
+        color = if (cm) sfVar else sf,
+        shadowElevation = if (cm) 4.dp else 0.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.Bottom,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Mode toggle
+            Surface(
+                onClick = onToggleMode,
+                enabled = !cacheModeEnabled,
+                shape = CircleShape,
+                color = when {
+                    cacheModeEnabled -> ac.copy(alpha = 0.1f)
+                    ecoOutputMode -> gr.copy(alpha = 0.1f)
+                    else -> rd.copy(alpha = 0.1f)
+                },
+                border = BorderStroke(
+                    2.dp,
+                    when {
+                        cacheModeEnabled -> ac
+                        ecoOutputMode -> gr
+                        else -> rd
+                    }
+                ),
+                modifier = Modifier.size(46.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        Modifier.size(12.dp).clip(CircleShape).background(
+                            when {
+                                cacheModeEnabled -> ac
+                                ecoOutputMode -> gr
+                                else -> rd
+                            }
+                        )
+                    )
+                }
+            }
+
+            // Attach file
+            IconButton(
+                onClick = onAttachFile,
+                modifier = Modifier.size(46.dp)
+            ) {
+                Icon(
+                    Icons.Default.AttachFile,
+                    "Attach",
+                    tint = if (attachedFileName != null) gr else t2,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
+            // Text input
+            OutlinedTextField(
+                value = userInput,
+                onValueChange = onInputChange,
+                modifier = Modifier.weight(1f),
+                placeholder = {
+                    val label = when {
+                        cacheModeEnabled && cacheIsWarmed -> "CACHE ${"%,d".format(maxTokens)}..."
+                        cacheModeEnabled -> "CACHE ${"%,d".format(maxTokens)}..."
+                        ecoOutputMode -> "ECO 8K..."
+                        else -> "MAX ${"%,d".format(maxTokens)}..."
+                    }
+                    Text(label, color = t2, fontSize = 13.sp)
+                },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = ac,
+                    unfocusedBorderColor = bd,
+                    cursorColor = ac,
+                    focusedTextColor = t1,
+                    unfocusedTextColor = t1
+                ),
+                maxLines = 6,
+                textStyle = LocalTextStyle.current.copy(
+                    fontSize = 14.sp,
+                    fontFamily = FontFamily.Monospace
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { onSend() }),
+                shape = RoundedCornerShape(14.dp)
+            )
+
+            // Send button
+            FilledIconButton(
+                onClick = onSend,
+                enabled = userInput.isNotBlank() && !isStreaming,
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = ac,
+                    contentColor = Color.White,
+                    disabledContainerColor = bd,
+                    disabledContentColor = t2
+                ),
+                modifier = Modifier.size(52.dp)
+            ) {
+                Icon(
+                    if (isStreaming) Icons.Default.HourglassTop else Icons.Default.Send,
+                    "Send",
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SETTINGS PANEL (OVERLAY)
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SettingsPanel(
+    thinkingEnabled: Boolean,
+    thinkingBudget: Int,
+    onToggleThinking: () -> Unit,
+    onSetThinkingBudget: (Int) -> Unit,
+    onClose: () -> Unit,
     cm: Boolean,
     sf: Color,
     t1: Color,
     t2: Color,
     ac: Color,
-    gr: Color,
-    clipboardManager: androidx.compose.ui.platform.ClipboardManager,
-    snackbarHostState: SnackbarHostState,
-    coroutineScope: kotlinx.coroutines.CoroutineScope
+    bd: Color
 ) {
-    val isU = msg.role == MessageRole.USER
-    val isS = msg.role == MessageRole.SYSTEM
-    val isAssistant = msg.role == MessageRole.ASSISTANT
-
-    // Защита от зависания UI на больших ответах
-    val MAX_DISPLAY_CHARS = 16_000
-    val isLongContent = msg.content.length > MAX_DISPLAY_CHARS
-    var contentExpanded by remember { mutableStateOf(false) }
-
-    val displayContent = if (isLongContent && !contentExpanded) {
-        msg.content.take(MAX_DISPLAY_CHARS) + 
-            "\n\n─── Показано ${MAX_DISPLAY_CHARS / 1024}KB из ${msg.content.length / 1024}KB ───"
-    } else {
-        msg.content
-    }
-
-    val bc = when { cm && isU -> Color(0xFFE8F0FE); cm && isS -> Color(0xFFE6F4EA); cm -> sf; isU -> Color(0xFF1A2332); isS -> Color(0xFF1A2E1A); else -> sf }
-    val cc = if (isS) gr else t1
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = if (isU) Alignment.End else Alignment.Start) {
-        Text(when { isU -> "You"; isS -> "System"; else -> "Claude" },
-            color = t2, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
-        Surface(
-            Modifier.fillMaxWidth(if (isU) 0.85f else 0.95f), color = bc,
-            shape = RoundedCornerShape(topStart = if (isU) 12.dp else 4.dp, topEnd = if (isU) 4.dp else 12.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
-            border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
-        ) {
-            Text(displayContent, color = cc, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
-        }
-        
-        // Кнопка "Показать всё" для длинных ответов
-        if (isAssistant && isLongContent) {
-            TextButton(
-                onClick = { contentExpanded = !contentExpanded },
-                modifier = Modifier.padding(start = 4.dp),
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = if (contentExpanded) "⬆ Свернуть" 
-                           else "⬇ Показать всё (${msg.content.length / 1024}KB)",
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    color = ac
-                )
-            }
-        }
-        
-        // ═══ КНОПКА КОПИРОВАНИЯ ПОД ОТВЕТОМ CLAUDE ═══
-        if (isAssistant && msg.content.isNotBlank()) {
-            var copied by remember { mutableStateOf(false) }
+    Surface(
+        color = sf,
+        shadowElevation = 8.dp,
+        modifier = Modifier.width(320.dp).fillMaxHeight().padding(top = 80.dp),
+        shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
+    ) {
+        Column(Modifier.padding(20.dp)) {
             Row(
-                modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(
-                    onClick = {
-                        clipboardManager.setText(AnnotatedString(msg.content))
-                        copied = true
-                        coroutineScope.launch {
-                            snackbarHostState.showSnackbar("✅ Ответ скопирован", duration = SnackbarDuration.Short)
-                            kotlinx.coroutines.delay(2000)
-                            copied = false
-                        }
-                    },
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                        contentDescription = "Copy response",
-                        tint = if (copied) gr else t2,
-                        modifier = Modifier.size(14.dp)
-                    )
+                Text(
+                    "SETTINGS",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Black,
+                    color = t1,
+                    letterSpacing = 1.sp
+                )
+                IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.Close, "Close", tint = t2)
                 }
-                AnimatedVisibility(visible = copied) {
-                    Text(
-                        "Copied",
-                        color = gr,
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(start = 2.dp)
-                    )
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            // Thinking budget
+            Text(
+                "Extended Thinking Budget",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = t1
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Current: ${"%,d".format(thinkingBudget)} tokens",
+                fontSize = 11.sp,
+                color = t2,
+                fontFamily = FontFamily.Monospace
+            )
+            Spacer(Modifier.height(12.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(10_000, 20_000, 40_000, 60_000).forEach { budget ->
+                    Surface(
+                        onClick = { onSetThinkingBudget(budget) },
+                        color = if (thinkingBudget == budget) ac.copy(alpha = 0.2f) else Color.Transparent,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, if (thinkingBudget == budget) ac else bd)
+                    ) {
+                        Text(
+                            "${budget / 1000}K",
+                            Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (thinkingBudget == budget) ac else t2
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// MODEL SELECTOR DIALOG
+// ═══════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun StreamingBubble(text: String, cm: Boolean, sf: Color, t1: Color, t2: Color, ac: Color) {
-    val bc = if (cm) sf else Color(0xFF161B22)
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalAlignment = Alignment.Start) {
-        Row(Modifier.padding(horizontal = 8.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("Claude", color = t2, fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-            Spacer(Modifier.width(8.dp))
-            CircularProgressIndicator(modifier = Modifier.size(10.dp), color = ac, strokeWidth = 1.5.dp)
-        }
-        Surface(
-            Modifier.fillMaxWidth(0.95f), color = bc,
-            shape = RoundedCornerShape(topStart = 4.dp, topEnd = 12.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
-            border = if (cm) BorderStroke(0.5.dp, Color(0xFFD0D7DE)) else null
-        ) {
-            // При стриминге показываем только хвост — иначе UI зависнет на больших ответах
-            val displayText = if (text.length > 8192) {
-                "⏳ Получено ${text.length / 1024}KB...\n${"─".repeat(30)}\n${text.takeLast(8192)}"
-            } else {
-                text
+private fun ModelSelectorDialog(
+    selectedModel: ClaudeModelConfig.ClaudeModel,
+    onSelectModel: (ClaudeModelConfig.ClaudeModel) -> Unit,
+    onDismiss: () -> Unit,
+    cm: Boolean,
+    sf: Color,
+    t1: Color,
+    t2: Color,
+    ac: Color
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "SELECT MODEL",
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.sp
+            )
+        },
+        text = {
+            LazyColumn(
+                Modifier.heightIn(max = 500.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(ClaudeModelConfig.ClaudeModel.entries.toList()) { model ->
+                    val selected = model == selectedModel
+                    val experimental = model == ClaudeModelConfig.ClaudeModel.OPUS_4_1 || 
+                                     model == ClaudeModelConfig.ClaudeModel.OPUS_4
+
+                    Surface(
+                        onClick = { onSelectModel(model) },
+                        color = when {
+                            selected -> ac.copy(alpha = 0.15f)
+                            experimental -> ProColors.orangeSoft
+                            else -> sf
+                        },
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.5.dp, if (selected) ac else ProColors.darkBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(model.emoji, fontSize = 24.sp)
+                            Spacer(Modifier.width(14.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    model.displayName,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = t1
+                                )
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "In: $${model.inputPricePerM} | Out: $${model.outputPricePerM}",
+                                    fontSize = 10.sp,
+                                    color = t2,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                                Text(
+                                    "Max out: ${"%,d".format(model.maxOutputTokens)}",
+                                    fontSize = 10.sp,
+                                    color = t2,
+                                    fontFamily = FontFamily.Monospace
+                                )
+                            }
+                            if (selected) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    "Selected",
+                                    tint = ac,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
-            
-            if (displayText.isNotEmpty()) {
-                Text(displayText, color = t1, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 19.sp, modifier = Modifier.padding(12.dp))
-            } else {
-                Text("|", color = ac, fontSize = 13.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(12.dp))
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CLOSE", fontWeight = FontWeight.Bold)
             }
         }
-    }
+    )
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STATS DIALOG
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun StatsDialog(
+    stats: String?,
+    onDismiss: () -> Unit,
+    cm: Boolean,
+    sf: Color,
+    t1: Color,
+    t2: Color
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "SESSION STATISTICS",
+                fontWeight = FontWeight.Black,
+                letterSpacing = 1.sp
+            )
+        },
+        text = {
+            if (stats != null) {
+                SelectionContainer {
+                    Text(
+                        stats,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = t1
+                    )
+                }
+            } else {
+                Text(
+                    "No active session",
+                    color = t2,
+                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("CLOSE", fontWeight = FontWeight.Bold)
+            }
+        }
+    )
 }
