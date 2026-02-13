@@ -25,17 +25,30 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Network Module v3.0 (ZERO-LATENCY STREAMING)
+ * Network Module v4.0 (LONG CONTEXT + SSE STREAMING STABILITY)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ИСПРАВЛЕНИЯ ДЛЯ МГНОВЕННОГО СТРИМИНГА:
+ * КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ ДЛЯ 125K OUTPUT + 1M CONTEXT:
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 1. OkHttp: retryOnConnectionFailure(false) — нет скрытых задержек на retry
- * 2. readTimeout = 120s — достаточно для длинных ответов Claude
- * 3. Ktor HttpTimeout.socketTimeoutMillis = 120s — матчит OkHttp
- * 4. Logging: sanitizeHeader для API key — безопасность
- * 5. Добавлены провайдеры RepoIndexManager + ToolExecutor
+ * 1. OkHttp readTimeout = 0 (INFINITE) — SSE стрим без ограничений
+ *    Причина: Claude может думать 2-3 минуты перед первым токеном (thinking)
+ *    Защита: MAX_STREAMING_TIME_MS в ClaudeApiClient (90 минут)
+ *
+ * 2. OkHttp writeTimeout = 120s — для отправки больших файлов (до 2MB)
+ *
+ * 3. Ktor requestTimeout = INFINITE — SSE стрим без обрывов
+ *    Причина: readTimeout=120s убивает соединение если между чанками >120s
+ *
+ * 4. Ktor socketTimeout = INFINITE — матчит OkHttp readTimeout=0
+ *
+ * 5. retryOnConnectionFailure(false) — нет скрытых задержек на retry
+ *
+ * ТЕСТОВЫЙ СЦЕНАРИЙ:
+ * - 1MB файл → 270K input tokens
+ * - Thinking 40K tokens → 2-5 минут ожидания
+ * - Output 125K tokens → 40-67 минут генерации
+ * - Общее время: до 90 минут
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -67,10 +80,13 @@ object NetworkModule {
     /**
      * HTTP клиент для Claude API.
      *
-     * КЛЮЧЕВОЕ для стриминга:
-     * - readTimeout = 120s (Claude может думать долго перед первым токеном)
-     * - Ktor socketTimeout = 120s (должен матчить OkHttp)
-     * - retryOnConnectionFailure(false) — нет скрытых retry задержек
+     * КРИТИЧНО для стабильности SSE стриминга:
+     * - readTimeout = 0 (бесконечный) — SSE может ждать сколько угодно между чанками
+     * - writeTimeout = 120s — отправка 2MB файла занимает время
+     * - Ktor requestTimeout = INFINITE — не обрывает долгие запросы
+     * - Ktor socketTimeout = INFINITE — матчит readTimeout=0
+     *
+     * Защита от зависания: MAX_STREAMING_TIME_MS = 90 минут в ClaudeApiClient
      */
     @Provides
     @Singleton
@@ -79,9 +95,9 @@ object NetworkModule {
         return HttpClient(OkHttp) {
             engine {
                 config {
-                    connectTimeout(15, TimeUnit.SECONDS)
-                    readTimeout(120, TimeUnit.SECONDS)    // Длинный: Claude думает
-                    writeTimeout(30, TimeUnit.SECONDS)
+                    connectTimeout(30, TimeUnit.SECONDS)
+                    readTimeout(0, TimeUnit.SECONDS)       // 0 = бесконечный (SSE стрим)
+                    writeTimeout(120, TimeUnit.SECONDS)    // Для отправки 2MB файла
                     retryOnConnectionFailure(false)        // Нет скрытых retry
                 }
             }
@@ -102,9 +118,9 @@ object NetworkModule {
             }
 
             install(HttpTimeout) {
-                requestTimeoutMillis = 180_000     // 3 min для tool loops
-                connectTimeoutMillis = 15_000
-                socketTimeoutMillis = 120_000       // Матчит OkHttp readTimeout
+                requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS  // SSE стрим без ограничений
+                connectTimeoutMillis = 30_000
+                socketTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS   // SSE стрим без ограничений
             }
         }
     }
