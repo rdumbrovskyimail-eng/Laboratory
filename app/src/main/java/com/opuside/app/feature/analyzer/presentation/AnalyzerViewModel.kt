@@ -20,16 +20,18 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v10.0 (PROMPT CACHING 100% COMPLIANT)
+ * Analyzer ViewModel v11.0 (EXTENDED THINKING + LONG CONTEXT + FILE ATTACHMENT)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ИСПРАВЛЕНИЯ ПО ОФИЦИАЛЬНОЙ ДОКУМЕНТАЦИИ ANTHROPIC:
+ * v11.0 НОВЫЕ ВОЗМОЖНОСТИ:
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 1. Cache создается при первом запросе в Cache Mode
- * 2. Таймер сбрасывается при каждом cache hit (бесплатно)
- * 3. Cache очищается при выключении Cache Mode
- * 4. История ЗАБЛОКИРОВАНА в Cache Mode
+ * 1. Extended Thinking: галочка 🧠, бюджет 40K токенов
+ * 2. Tools Toggle: галочка 🔧 (вкл/выкл отправку инструментов)
+ * 3. System Prompt Toggle: галочка 📋 (вкл/выкл system prompt)
+ * 4. Long Context: галочка 1M (расширяет окно до 1M токенов)
+ * 5. File Attachment: кнопка 📎 (прикрепление .txt файлов до 2MB)
+ * 6. Prompt Caching остается 100% совместимым с документацией
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -43,6 +45,7 @@ class AnalyzerViewModel @Inject constructor(
         private const val TAG = "AnalyzerVM"
         private const val KEY_SESSION_ID = "session_id"
         private const val MAX_OPS_LOG_SIZE = 500
+        private const val MAX_ATTACHED_FILE_BYTES = 2 * 1024 * 1024L  // 2 MB
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -103,6 +106,46 @@ class AnalyzerViewModel @Inject constructor(
 
     private var cacheTimerJob: Job? = null
     private var cacheExpiresAt: Long = 0L
+
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTENDED THINKING
+    // ═══════════════════════════════════════════════════════════════════
+
+    private val _thinkingEnabled = MutableStateFlow(false)
+    val thinkingEnabled: StateFlow<Boolean> = _thinkingEnabled.asStateFlow()
+
+    private val _thinkingBudget = MutableStateFlow(40_000)
+    val thinkingBudget: StateFlow<Int> = _thinkingBudget.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SEND TOOLS & SYSTEM PROMPT TOGGLES
+    // ═══════════════════════════════════════════════════════════════════
+
+    private val _sendToolsEnabled = MutableStateFlow(true)
+    val sendToolsEnabled: StateFlow<Boolean> = _sendToolsEnabled.asStateFlow()
+
+    private val _sendSystemPromptEnabled = MutableStateFlow(true)
+    val sendSystemPromptEnabled: StateFlow<Boolean> = _sendSystemPromptEnabled.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // LONG CONTEXT MODE (1M)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private val _longContextEnabled = MutableStateFlow(false)
+    val longContextEnabled: StateFlow<Boolean> = _longContextEnabled.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // ATTACHED FILE (до 2MB .txt)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private val _attachedFileContent = MutableStateFlow<String?>(null)
+    val attachedFileContent: StateFlow<String?> = _attachedFileContent.asStateFlow()
+
+    private val _attachedFileName = MutableStateFlow<String?>(null)
+    val attachedFileName: StateFlow<String?> = _attachedFileName.asStateFlow()
+
+    private val _attachedFileSize = MutableStateFlow(0L)
+    val attachedFileSize: StateFlow<Long> = _attachedFileSize.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════
     // SESSION & MODEL
@@ -243,10 +286,91 @@ class AnalyzerViewModel @Inject constructor(
     fun getEffectiveMaxTokens(): Int = getEffectiveMaxTokens(_selectedModel.value)
 
     fun getEffectiveMaxTokens(model: ClaudeModelConfig.ClaudeModel): Int {
-        return if (_cacheModeEnabled.value) model.maxOutputTokens
-        else model.getEffectiveOutputTokens(_ecoOutputMode.value)
+        if (_cacheModeEnabled.value) return model.maxOutputTokens
+
+        val baseOutput = model.getEffectiveOutputTokens(_ecoOutputMode.value)
+
+        // В Long Context режиме — разрешаем до 128K output для Opus 4.6
+        return if (_longContextEnabled.value && model.supportsLongContext1M) {
+            model.maxOutputTokens // 128,000 для Opus 4.6
+        } else {
+            baseOutput
+        }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // EXTENDED THINKING TOGGLES
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun toggleThinking() {
+        _thinkingEnabled.value = !_thinkingEnabled.value
+        val status = if (_thinkingEnabled.value) "ON (${"%,d".format(_thinkingBudget.value)} tok)" else "OFF"
+        addOperation("🧠", "Thinking: $status", OperationLogType.INFO)
+    }
+
+    fun setThinkingBudget(budget: Int) {
+        _thinkingBudget.value = budget.coerceIn(1000, 100_000)
+        addOperation("🧠", "Thinking budget: ${"%,d".format(_thinkingBudget.value)} tok", OperationLogType.INFO)
+    }
+
+    fun toggleSendTools() {
+        _sendToolsEnabled.value = !_sendToolsEnabled.value
+        val status = if (_sendToolsEnabled.value) "ON" else "OFF"
+        addOperation("🔧", "Tools: $status", OperationLogType.INFO)
+    }
+
+    fun toggleSendSystemPrompt() {
+        _sendSystemPromptEnabled.value = !_sendSystemPromptEnabled.value
+        val status = if (_sendSystemPromptEnabled.value) "ON" else "OFF"
+        addOperation("📋", "System Prompt: $status", OperationLogType.INFO)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // LONG CONTEXT TOGGLE
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun toggleLongContext() {
+        val model = _selectedModel.value
+        if (!model.supportsLongContext1M) {
+            addOperation("❌", "${model.displayName} не поддерживает Long Context", OperationLogType.ERROR)
+            return
+        }
+        _longContextEnabled.value = !_longContextEnabled.value
+        if (_longContextEnabled.value) {
+            addOperation("🔓", "Long Context ON (1M) — цена input ×2!", OperationLogType.SUCCESS)
+        } else {
+            addOperation("🔒", "Long Context OFF (200K)", OperationLogType.INFO)
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FILE ATTACHMENT
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun attachFile(fileName: String, content: String, sizeBytes: Long) {
+        if (sizeBytes > MAX_ATTACHED_FILE_BYTES) {
+            addOperation("❌", "Файл слишком большой: ${sizeBytes / 1024}KB > 2048KB", OperationLogType.ERROR)
+            return
+        }
+        if (content.isBlank()) {
+            addOperation("❌", "Файл пустой", OperationLogType.ERROR)
+            return
+        }
+        _attachedFileContent.value = content
+        _attachedFileName.value = fileName
+        _attachedFileSize.value = sizeBytes
+        addOperation("📎", "Прикреплён: $fileName (${sizeBytes / 1024}KB, ~${content.length / 4} tok)", OperationLogType.SUCCESS)
+    }
+
+    fun detachFile() {
+        val name = _attachedFileName.value
+        _attachedFileContent.value = null
+        _attachedFileName.value = null
+        _attachedFileSize.value = 0
+        if (name != null) {
+            addOperation("📎", "Откреплён: $name", OperationLogType.INFO)
+        }
+    }
     // ═══════════════════════════════════════════════════════════════════
     // CACHE MODE — 100% ПО ДОКУМЕНТАЦИИ
     // ═══════════════════════════════════════════════════════════════════
@@ -371,7 +495,7 @@ class AnalyzerViewModel @Inject constructor(
     // OPS LOG
     // ═══════════════════════════════════════════════════════════════════
 
-    private fun addOperation(icon: String, message: String, type: OperationLogType = OperationLogType.INFO) {
+    fun addOperation(icon: String, message: String, type: OperationLogType = OperationLogType.INFO) {
         _operationsLog.update { current ->
             val newItem = OperationLogItem(icon = icon, message = message, type = type)
             if (current.size >= MAX_OPS_LOG_SIZE) {
@@ -460,14 +584,27 @@ class AnalyzerViewModel @Inject constructor(
             val useModel = _selectedModel.value
             val isCacheMode = _cacheModeEnabled.value
             val maxTokens = getEffectiveMaxTokens(useModel)
+
+            // Добавляем прикреплённый файл к сообщению
+            val attachedContent = _attachedFileContent.value
+            val attachedName = _attachedFileName.value
+            val fullMessage = if (attachedContent != null && attachedName != null) {
+                "$message\n\n<attached_file name=\"$attachedName\">\n$attachedContent\n</attached_file>"
+            } else {
+                message
+            }
+
+            val thinkingTag = if (_thinkingEnabled.value) "+🧠" else ""
             val modeName = if (isCacheMode) "CACHE" else if (_ecoOutputMode.value) "ECO" else "MAX"
+            val fullModeName = "$modeName$thinkingTag"
 
-            addOperation("📤", "$modeName ${"%,d".format(maxTokens)}: ${message.take(50)}...", OperationLogType.PROGRESS)
+            addOperation("📤", "$fullModeName ${"%,d".format(maxTokens)}: ${message.take(50)}...", OperationLogType.PROGRESS)
 
+            // В чат пишем только текст сообщения (без файла, чтоб не забивать UI)
             chatDao.insert(ChatMessageEntity(
                 sessionId = sessionId,
                 role = MessageRole.USER,
-                content = message
+                content = if (attachedName != null) "$message\n📎 $attachedName (${_attachedFileSize.value / 1024}KB)" else message
             ))
 
             // Загружаем историю (если включена и НЕ Cache Mode)
@@ -485,11 +622,15 @@ class AnalyzerViewModel @Inject constructor(
                 repositoryAnalyzer.scanFilesV2(
                     sessionId = sessionId,
                     filePaths = _selectedFiles.value.toList(),
-                    userQuery = message,
+                    userQuery = fullMessage,
                     conversationHistory = historyMessages,
                     model = useModel,
                     maxTokens = maxTokens,
-                    enableCaching = isCacheMode
+                    enableCaching = isCacheMode,
+                    enableThinking = _thinkingEnabled.value,
+                    thinkingBudget = _thinkingBudget.value,
+                    sendTools = _sendToolsEnabled.value,
+                    sendSystemPrompt = _sendSystemPromptEnabled.value
                 ).collect { result ->
                     when (result) {
                         is RepositoryAnalyzer.AnalysisResult.Loading -> {
@@ -549,6 +690,11 @@ class AnalyzerViewModel @Inject constructor(
                             }
 
                             _selectedFiles.value = emptySet()
+                            
+                            // Открепляем файл после успешной отправки
+                            if (_attachedFileContent.value != null) {
+                                detachFile()
+                            }
                         }
 
                         is RepositoryAnalyzer.AnalysisResult.Error -> {
