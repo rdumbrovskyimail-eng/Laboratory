@@ -1,5 +1,6 @@
 package com.opuside.app.feature.analyzer.presentation
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -11,7 +12,9 @@ import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.ChatDao
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
+import com.opuside.app.core.service.StreamingForegroundService
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -20,25 +23,24 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * Analyzer ViewModel v11.0 (EXTENDED THINKING + LONG CONTEXT + FILE ATTACHMENT)
+ * Analyzer ViewModel v12.0 (RESILIENT STREAMING + FOREGROUND SERVICE)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * v11.0 НОВЫЕ ВОЗМОЖНОСТИ:
+ * v12.0 НОВЫЕ ВОЗМОЖНОСТИ:
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 1. Extended Thinking: галочка 🧠, бюджет 40K токенов
- * 2. Tools Toggle: галочка 🔧 (вкл/выкл отправку инструментов)
- * 3. System Prompt Toggle: галочка 📋 (вкл/выкл system prompt)
- * 4. Long Context: галочка 1M (расширяет окно до 1M токенов)
- * 5. File Attachment: кнопка 📎 (прикрепление .txt файлов до 2MB)
- * 6. Prompt Caching остается 100% совместимым с документацией
+ * 1. Foreground Service: защита от Doze при ЛЮБОМ стриминге
+ * 2. Resilient Streaming: автоматический retry при обрывах сети
+ * 3. Network Monitoring: уведомления о потере/восстановлении сети
+ * 4. Все фичи v11.0 сохранены (Thinking, Long Context, File Attachment)
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
     private val repositoryAnalyzer: RepositoryAnalyzer,
     private val chatDao: ChatDao,
     private val savedStateHandle: SavedStateHandle,
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    @ApplicationContext private val appContext: Context  // ★ NEW
 ) : ViewModel() {
 
     companion object {
@@ -568,7 +570,7 @@ class AnalyzerViewModel @Inject constructor(
     fun clearSelectedFiles() { _selectedFiles.value = emptySet() }
 
     // ═══════════════════════════════════════════════════════════════════
-    // SEND MESSAGE
+    // SEND MESSAGE (★ MODIFIED WITH FOREGROUND SERVICE + RETRY HANDLING)
     // ═══════════════════════════════════════════════════════════════════
 
     fun sendMessage(message: String) {
@@ -601,14 +603,14 @@ class AnalyzerViewModel @Inject constructor(
 
             addOperation("📤", "$fullModeName ${"%,d".format(maxTokens)}: ${message.take(50)}...", OperationLogType.PROGRESS)
 
-            // В чат пишем только текст сообщения (без файла, чтоб не забивать UI)
+            // В чат пишем только текст сообщения
             chatDao.insert(ChatMessageEntity(
                 sessionId = sessionId,
                 role = MessageRole.USER,
                 content = if (attachedName != null) "$message\n📎 $attachedName (${_attachedFileSize.value / 1024}KB)" else message
             ))
 
-            // Загружаем историю (если включена и НЕ Cache Mode)
+            // Загружаем историю
             val historyMessages = if (_conversationHistoryEnabled.value && !isCacheMode) {
                 chatDao.getSession(sessionId)
                     .filter { it.role != MessageRole.SYSTEM }
@@ -617,6 +619,10 @@ class AnalyzerViewModel @Inject constructor(
                 emptyList()
             }
 
+            // ★ NEW: Запускаем Foreground Service для ВСЕХ стримов
+            StreamingForegroundService.start(appContext, useModel.displayName)
+
+            val startTime = System.currentTimeMillis()
             var fullResponse = ""
 
             try {
@@ -645,6 +651,31 @@ class AnalyzerViewModel @Inject constructor(
                         is RepositoryAnalyzer.AnalysisResult.Streaming -> {
                             fullResponse = result.text
                             _streamingText.value = fullResponse
+
+                            // ★ NEW: Обновляем уведомление Foreground Service
+                            val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+                            val tokens = fullResponse.length / 4 // грубая оценка
+                            StreamingForegroundService.updateProgress(
+                                appContext,
+                                progressText = "Generating: ~${"%,d".format(tokens)} tokens",
+                                tokens = tokens,
+                                elapsedSec = elapsed
+                            )
+                        }
+
+                        // ★ NEW: Обработка retry-событий от ResilientStreamingClient
+                        is RepositoryAnalyzer.AnalysisResult.WaitingForNetwork -> {
+                            addOperation("📡", "Сеть потеряна. Ожидание... (попытка ${result.attempt}/${result.maxAttempts})", OperationLogType.ERROR)
+                            StreamingForegroundService.updateProgress(
+                                appContext,
+                                progressText = "⚠️ Waiting for network (attempt ${result.attempt})",
+                                tokens = result.accumulatedTokens,
+                                elapsedSec = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+                            )
+                        }
+
+                        is RepositoryAnalyzer.AnalysisResult.Retrying -> {
+                            addOperation("🔄", "Переподключение #${result.attempt} (backoff ${result.backoffMs / 1000}s)", OperationLogType.PROGRESS)
                         }
 
                         is RepositoryAnalyzer.AnalysisResult.ToolCallStarted -> {
@@ -680,8 +711,9 @@ class AnalyzerViewModel @Inject constructor(
 
                             result.cost.let { cost ->
                                 val toolInfo = if (result.toolIterations > 1) " (${result.toolIterations} iterations)" else ""
+                                val retryInfo = if (result.totalRetries > 0) " [${result.totalRetries} retries]" else ""
                                 addOperation("✅",
-                                    "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)}$toolInfo",
+                                    "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)}$toolInfo$retryInfo",
                                     OperationLogType.SUCCESS
                                 )
 
@@ -691,8 +723,6 @@ class AnalyzerViewModel @Inject constructor(
                             }
 
                             _selectedFiles.value = emptySet()
-                            
-                            // Открепляем файл после успешной отправки
                             if (_attachedFileContent.value != null) {
                                 detachFile()
                             }
@@ -715,6 +745,9 @@ class AnalyzerViewModel @Inject constructor(
                 _streamingText.value = null
                 _chatError.value = e.message
                 addOperation("❌", "Error: ${e.message}", OperationLogType.ERROR)
+            } finally {
+                // ★ NEW: Останавливаем Foreground Service
+                StreamingForegroundService.stop(appContext)
             }
         }
     }
@@ -733,5 +766,7 @@ class AnalyzerViewModel @Inject constructor(
         sendJob?.cancel()
         cacheTimerJob?.cancel()
         _currentSession.value?.let { if (it.isActive) repositoryAnalyzer.endSession(it.sessionId) }
+        // ★ NEW: Гарантируем остановку сервиса при очистке ViewModel
+        StreamingForegroundService.stop(appContext)
     }
 }
