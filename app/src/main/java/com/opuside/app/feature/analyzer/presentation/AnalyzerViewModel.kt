@@ -1,4 +1,4 @@
-package com.opuside.app.ui.analyzer
+package com.opuside.app.feature.analyzer.presentation
 
 import android.util.Log
 import androidx.lifecycle.SavedStateHandle
@@ -16,17 +16,20 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.util.*
+import java.util.UUID
 import javax.inject.Inject
 
 /**
- * 🤖 ANALYZER VIEWMODEL v12.0 (CACHE + FIRST MESSAGE CACHING + HISTORY LOCK)
+ * Analyzer ViewModel v10.0 (PROMPT CACHING 100% COMPLIANT)
  *
- * ✅ ИЗМЕНЕНИЯ:
- * 1. История ЗАБЛОКИРОВАНА в Cache Mode
- * 2. Первое user сообщение кешируется
- * 3. Cache работает: system + tools + первое сообщение
- * 4. Правильный таймер и статистика
+ * ═══════════════════════════════════════════════════════════════════════════
+ * ИСПРАВЛЕНИЯ ПО ОФИЦИАЛЬНОЙ ДОКУМЕНТАЦИИ ANTHROPIC:
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * 1. Cache создается при первом запросе в Cache Mode
+ * 2. Таймер сбрасывается при каждом cache hit (бесплатно)
+ * 3. Cache очищается при выключении Cache Mode
+ * 4. История ЗАБЛОКИРОВАНА в Cache Mode
  */
 @HiltViewModel
 class AnalyzerViewModel @Inject constructor(
@@ -43,50 +46,48 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // STATE
+    // OPERATIONS LOG
     // ═══════════════════════════════════════════════════════════════════
 
-    private val _sessionId = savedStateHandle.get<String>(KEY_SESSION_ID) 
-        ?: UUID.randomUUID().toString().also { savedStateHandle[KEY_SESSION_ID] = it }
-    
-    val sessionId: String get() = _sessionId
+    data class OperationLogItem(
+        val id: String = UUID.randomUUID().toString(),
+        val icon: String,
+        val message: String,
+        val timestamp: Long = System.currentTimeMillis(),
+        val type: OperationLogType = OperationLogType.INFO
+    )
 
-    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.getDefault())
-    val selectedModel: StateFlow<ClaudeModelConfig.ClaudeModel> = _selectedModel.asStateFlow()
+    enum class OperationLogType { INFO, SUCCESS, ERROR, PROGRESS }
 
-    private val _ecoOutputMode = MutableStateFlow(false)
-    val ecoOutputMode: StateFlow<Boolean> = _ecoOutputMode.asStateFlow()
+    private val _operationsLog = MutableStateFlow<List<OperationLogItem>>(emptyList())
+    val operationsLog: StateFlow<List<OperationLogItem>> = _operationsLog.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CONVERSATION HISTORY MODE
+    // ═══════════════════════════════════════════════════════════════════
 
     private val _conversationHistoryEnabled = MutableStateFlow(false)
     val conversationHistoryEnabled: StateFlow<Boolean> = _conversationHistoryEnabled.asStateFlow()
 
-    private val _selectedFiles = MutableStateFlow<Set<String>>(emptySet())
-    val selectedFiles: StateFlow<Set<String>> = _selectedFiles.asStateFlow()
+    // ═══════════════════════════════════════════════════════════════════
+    // ECO / MAX OUTPUT MODE
+    // ═══════════════════════════════════════════════════════════════════
 
-    private val _isStreaming = MutableStateFlow(false)
-    val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
-
-    private val _streamingText = MutableStateFlow<String?>(null)
-    val streamingText: StateFlow<String?> = _streamingText.asStateFlow()
-
-    private val _chatError = MutableStateFlow<String?>(null)
-    val chatError: StateFlow<String?> = _chatError.asStateFlow()
-
-    private val _currentSession = MutableStateFlow<ClaudeModelConfig.ChatSession?>(null)
-    val currentSession: StateFlow<ClaudeModelConfig.ChatSession?> = _currentSession.asStateFlow()
+    private val _ecoOutputMode = MutableStateFlow(true)
+    val ecoOutputMode: StateFlow<Boolean> = _ecoOutputMode.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE STATE
+    // DEDICATED CACHE MODE
     // ═══════════════════════════════════════════════════════════════════
 
     private val _cacheModeEnabled = MutableStateFlow(false)
     val cacheModeEnabled: StateFlow<Boolean> = _cacheModeEnabled.asStateFlow()
 
-    private val _cacheIsWarmed = MutableStateFlow(false)
-    val cacheIsWarmed: StateFlow<Boolean> = _cacheIsWarmed.asStateFlow()
-
     private val _cacheTimerMs = MutableStateFlow(0L)
     val cacheTimerMs: StateFlow<Long> = _cacheTimerMs.asStateFlow()
+
+    private val _cacheIsWarmed = MutableStateFlow(false)
+    val cacheIsWarmed: StateFlow<Boolean> = _cacheIsWarmed.asStateFlow()
 
     private val _cacheTotalReadTokens = MutableStateFlow(0)
     val cacheTotalReadTokens: StateFlow<Int> = _cacheTotalReadTokens.asStateFlow()
@@ -104,120 +105,162 @@ class AnalyzerViewModel @Inject constructor(
     private var cacheExpiresAt: Long = 0L
 
     // ═══════════════════════════════════════════════════════════════════
-    // OPERATIONS LOG
+    // SESSION & MODEL
     // ═══════════════════════════════════════════════════════════════════
 
-    private val _operationsLog = MutableStateFlow<List<OperationLogEntry>>(emptyList())
-    val operationsLog: StateFlow<List<OperationLogEntry>> = _operationsLog.asStateFlow()
+    private var _sessionId: String = savedStateHandle.get<String>(KEY_SESSION_ID)
+        ?: UUID.randomUUID().toString().also { savedStateHandle[KEY_SESSION_ID] = it }
+    private val sessionId: String get() = _sessionId
 
-    data class OperationLogEntry(
-        val id: String = UUID.randomUUID().toString(),
-        val timestamp: Long = System.currentTimeMillis(),
-        val icon: String,
-        val message: String,
-        val type: OperationLogType
-    )
+    private val _selectedModel = MutableStateFlow(ClaudeModelConfig.ClaudeModel.getDefault())
+    val selectedModel: StateFlow<ClaudeModelConfig.ClaudeModel> = _selectedModel.asStateFlow()
 
-    enum class OperationLogType {
-        INFO, SUCCESS, ERROR, PROGRESS
-    }
-
-    private fun addOperation(icon: String, message: String, type: OperationLogType) {
-        val entry = OperationLogEntry(icon = icon, message = message, type = type)
-        _operationsLog.value = (_operationsLog.value + entry).takeLast(MAX_OPS_LOG_SIZE)
-    }
-
-    fun clearOperationsLog() {
-        _operationsLog.value = emptyList()
-    }
+    private val _currentSession = MutableStateFlow<ClaudeModelConfig.ChatSession?>(null)
+    val currentSession: StateFlow<ClaudeModelConfig.ChatSession?> = _currentSession.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════
-    // JOBS
+    // FILE SELECTION
     // ═══════════════════════════════════════════════════════════════════
+
+    private val _selectedFiles = MutableStateFlow<Set<String>>(emptySet())
+    val selectedFiles: StateFlow<Set<String>> = _selectedFiles.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CHAT
+    // ═══════════════════════════════════════════════════════════════════
+
+    private val _messagesSessionId = MutableStateFlow(sessionId)
+    val messages: Flow<List<ChatMessageEntity>> = _messagesSessionId
+        .flatMapLatest { id -> chatDao.getMessages(id) }
+
+    private val _isStreaming = MutableStateFlow(false)
+    val isStreaming: StateFlow<Boolean> = _isStreaming.asStateFlow()
+
+    private val _chatError = MutableStateFlow<String?>(null)
+    val chatError: StateFlow<String?> = _chatError.asStateFlow()
+
+    private val _streamingText = MutableStateFlow<String?>(null)
+    val streamingText: StateFlow<String?> = _streamingText.asStateFlow()
 
     private var sendJob: Job? = null
 
+    val sessionTokens: StateFlow<ClaudeModelConfig.ModelCost?> = currentSession
+        .map { it?.currentCost }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    val isApproachingLongContext: StateFlow<Boolean> = currentSession
+        .map { it?.isApproachingLongContext ?: false }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    // ═══════════════════════════════════════════════════════════════════
+    // INIT
+    // ═══════════════════════════════════════════════════════════════════
+
     init {
-        Log.i(TAG, "AnalyzerViewModel v12.0 initialized (Cache + First Message Caching)")
-        loadSession()
-    }
-
-    private fun loadSession() {
         viewModelScope.launch {
-            val session = repositoryAnalyzer.getSession(_sessionId)
-                ?: repositoryAnalyzer.createSession(_sessionId, _selectedModel.value)
-            _currentSession.value = session
-            addOperation("📊", "Session loaded: ${session.model.displayName}", OperationLogType.INFO)
-        }
-    }
+            val savedModelId = appSettings.claudeModel.first()
+            val model = ClaudeModelConfig.ClaudeModel.fromModelId(savedModelId) ?: ClaudeModelConfig.ClaudeModel.getDefault()
+            _selectedModel.value = model
 
-    // ═══════════════════════════════════════════════════════════════════
-    // MODEL SELECTION
-    // ═══════════════════════════════════════════════════════════════════
-
-    fun selectModel(model: ClaudeModelConfig.ClaudeModel) {
-        if (_isStreaming.value) {
-            _chatError.value = "Cannot change model during streaming"
-            return
-        }
-
-        val previousModel = _selectedModel.value
-        _selectedModel.value = model
-
-        if (previousModel != model) {
-            viewModelScope.launch {
-                repositoryAnalyzer.endSession(_sessionId)
-                val newSession = repositoryAnalyzer.createSession(_sessionId, model)
-                _currentSession.value = newSession
-                addOperation("🔄", "Switched to ${model.displayName}", OperationLogType.INFO)
+            val existing = repositoryAnalyzer.getSession(sessionId)
+            if (existing != null && existing.model == model) {
+                _currentSession.value = existing
+            } else {
+                existing?.let { repositoryAnalyzer.endSession(sessionId) }
+                _currentSession.value = repositoryAnalyzer.createSession(sessionId, model)
             }
         }
-    }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // ECO MODE
-    // ═══════════════════════════════════════════════════════════════════
-
-    fun toggleEcoOutputMode() {
-        if (_cacheModeEnabled.value) {
-            addOperation("🔒", "ECO заблокирован в Cache Mode", OperationLogType.ERROR)
-            return
-        }
-
-        _ecoOutputMode.value = !_ecoOutputMode.value
-        val maxTokens = getEffectiveMaxTokens(_selectedModel.value)
-        val status = if (_ecoOutputMode.value) "ON (${"%,d".format(maxTokens)} tok)" else "OFF"
-        addOperation("💰", "ECO Mode: $status", OperationLogType.INFO)
-    }
-
-    private fun getEffectiveMaxTokens(model: ClaudeModelConfig.ClaudeModel): Int {
-        return if (_cacheModeEnabled.value) {
-            model.maxOutputTokens
-        } else {
-            model.getEffectiveOutputTokens(_ecoOutputMode.value)
+        viewModelScope.launch {
+            while (true) { delay(3600_000); try { repositoryAnalyzer.cleanupOldSessions() } catch (_: Exception) {} }
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CONVERSATION HISTORY
+    // COPY CHAT
+    // ═══════════════════════════════════════════════════════════════════
+
+    suspend fun getChatAsText(): String {
+        val allMessages = chatDao.getSession(sessionId)
+            .filter { !it.isStreaming && it.content.isNotBlank() }
+
+        if (allMessages.isEmpty()) return ""
+
+        val sb = StringBuilder()
+        sb.appendLine("═══ Analyzer Chat ═══")
+        sb.appendLine("Model: ${_selectedModel.value.displayName}")
+        sb.appendLine("═".repeat(30))
+        sb.appendLine()
+
+        allMessages.forEach { msg ->
+            val role = when (msg.role) {
+                MessageRole.USER -> "👤 You"
+                MessageRole.ASSISTANT -> "🤖 Claude"
+                MessageRole.SYSTEM -> "⚙️ System"
+            }
+            sb.appendLine("── $role ──")
+            sb.appendLine(msg.content)
+            sb.appendLine()
+        }
+
+        return sb.toString().trimEnd()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CONVERSATION HISTORY TOGGLE
     // ═══════════════════════════════════════════════════════════════════
 
     fun toggleConversationHistory() {
-        // ✅ НОВОЕ: Блокируем если включен Cache Mode
+        // Блокируем если включен Cache Mode
         if (_cacheModeEnabled.value) {
             addOperation("🔒", "История заблокирована в Cache Mode", OperationLogType.ERROR)
             return
         }
-        
+
         _conversationHistoryEnabled.value = !_conversationHistoryEnabled.value
         val status = if (_conversationHistoryEnabled.value) "ON" else "OFF"
         addOperation("💬", "Conversation History: $status", OperationLogType.INFO)
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CACHE MODE
+    // ECO / MAX TOGGLE
     // ═══════════════════════════════════════════════════════════════════
 
+    fun toggleOutputMode() {
+        if (_cacheModeEnabled.value) {
+            addOperation("🔒", "ECO заблокирован в Cache Mode", OperationLogType.INFO)
+            return
+        }
+        _ecoOutputMode.value = !_ecoOutputMode.value
+        val tok = getEffectiveMaxTokens()
+        addOperation(
+            if (_ecoOutputMode.value) "🟢" else "🔴",
+            "Output: ${if (_ecoOutputMode.value) "ECO" else "MAX"} (${"%,d".format(tok)} tok)",
+            OperationLogType.INFO
+        )
+    }
+
+    fun getEffectiveMaxTokens(): Int = getEffectiveMaxTokens(_selectedModel.value)
+
+    fun getEffectiveMaxTokens(model: ClaudeModelConfig.ClaudeModel): Int {
+        return if (_cacheModeEnabled.value) model.maxOutputTokens
+        else model.getEffectiveOutputTokens(_ecoOutputMode.value)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CACHE MODE — 100% ПО ДОКУМЕНТАЦИИ
+    // ═══════════════════════════════════════════════════════════════════
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════
+     * ПРАВИЛЬНОЕ КЕШИРОВАНИЕ (по документации Anthropic):
+     * ═══════════════════════════════════════════════════════════════════
+     *
+     * 1. Включаем Cache Mode → output MAX, таймер НЕ запускается
+     * 2. Первый запрос → создается кеш (system + tools), запускается таймер
+     * 3. Последующие запросы → cache hit, таймер СБРАСЫВАЕТСЯ (бесплатно)
+     * 4. Выключаем Cache Mode → очищаем кеш сессии, сбрасываем таймер
+     */
     fun toggleCacheMode() {
         if (_ecoOutputMode.value && !_cacheModeEnabled.value) {
             addOperation("🔒", "Cache заблокирован: сначала переключите на MAX", OperationLogType.ERROR)
@@ -228,21 +271,13 @@ class AnalyzerViewModel @Inject constructor(
         _cacheModeEnabled.value = newState
 
         if (newState) {
-            // ✅ НОВОЕ: Выключаем историю при включении Cache
-            _conversationHistoryEnabled.value = false
+            // Включаем Cache Mode
             _ecoOutputMode.value = false
-            
-            stopCacheTimer()
-            _cacheIsWarmed.value = false
-            _cacheTotalReadTokens.value = 0
-            _cacheTotalWriteTokens.value = 0
-            _cacheTotalSavingsEUR.value = 0.0
-            _cacheHitCount.value = 0
-            cacheExpiresAt = 0L
-            
+            _conversationHistoryEnabled.value = false
             addOperation("📦", "CACHE MODE ON — первое сообщение будет кешировано", OperationLogType.SUCCESS)
             addOperation("🔒", "История автоматически выключена", OperationLogType.INFO)
         } else {
+            // Выключаем Cache Mode
             stopCacheTimer()
             _cacheIsWarmed.value = false
             _cacheTotalReadTokens.value = 0
@@ -250,6 +285,8 @@ class AnalyzerViewModel @Inject constructor(
             _cacheTotalSavingsEUR.value = 0.0
             _cacheHitCount.value = 0
             cacheExpiresAt = 0L
+            
+            // Очищаем кеш сессии
             repositoryAnalyzer.clearCacheForSession(_sessionId)
             
             addOperation("📦", "CACHE MODE OFF — кеш очищен", OperationLogType.SUCCESS)
@@ -257,18 +294,17 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Запускается при первом cache write
+     * Запускает таймер при первом запросе (когда кеш создается)
      */
     private fun startCacheTimerIfNeeded() {
         if (!_cacheModeEnabled.value) return
-        
         if (_cacheIsWarmed.value && cacheTimerJob?.isActive == true) {
-            // Кеш уже прогрет и таймер работает — это cache hit, обновляем таймер
+            // Таймер уже работает — сбрасываем его (cache hit)
             resetCacheTimer()
             return
         }
 
-        // Первый запрос — создаем кеш и запускаем таймер
+        // Первый запрос — запускаем таймер
         cacheTimerJob?.cancel()
         cacheExpiresAt = System.currentTimeMillis() + ClaudeModelConfig.CACHE_TTL_MS
         _cacheTimerMs.value = ClaudeModelConfig.CACHE_TTL_MS
@@ -292,7 +328,7 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Сбрасывает таймер при каждом cache hit
+     * Сбрасывает таймер при cache hit (бесплатно)
      */
     private fun resetCacheTimer() {
         if (!_cacheIsWarmed.value) { 
@@ -312,55 +348,99 @@ class AnalyzerViewModel @Inject constructor(
     }
 
     /**
-     * ✅ ИСПРАВЛЕНО: Корректно обрабатывает cache write и cache read
+     * Обрабатывает результаты кеширования из API
      */
     private fun handleCacheResult(cachedReadTokens: Int, cachedWriteTokens: Int, savingsEUR: Double) {
         if (cachedWriteTokens > 0) {
             // Первый запрос — кеш создан
             _cacheTotalWriteTokens.value += cachedWriteTokens
-            startCacheTimerIfNeeded()
+            startCacheTimerIfNeeded()  // Запускаем таймер
             addOperation("📝", "Cache WRITE: ${"%,d".format(cachedWriteTokens)} tok", OperationLogType.SUCCESS)
         }
         if (cachedReadTokens > 0) {
-            // Cache hit — обновляем таймер
+            // Cache hit — сбрасываем таймер (бесплатно)
             _cacheTotalReadTokens.value += cachedReadTokens
             _cacheHitCount.value += 1
             _cacheTotalSavingsEUR.value += savingsEUR
-            resetCacheTimer()
+            resetCacheTimer()  // Сбрасываем таймер
             addOperation("⚡", "Cache HIT: ${"%,d".format(cachedReadTokens)} tok (€${String.format("%.4f", savingsEUR)} saved)", OperationLogType.SUCCESS)
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // FILE SELECTION
+    // OPS LOG
     // ═══════════════════════════════════════════════════════════════════
 
-    fun toggleFileSelection(filePath: String) {
-        _selectedFiles.value = if (_selectedFiles.value.contains(filePath)) {
-            _selectedFiles.value - filePath
-        } else {
-            _selectedFiles.value + filePath
+    private fun addOperation(icon: String, message: String, type: OperationLogType = OperationLogType.INFO) {
+        _operationsLog.update { current ->
+            val newItem = OperationLogItem(icon = icon, message = message, type = type)
+            if (current.size >= MAX_OPS_LOG_SIZE) {
+                current.drop(current.size - MAX_OPS_LOG_SIZE + 1) + newItem
+            } else {
+                current + newItem
+            }
         }
     }
 
-    fun clearFileSelection() {
-        _selectedFiles.value = emptySet()
-    }
+    fun clearOperationsLog() { _operationsLog.value = emptyList() }
 
-    fun selectAllFiles(files: List<String>) {
-        _selectedFiles.value = files.toSet()
+    // ═══════════════════════════════════════════════════════════════════
+    // MODEL SELECTION
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun selectModel(model: ClaudeModelConfig.ClaudeModel) {
+        _selectedModel.value = model
+        viewModelScope.launch { appSettings.setClaudeModel(model.modelId) }
+        startNewSession()
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // ERROR HANDLING
+    // SESSION
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * ✅ ДОБАВЛЕНО: Метод для очистки ошибки
-     */
-    fun clearError() {
-        _chatError.value = null
+    fun startNewSession() {
+        sendJob?.cancel()
+        
+        // Очищаем кеш для старой сессии
+        repositoryAnalyzer.clearCacheForSession(_sessionId)
+        
+        viewModelScope.launch {
+            _currentSession.value?.let { repositoryAnalyzer.endSession(it.sessionId) }
+
+            val newSessionId = UUID.randomUUID().toString()
+            savedStateHandle[KEY_SESSION_ID] = newSessionId
+            _sessionId = newSessionId
+            _messagesSessionId.value = newSessionId
+
+            _currentSession.value = repositoryAnalyzer.createSession(newSessionId, _selectedModel.value)
+            _selectedFiles.value = emptySet()
+            _chatError.value = null
+            _isStreaming.value = false
+            _streamingText.value = null
+
+            if (_cacheModeEnabled.value) {
+                stopCacheTimer()
+                _cacheIsWarmed.value = false
+                _cacheTotalReadTokens.value = 0
+                _cacheTotalWriteTokens.value = 0
+                _cacheTotalSavingsEUR.value = 0.0
+                _cacheHitCount.value = 0
+            }
+
+            addOperation("🔄", "Новый сеанс: ${_selectedModel.value.displayName}", OperationLogType.SUCCESS)
+        }
     }
+
+    fun getSessionStats(): String? = _currentSession.value?.getDetailedStats()
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FILE SELECTION
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun selectFiles(files: Set<String>) { _selectedFiles.value = files }
+    fun addFile(filePath: String) { _selectedFiles.value = _selectedFiles.value + filePath }
+    fun removeFile(filePath: String) { _selectedFiles.value = _selectedFiles.value - filePath }
+    fun clearSelectedFiles() { _selectedFiles.value = emptySet() }
 
     // ═══════════════════════════════════════════════════════════════════
     // SEND MESSAGE
@@ -390,7 +470,7 @@ class AnalyzerViewModel @Inject constructor(
                 content = message
             ))
 
-            // ✅ ИСПРАВЛЕНО: В Cache Mode история ВСЕГДА пустая
+            // Загружаем историю (если включена и НЕ Cache Mode)
             val historyMessages = if (_conversationHistoryEnabled.value && !isCacheMode) {
                 chatDao.getSession(sessionId)
                     .filter { it.role != MessageRole.SYSTEM }
@@ -492,21 +572,19 @@ class AnalyzerViewModel @Inject constructor(
         }
     }
 
-    fun stopStreaming() {
-        sendJob?.cancel()
-        _isStreaming.value = false
-        _streamingText.value = null
-        addOperation("⏹️", "Streaming stopped", OperationLogType.INFO)
-    }
+    fun clearChat() { viewModelScope.launch { chatDao.clearSession(sessionId) } }
+    fun dismissError() { _chatError.value = null }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // CLEANUP
-    // ═══════════════════════════════════════════════════════════════════
+    fun getCacheTimerFormatted(ms: Long): String {
+        if (ms <= 0) return "0:00"
+        val sec = (ms / 1000).toInt()
+        return "${sec / 60}:${String.format("%02d", sec % 60)}"
+    }
 
     override fun onCleared() {
         super.onCleared()
-        stopCacheTimer()
         sendJob?.cancel()
-        Log.i(TAG, "ViewModel cleared")
+        cacheTimerJob?.cancel()
+        _currentSession.value?.let { if (it.isActive) repositoryAnalyzer.endSession(it.sessionId) }
     }
 }
