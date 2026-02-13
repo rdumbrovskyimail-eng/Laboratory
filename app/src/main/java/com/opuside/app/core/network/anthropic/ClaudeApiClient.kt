@@ -34,17 +34,29 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Claude API Client v8.0 (PROMPT CACHING 100% COMPLIANT)
+ * Claude API Client v9.0 (EXTENDED THINKING + LONG CONTEXT + STABILITY)
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ИСПРАВЛЕНИЯ ПО ОФИЦИАЛЬНОЙ ДОКУМЕНТАЦИИ ANTHROPIC:
+ * КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ ДЛЯ 125K OUTPUT + THINKING + 1M CONTEXT:
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * 1. Cache-control добавляется к system, tools и первому user message
- * 2. Минимум 1024 токена для кеширования (Sonnet/Opus 4.x)
- * 3. TTL по умолчанию 5 минут, обновляется при каждом cache hit
- * 4. Cache key = cumulative hash (system + tools + messages до breakpoint)
- * 5. Header "anthropic-beta: prompt-caching-2024-07-31" обязателен
+ * 1. MAX_STREAMING_TIME_MS увеличен до 90 минут (было 5 минут)
+ *    Причина: 125K output @ 30 tok/s = 67 минут генерации
+ *
+ * 2. Extended Thinking поддержка:
+ *    - Параметр "thinking" в JSON запросе
+ *    - Обработка "thinking_delta" событий в SSE стриме
+ *    - Thinking токены не показываются пользователю (silent processing)
+ *
+ * 3. Новые параметры в streamMessage():
+ *    - enableThinking: включает extended thinking
+ *    - thinkingBudget: бюджет токенов для размышлений (по умолчанию 40K)
+ *    - sendTools: флаг отправки инструментов
+ *    - sendSystemPrompt: флаг отправки system prompt
+ *
+ * 4. Temperature = null при thinking (требование API)
+ *
+ * 5. Prompt Caching остаётся 100% совместимым с документацией
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -58,7 +70,7 @@ class ClaudeApiClient @Inject constructor(
         private const val TAG = "ClaudeApiClient"
         private const val API_VERSION = "2023-06-01"
         private const val ANTHROPIC_BETA = "prompt-caching-2024-07-31"
-        private const val MAX_STREAMING_TIME_MS = 5 * 60 * 1000L
+        private const val MAX_STREAMING_TIME_MS = 90 * 60 * 1000L // 90 минут для long output
     }
 
     private suspend fun getApiKey(): String {
@@ -129,7 +141,7 @@ class ClaudeApiClient @Inject constructor(
 
     /**
      * ═══════════════════════════════════════════════════════════════════════
-     * STREAMING С PROMPT CACHING (100% по документации Anthropic)
+     * STREAMING С EXTENDED THINKING + PROMPT CACHING
      * ═══════════════════════════════════════════════════════════════════════
      */
     fun streamMessage(
@@ -139,13 +151,17 @@ class ClaudeApiClient @Inject constructor(
         maxTokens: Int = 4096,
         temperature: Double? = null,
         enableCaching: Boolean = false,
-        tools: List<JsonObject>? = null
+        tools: List<JsonObject>? = null,
+        enableThinking: Boolean = false,
+        thinkingBudget: Int = 40000,
+        sendTools: Boolean = true,
+        sendSystemPrompt: Boolean = true
     ): Flow<StreamingResult> = flow {
         var channel: ByteReadChannel? = null
 
         try {
             val apiKey = getApiKey()
-            Log.d(TAG, "Stream: model=$model, msgs=${messages.size}, cache=$enableCaching, tools=${tools?.size ?: 0}")
+            Log.d(TAG, "Stream: model=$model, msgs=${messages.size}, cache=$enableCaching, thinking=$enableThinking, tools=${if (sendTools) tools?.size else 0}")
 
             val response = httpClient.post(apiUrl) {
                 contentType(ContentType.Application.Json)
@@ -158,11 +174,13 @@ class ClaudeApiClient @Inject constructor(
                 val jsonBody = buildRequestJson(
                     model = model,
                     messages = messages,
-                    systemPrompt = systemPrompt,
+                    systemPrompt = if (sendSystemPrompt) systemPrompt else null,
                     maxTokens = maxTokens,
-                    temperature = temperature,
+                    temperature = if (enableThinking) null else temperature,
                     enableCaching = enableCaching,
-                    tools = tools
+                    tools = if (sendTools) tools else null,
+                    enableThinking = enableThinking,
+                    thinkingBudget = thinkingBudget
                 )
                 setBody(jsonBody)
             }
@@ -185,7 +203,7 @@ class ClaudeApiClient @Inject constructor(
 
             while (!channel.isClosedForRead) {
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
-                    emit(StreamingResult.Error(ClaudeApiException("timeout", "Streaming exceeded 5 minutes")))
+                    emit(StreamingResult.Error(ClaudeApiException("timeout", "Streaming exceeded 90 minutes")))
                     return@flow
                 }
 
@@ -220,6 +238,10 @@ class ClaudeApiClient @Inject constructor(
                                         currentText.append(text)
                                         emit(StreamingResult.Delta(text, currentText.toString()))
                                     }
+                                }
+                                "thinking_delta" -> {
+                                    // Thinking токены — игнорируем контент, но они считаются в usage
+                                    // Можно в будущем показывать индикатор "Claude думает..."
                                 }
                                 "input_json_delta" -> {
                                     delta.partialJson?.let { partial ->
@@ -295,13 +317,8 @@ class ClaudeApiClient @Inject constructor(
 
     /**
      * ═══════════════════════════════════════════════════════════════════════
-     * ПРАВИЛЬНОЕ КЕШИРОВАНИЕ ПО ДОКУМЕНТАЦИИ ANTHROPIC
+     * ПРАВИЛЬНОЕ КЕШИРОВАНИЕ + EXTENDED THINKING
      * ═══════════════════════════════════════════════════════════════════════
-     *
-     * Cache-control добавляется к:
-     * 1. System prompt (последний блок в system array)
-     * 2. Tools (последний tool definition)
-     * 3. Первое user сообщение (расширяет кешируемый префикс)
      */
     private fun buildRequestJson(
         model: String,
@@ -310,12 +327,19 @@ class ClaudeApiClient @Inject constructor(
         maxTokens: Int,
         temperature: Double?,
         enableCaching: Boolean,
-        tools: List<JsonObject>?
+        tools: List<JsonObject>?,
+        enableThinking: Boolean = false,
+        thinkingBudget: Int = 40000
     ): String = buildString {
         append("{")
         append("\"model\":${Json.encodeToString(model)},")
         append("\"max_tokens\":$maxTokens,")
         append("\"stream\":true")
+
+        // EXTENDED THINKING
+        if (enableThinking) {
+            append(",\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":$thinkingBudget}")
+        }
 
         // Validated temperature
         if (temperature != null) {
@@ -467,7 +491,7 @@ class ClaudeApiClient @Inject constructor(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STREAMING RESULT (без изменений)
+// STREAMING RESULT
 // ═══════════════════════════════════════════════════════════════════════════════
 
 data class ToolCall(
