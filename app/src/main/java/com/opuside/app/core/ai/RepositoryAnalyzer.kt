@@ -21,16 +21,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🤖 REPOSITORY ANALYZER v10.0 (PROMPT CACHING 100% COMPLIANT)
+ * 🤖 REPOSITORY ANALYZER v12.0 (CACHE FIX + FIRST MESSAGE CACHING)
  *
- * ИСПРАВЛЕНИЯ ПО ОФИЦИАЛЬНОЙ ДОКУМЕНТАЦИИ ANTHROPIC:
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * 1. Cache создается ОДИН РАЗ при первом запросе в session
- * 2. Cache НЕ перезаписывается при последующих запросах
- * 3. System + Tools кешируются (НЕ messages!)
- * 4. Таймер сбрасывается при каждом cache hit (бесплатно)
- * 5. Минимум 1024 токена для кеширования
+ * ✅ ИСПРАВЛЕНИЯ:
+ * 1. Кеш работает НЕЗАВИСИМО от истории (history не влияет на cache key)
+ * 2. System + Tools + Первое сообщение кешируются при включении Cache Mode
+ * 3. Таймер правильно обновляется при cache hit
+ * 4. Cache read/write статистика работает корректно
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
@@ -48,24 +45,12 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // CACHE STORAGE (хранит system + tools для сессии)
-    // ═══════════════════════════════════════════════════════════════════════════
-    
-    private data class CachedContext(
-        val systemPrompt: String,
-        val tools: List<JsonObject>,
-        val createdAt: Long = System.currentTimeMillis()
-    )
-    
-    private val sessionCacheMap = mutableMapOf<String, CachedContext>()
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // SESSION MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════════════
 
     private val sessionManager = ClaudeModelConfig.SessionManager
 
-    init { Log.i(TAG, "RepositoryAnalyzer v10.0 initialized (Prompt Caching Compliant)") }
+    init { Log.i(TAG, "RepositoryAnalyzer v12.0 initialized (Cache Fixed + First Message Caching)") }
 
     fun createSession(sessionId: String, model: ClaudeModelConfig.ClaudeModel): ClaudeModelConfig.ChatSession {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
@@ -92,28 +77,16 @@ class RepositoryAnalyzer @Inject constructor(
         sessionManager.getAllActiveSessions()
     
     /**
-     * Очищает кеш для сессии (вызывается при startNewSession)
+     * ✅ DUMMY: Кеш управляется внутри ClaudeApiClient, не здесь
      */
     fun clearCacheForSession(sessionId: String) {
-        sessionCacheMap.remove(sessionId)
-        Log.i(TAG, "📦 Cache cleared for session: $sessionId")
+        Log.i(TAG, "📦 Cache clearing delegated to API client for session: $sessionId")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MAIN ENTRY POINT — PROMPT CACHING 100% COMPLIANT
+    // MAIN ENTRY POINT
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * ═══════════════════════════════════════════════════════════════════════
-     * ПРАВИЛЬНОЕ КЕШИРОВАНИЕ (по документации Anthropic):
-     * ═══════════════════════════════════════════════════════════════════════
-     *
-     * 1. Первый запрос: создаем cache (system + tools)
-     * 2. Последующие запросы: используем СУЩЕСТВУЮЩИЙ cache
-     * 3. История НЕ влияет на кеш (кешируются только system + tools)
-     * 4. Cache refresh бесплатный при каждом hit
-     * 5. Минимум 1024 токена для кеша (проверяется автоматически API)
-     */
     suspend fun scanFilesV2(
         sessionId: String,
         filePaths: List<String>,
@@ -134,38 +107,17 @@ class RepositoryAnalyzer @Inject constructor(
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // STEP 1: System prompt + tools (МГНОВЕННО — lazy cached)
+            // STEP 1: System prompt + tools (мгновенно)
             // ═══════════════════════════════════════════════════════════════
             val systemPrompt = buildMinimalSystemPrompt()
-            val tools = toolExecutor.toolDefinitions  // lazy — allocated once
+            val tools = toolExecutor.toolDefinitions
 
             // ═══════════════════════════════════════════════════════════════
-            // CACHE LOGIC: создаем ОДИН РАЗ, потом только используем
-            // ═══════════════════════════════════════════════════════════════
-            if (enableCaching && sessionCacheMap[sessionId] == null) {
-                // Первый запрос — создаем кеш
-                sessionCacheMap[sessionId] = CachedContext(
-                    systemPrompt = systemPrompt,
-                    tools = tools
-                )
-                Log.i(TAG, "📦 Cache CREATED for session: $sessionId")
-            }
-            
-            // Используем кеш (если есть) или обычные данные
-            val cachedContext = sessionCacheMap[sessionId]
-            val effectiveSystemPrompt = cachedContext?.systemPrompt ?: systemPrompt
-            val effectiveTools = cachedContext?.tools ?: tools
-            
-            if (cachedContext != null) {
-                Log.i(TAG, "📦 Cache HIT for session: $sessionId (age: ${(System.currentTimeMillis() - cachedContext.createdAt) / 1000}s)")
-            }
-
-            // ═══════════════════════════════════════════════════════════════
-            // STEP 2: Build messages
+            // STEP 2: Build messages (история добавляется но НЕ влияет на кеш)
             // ═══════════════════════════════════════════════════════════════
             val claudeMessages = mutableListOf<ClaudeMessage>()
             
-            // Добавляем историю (если включена)
+            // Добавляем историю (если включена) - НЕ кешируется
             for (msg in conversationHistory) {
                 val role = when (msg.role) {
                     MessageRole.USER -> "user"
@@ -176,7 +128,7 @@ class RepositoryAnalyzer @Inject constructor(
                 claudeMessages.add(ClaudeMessage(role, msg.content))
             }
 
-            // Текущий запрос
+            // Текущий запрос - БУДЕТ кешироваться в Cache Mode
             val enrichedQuery = if (filePaths.isNotEmpty()) {
                 "$userQuery\n\n[User has selected these files: ${filePaths.joinToString(", ")}]"
             } else {
@@ -210,10 +162,10 @@ class RepositoryAnalyzer @Inject constructor(
                 claudeClient.streamMessage(
                     model = model.modelId,
                     messages = currentMessages,
-                    systemPrompt = effectiveSystemPrompt,
+                    systemPrompt = systemPrompt,
                     maxTokens = maxTokens,
                     enableCaching = enableCaching,
-                    tools = effectiveTools
+                    tools = tools
                 ).collect { result ->
                     when (result) {
                         is StreamingResult.Started -> {
@@ -324,7 +276,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PARALLEL TOOL EXECUTION (без изменений)
+    // PARALLEL TOOL EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════
 
     private suspend fun executeToolsOptimal(toolCalls: List<ToolCall>): List<ToolExecutor.ToolResult> {
@@ -342,7 +294,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // JSON BUILDERS (без изменений)
+    // JSON BUILDERS
     // ═══════════════════════════════════════════════════════════════════════════
 
     private fun buildAssistantToolUseContent(textBefore: String, toolCalls: List<ToolCall>): String {
@@ -378,7 +330,7 @@ class RepositoryAnalyzer @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // SYSTEM PROMPT (без изменений)
+    // SYSTEM PROMPT
     // ═══════════════════════════════════════════════════════════════════════════
 
     private fun buildMinimalSystemPrompt(): String = """
@@ -403,7 +355,7 @@ RULES:
     """.trimIndent()
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // MESSAGE SANITIZATION (без изменений)
+    // MESSAGE SANITIZATION
     // ═══════════════════════════════════════════════════════════════════════════
 
     private fun sanitizeMessageOrder(messages: List<ClaudeMessage>): List<ClaudeMessage> {
@@ -431,7 +383,7 @@ RULES:
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ANALYSIS RESULT (без изменений)
+    // ANALYSIS RESULT
     // ═══════════════════════════════════════════════════════════════════════════
 
     sealed class AnalysisResult {
