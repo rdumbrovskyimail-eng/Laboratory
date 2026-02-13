@@ -21,10 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -33,7 +30,6 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,22 +47,18 @@ import java.util.Locale
 // ═══════════════════════════════════════════════════════════════════════════
 
 private object ProColors {
-    // Dark Theme - Основные цвета
     val darkBg = Color(0xFF0A0E14)
     val darkSurface = Color(0xFF12171E)
     val darkSurfaceVariant = Color(0xFF1A1F26)
     val darkBorder = Color(0xFF2D3339)
     
-    // Light Theme - Основные цвета
     val lightBg = Color(0xFFF5F7FA)
     val lightSurface = Color(0xFFFFFFFF)
     val lightSurfaceVariant = Color(0xFFF8FAFB)
     val lightBorder = Color(0xFFE1E4E8)
     
-    // Акцентные цвета
     val blue = Color(0xFF4A9EFF)
     val blueLight = Color(0xFF6BB3FF)
-    val blueDark = Color(0xFF3B7FCC)
     val blueSoft = Color(0xFFE8F4FF)
     val blueSoftDark = Color(0xFF1A2332)
     
@@ -76,25 +68,16 @@ private object ProColors {
     val greenSoftDark = Color(0xFF1A2E1A)
     
     val orange = Color(0xFFFF9800)
-    val orangeLight = Color(0xFFFFAB40)
     val orangeSoft = Color(0xFFFFF3E0)
-    val orangeSoftDark = Color(0xFF2E2416)
     
     val red = Color(0xFFE53935)
-    val redLight = Color(0xFFEF5350)
     val redSoft = Color(0xFFFFEBEE)
     val redSoftDark = Color(0xFF2E1A1A)
     
     val purple = Color(0xFF9C27B0)
-    val purpleLight = Color(0xFFAB47BC)
-    val purpleSoft = Color(0xFFF3E5F5)
-    val purpleSoftDark = Color(0xFF261A2E)
     
     val yellow = Color(0xFFFFC107)
-    val yellowSoft = Color(0xFFFFF9E6)
-    val yellowSoftDark = Color(0xFF2E2816)
     
-    // Текст
     val darkText1 = Color(0xFFE8EDF3)
     val darkText2 = Color(0xFF8B949E)
     val darkText3 = Color(0xFF6E7681)
@@ -106,14 +89,9 @@ private object ProColors {
 
 private val opsTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ГЛАВНЫЙ COMPOSABLE
-// ═══════════════════════════════════════════════════════════════════════════
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
-    // State
     val messages by viewModel.messages.collectAsState(initial = emptyList())
     val isStreaming by viewModel.isStreaming.collectAsState()
     val chatError by viewModel.chatError.collectAsState()
@@ -154,7 +132,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
 
     val context = LocalContext.current
 
-    // File picker
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -180,7 +157,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
         }
     }
 
-    // Colors
     val cm = cacheModeEnabled
     val bg = if (cm) ProColors.lightBg else ProColors.darkBg
     val sf = if (cm) ProColors.lightSurface else ProColors.darkSurface
@@ -190,16 +166,12 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val t2 = if (cm) ProColors.lightText2 else ProColors.darkText2
     val t3 = if (cm) ProColors.lightText3 else ProColors.darkText3
     val ac = ProColors.blue
-    val acLight = ProColors.blueLight
     val gr = ProColors.green
-    val grLight = ProColors.greenLight
     val rd = ProColors.red
-    val rdLight = ProColors.redLight
     val yl = ProColors.yellow
     val or = ProColors.orange
     val pu = ProColors.purple
 
-    // Auto scroll
     val hasStreamingBubble = isStreaming && streamingText != null
     val totalItems = messages.size + (if (hasStreamingBubble) 1 else 0)
     LaunchedEffect(totalItems) { 
@@ -269,7 +241,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             Column(Modifier.fillMaxSize().imePadding()) {
-                // Cache status bar
                 AnimatedVisibility(
                     visible = cacheModeEnabled,
                     enter = expandVertically() + fadeIn(),
@@ -296,7 +267,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     )
                 }
 
-                // Operations log
                 OperationsPanel(
                     operationsLog = operationsLog,
                     opsListState = opsListState,
@@ -316,11 +286,9 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     bd = bd
                 )
 
-                Divider(color = bd, thickness = 1.dp)
+                HorizontalDivider(color = bd, thickness = 1.dp)
 
-                // Chat area
                 Column(Modifier.fillMaxWidth().weight(1f)) {
-                    // Error banner
                     AnimatedVisibility(
                         visible = chatError != null,
                         enter = expandVertically() + fadeIn(),
@@ -336,7 +304,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                         )
                     }
 
-                    // Messages
                     LazyColumn(
                         state = chatListState,
                         modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -374,7 +341,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                         }
                     }
 
-                    // Attached file indicator
                     AnimatedVisibility(
                         visible = attachedFileName != null,
                         enter = expandVertically() + fadeIn(),
@@ -393,7 +359,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                         )
                     }
 
-                    // Input area
                     InputArea(
                         userInput = userInput,
                         onInputChange = { userInput = it },
@@ -428,7 +393,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                 }
             }
 
-            // Settings panel overlay
             AnimatedVisibility(
                 visible = showSettingsPanel,
                 modifier = Modifier.align(Alignment.TopEnd),
@@ -452,7 +416,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
         }
     }
 
-    // Model selector dialog
     if (showModelDialog) {
         ModelSelectorDialog(
             selectedModel = selectedModel,
@@ -469,7 +432,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
         )
     }
 
-    // Stats dialog
     if (showSessionStats) {
         StatsDialog(
             stats = viewModel.getSessionStats(),
@@ -481,10 +443,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
         )
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// TOP BAR
-// ═══════════════════════════════════════════════════════════════════════════
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -525,7 +483,6 @@ private fun ProfessionalTopBar(
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-            // Title row
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -556,7 +513,7 @@ private fun ProfessionalTopBar(
                             )
                         }
                     }
-                </Row>
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     IconButton(
@@ -599,7 +556,6 @@ private fun ProfessionalTopBar(
 
             Spacer(Modifier.height(8.dp))
 
-            // Model & stats row
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -614,7 +570,7 @@ private fun ProfessionalTopBar(
                         fontWeight = FontWeight.SemiBold,
                         color = t1
                     )
-                </Row>
+                }
 
                 sessionTokens?.let { cost ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -640,7 +596,6 @@ private fun ProfessionalTopBar(
 
             Spacer(Modifier.height(10.dp))
 
-            // Feature toggles
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -721,10 +676,6 @@ private fun FeatureToggle(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CACHE STATUS BAR
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun CacheStatusBar(
     timerMs: Long,
@@ -780,7 +731,7 @@ private fun CacheStatusBar(
                         color = timerColor,
                         letterSpacing = 1.sp
                     )
-                </Row>
+                }
 
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -851,10 +802,6 @@ private fun StatChip(label: String, value: String, textColor: Color, bgColor: Co
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// OPERATIONS PANEL
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun OperationsPanel(
     operationsLog: List<AnalyzerViewModel.OperationLogItem>,
@@ -879,7 +826,6 @@ private fun OperationsPanel(
         modifier = Modifier.fillMaxWidth().height(180.dp)
     ) {
         Column {
-            // Header
             Surface(
                 color = if (cm) ProColors.lightBorder else ProColors.darkSurfaceVariant,
                 modifier = Modifier.fillMaxWidth()
@@ -960,7 +906,6 @@ private fun OperationsPanel(
                 }
             }
 
-            // Log entries
             if (operationsLog.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
@@ -1027,10 +972,6 @@ private fun OperationLogRow(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ERROR BANNER
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun ErrorBanner(
     error: String,
@@ -1065,10 +1006,6 @@ private fun ErrorBanner(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MESSAGE BUBBLE
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun MessageBubble(
@@ -1114,7 +1051,6 @@ private fun MessageBubble(
         Modifier.fillMaxWidth(),
         horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
-        // Role label
         Row(
             Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -1136,7 +1072,6 @@ private fun MessageBubble(
             }
         }
 
-        // Message content
         Surface(
             color = bgColor,
             shape = RoundedCornerShape(
@@ -1161,7 +1096,6 @@ private fun MessageBubble(
             }
         }
 
-        // Actions
         if (isAssistant) {
             Row(
                 Modifier.padding(start = 12.dp, top = 6.dp),
@@ -1170,7 +1104,6 @@ private fun MessageBubble(
             ) {
                 var copied by remember { mutableStateOf(false) }
 
-                // Copy button
                 Surface(
                     onClick = {
                         clipboardManager.setText(AnnotatedString(msg.content))
@@ -1206,7 +1139,6 @@ private fun MessageBubble(
                     }
                 }
 
-                // Expand button for long messages
                 if (isLong) {
                     Surface(
                         onClick = { expanded = !expanded },
@@ -1237,10 +1169,6 @@ private fun MessageBubble(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STREAMING BUBBLE
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun StreamingBubble(
@@ -1305,10 +1233,6 @@ private fun StreamingBubble(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ATTACHED FILE CARD
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun AttachedFileCard(
     fileName: String,
@@ -1356,10 +1280,6 @@ private fun AttachedFileCard(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// INPUT AREA
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun InputArea(
     userInput: String,
@@ -1393,7 +1313,6 @@ private fun InputArea(
             verticalAlignment = Alignment.Bottom,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Mode toggle
             Surface(
                 onClick = onToggleMode,
                 enabled = !cacheModeEnabled,
@@ -1426,7 +1345,6 @@ private fun InputArea(
                 }
             }
 
-            // Attach file
             IconButton(
                 onClick = onAttachFile,
                 modifier = Modifier.size(46.dp)
@@ -1439,7 +1357,6 @@ private fun InputArea(
                 )
             }
 
-            // Text input
             OutlinedTextField(
                 value = userInput,
                 onValueChange = onInputChange,
@@ -1470,7 +1387,6 @@ private fun InputArea(
                 shape = RoundedCornerShape(14.dp)
             )
 
-            // Send button
             FilledIconButton(
                 onClick = onSend,
                 enabled = userInput.isNotBlank() && !isStreaming,
@@ -1491,10 +1407,6 @@ private fun InputArea(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SETTINGS PANEL (OVERLAY)
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun SettingsPanel(
@@ -1536,7 +1448,6 @@ private fun SettingsPanel(
 
             Spacer(Modifier.height(24.dp))
 
-            // Thinking budget
             Text(
                 "Extended Thinking Budget",
                 fontSize = 13.sp,
@@ -1573,10 +1484,6 @@ private fun SettingsPanel(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MODEL SELECTOR DIALOG
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun ModelSelectorDialog(
@@ -1666,10 +1573,6 @@ private fun ModelSelectorDialog(
         }
     )
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STATS DIALOG
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun StatsDialog(
