@@ -83,8 +83,8 @@ object NetworkModule {
      * КРИТИЧНО для стабильности SSE стриминга:
      * - readTimeout = 0 (бесконечный) — SSE может ждать сколько угодно между чанками
      * - writeTimeout = 120s — отправка 2MB файла занимает время
-     * - Ktor requestTimeout = INFINITE — не обрывает долгие запросы
-     * - Ktor socketTimeout = INFINITE — матчит readTimeout=0
+     * - Ktor requestTimeout = null (INFINITE) — не обрывает долгие запросы
+     * - Ktor socketTimeout = null (INFINITE) — матчит readTimeout=0
      *
      * Защита от зависания: MAX_STREAMING_TIME_MS = 90 минут в ClaudeApiClient
      */
@@ -118,9 +118,9 @@ object NetworkModule {
             }
 
             install(HttpTimeout) {
-                requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS  // SSE стрим без ограничений
+                requestTimeoutMillis = null  // null = бесконечный timeout для SSE стриминга
                 connectTimeoutMillis = 30_000
-                socketTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS   // SSE стрим без ограничений
+                socketTimeoutMillis = null   // null = бесконечный timeout для SSE стриминга
             }
         }
     }
