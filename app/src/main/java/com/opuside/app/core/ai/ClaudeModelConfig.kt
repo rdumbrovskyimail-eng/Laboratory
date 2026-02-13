@@ -8,16 +8,15 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🤖 CLAUDE MODEL CONFIGURATION v12.0 (PRODUCTION CACHE + FIRST MESSAGE CACHING)
+ * 🤖 CLAUDE MODEL CONFIGURATION v7.0 (CACHE WITHOUT HISTORY + INPUT 1 TOKEN)
  * 
  * Pricing (из docs.anthropic.com):
  * - 5min cache write = 1.25× base input price
  * - Cache read (hit) = 0.1× base input price  
  * - TTL refreshes on each successful cache hit (free)
  * 
- * ✅ ИСПРАВЛЕНО: 
- * - minCacheableTokens по документации Anthropic
- * - Первое user сообщение кешируется в Cache Mode
+ * NEW: testInputTokenLimit = 1 для тестирования кеша
+ * NEW: minCacheableTokens по документации Anthropic (1024/4096/2048)
  */
 object ClaudeModelConfig {
     
@@ -32,6 +31,7 @@ object ClaudeModelConfig {
         val description: String,
         val contextWindow: Int,
         val maxOutputTokens: Int,
+        val testInputTokenLimit: Int = 1,
         val inputPricePerM: Double,
         val outputPricePerM: Double,
         val longInputPricePerM: Double,
@@ -50,13 +50,14 @@ object ClaudeModelConfig {
             description = "Новейшая, лучшая для кодирования",
             contextWindow = 200_000,
             maxOutputTokens = 128_000,
+            testInputTokenLimit = 1,
             inputPricePerM = 5.0,
             outputPricePerM = 25.0,
             longInputPricePerM = 10.0,
             longOutputPricePerM = 37.5,
             cacheWritePricePerM = 6.25,
             cacheReadPricePerM = 0.50,
-            minCacheableTokens = 4096,
+            minCacheableTokens = 1024,
             longContextThreshold = 200_000,
             supportsLongContext1M = true,
             speedRating = 3,
@@ -69,13 +70,14 @@ object ClaudeModelConfig {
             description = "Мощная и эффективная",
             contextWindow = 200_000,
             maxOutputTokens = 64_000,
+            testInputTokenLimit = 1,
             inputPricePerM = 5.0,
             outputPricePerM = 25.0,
             longInputPricePerM = 10.0,
             longOutputPricePerM = 37.5,
             cacheWritePricePerM = 6.25,
             cacheReadPricePerM = 0.50,
-            minCacheableTokens = 4096,
+            minCacheableTokens = 1024,
             longContextThreshold = 200_000,
             supportsLongContext1M = false,
             speedRating = 3,
@@ -88,6 +90,7 @@ object ClaudeModelConfig {
             description = "Специализированная для reasoning",
             contextWindow = 200_000,
             maxOutputTokens = 64_000,
+            testInputTokenLimit = 1,
             inputPricePerM = 15.0,
             outputPricePerM = 75.0,
             longInputPricePerM = 30.0,
@@ -107,6 +110,7 @@ object ClaudeModelConfig {
             description = "Оригинальная Opus 4",
             contextWindow = 200_000,
             maxOutputTokens = 64_000,
+            testInputTokenLimit = 1,
             inputPricePerM = 15.0,
             outputPricePerM = 75.0,
             longInputPricePerM = 30.0,
@@ -126,6 +130,7 @@ object ClaudeModelConfig {
             description = "Умная и эффективная",
             contextWindow = 200_000,
             maxOutputTokens = 64_000,
+            testInputTokenLimit = 1,
             inputPricePerM = 3.0,
             outputPricePerM = 15.0,
             longInputPricePerM = 6.0,
@@ -145,6 +150,7 @@ object ClaudeModelConfig {
             description = "Сбалансированная рабочая лошадка",
             contextWindow = 200_000,
             maxOutputTokens = 64_000,
+            testInputTokenLimit = 1,
             inputPricePerM = 3.0,
             outputPricePerM = 15.0,
             longInputPricePerM = 6.0,
@@ -164,6 +170,7 @@ object ClaudeModelConfig {
             description = "Быстрая для ежедневных задач",
             contextWindow = 200_000,
             maxOutputTokens = 64_000,
+            testInputTokenLimit = 1,
             inputPricePerM = 1.0,
             outputPricePerM = 5.0,
             longInputPricePerM = 2.0,
@@ -183,6 +190,7 @@ object ClaudeModelConfig {
             description = "Самая быстрая и дешёвая (max 4K output)",
             contextWindow = 200_000,
             maxOutputTokens = 4_096,
+            testInputTokenLimit = 1,
             inputPricePerM = 0.25,
             outputPricePerM = 1.25,
             longInputPricePerM = 0.25,
@@ -200,7 +208,8 @@ object ClaudeModelConfig {
             return if (ecoMode) minOf(ECO_OUTPUT_TOKENS, maxOutputTokens) else maxOutputTokens
         }
         
-        fun getMaxInputTokens(ecoMode: Boolean): Int {
+        fun getMaxInputTokens(ecoMode: Boolean, useCacheTestMode: Boolean = false): Int {
+            if (useCacheTestMode) return testInputTokenLimit
             return contextWindow - getEffectiveOutputTokens(ecoMode)
         }
         
