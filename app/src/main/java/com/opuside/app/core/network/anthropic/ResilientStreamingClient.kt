@@ -22,27 +22,6 @@ import kotlin.coroutines.resume
  * ═══════════════════════════════════════════════════════════════════════════
  *
  * Обёртка над ClaudeApiClient, которая переживает обрывы сети.
- *
- * СТРАТЕГИЯ:
- * При разрыве SSE соединения мы НЕ можем продолжить с того же места
- * (API Claude не поддерживает resume). Вместо этого:
- *
- * 1. Сохраняем весь накопленный текст на клиенте
- * 2. Ждём восстановления сети (через ConnectivityManager callback)
- * 3. Отправляем НОВЫЙ запрос, включая уже полученный текст как "контекст"
- * 4. Claude продолжает с того места, где остановился
- *
- * ФОРМАТ RETRY-ЗАПРОСА:
- * User: [оригинальный промт]
- * Assistant: [уже полученный текст]
- * User: "Продолжи ТОЧНО с того места где остановился. Не повторяй уже написанное."
- *
- * ОГРАНИЧЕНИЯ:
- * - Каждый retry = новый API запрос = дополнительная стоимость (input tokens)
- * - С Prompt Caching стоимость retry снижается (system+tools закешированы)
- * - Maximum 50 retries (настраиваемо)
- * - Exponential backoff: 2s → 4s → 8s → ... → 60s (cap)
- * - При потере >50% контекста (из-за tool calls) retry не выполняется
  */
 @Singleton
 class ResilientStreamingClient @Inject constructor(
@@ -128,16 +107,20 @@ class ResilientStreamingClient @Inject constructor(
                 .build()
 
             var resolved = false
+            var networkCallback: ConnectivityManager.NetworkCallback? = null
+            
             val timeoutJob = CoroutineScope(Dispatchers.Default).launch {
                 delay(timeoutMs)
                 if (!resolved) {
                     resolved = true
-                    try { cm.unregisterNetworkCallback(callback) } catch (_: Exception) {}
+                    networkCallback?.let {
+                        try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {}
+                    }
                     if (cont.isActive) cont.resume(false) {}
                 }
             }
 
-            val callback = object : ConnectivityManager.NetworkCallback() {
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     if (!resolved) {
                         resolved = true
@@ -151,11 +134,13 @@ class ResilientStreamingClient @Inject constructor(
             cont.invokeOnCancellation {
                 resolved = true
                 timeoutJob.cancel()
-                try { cm.unregisterNetworkCallback(callback) } catch (_: Exception) {}
+                networkCallback?.let {
+                    try { cm.unregisterNetworkCallback(it) } catch (_: Exception) {}
+                }
             }
 
             try {
-                cm.registerNetworkCallback(request, callback)
+                cm.registerNetworkCallback(request, networkCallback)
             } catch (e: Exception) {
                 resolved = true
                 timeoutJob.cancel()
