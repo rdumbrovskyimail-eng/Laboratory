@@ -1,16 +1,19 @@
 package com.opuside.app.core.di
 
+import android.content.Context
 import com.opuside.app.BuildConfig
 import com.opuside.app.core.ai.RepoIndexManager
 import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
+import com.opuside.app.core.network.anthropic.ResilientStreamingClient
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
 import com.opuside.app.core.security.SecureSettingsDataStore
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
@@ -170,6 +173,16 @@ object NetworkModule {
         appSettings: AppSettings
     ): ClaudeApiClient {
         return ClaudeApiClient(httpClient, json, apiUrl, secureSettings, appSettings)
+    }
+
+    // ★ NEW: ResilientStreamingClient для автоматического retry при обрывах сети
+    @Provides
+    @Singleton
+    fun provideResilientStreamingClient(
+        @ApplicationContext context: Context,
+        claudeClient: ClaudeApiClient
+    ): ResilientStreamingClient {
+        return ResilientStreamingClient(context, claudeClient)
     }
 
     @Provides
