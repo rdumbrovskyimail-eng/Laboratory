@@ -164,7 +164,7 @@ data class Usage(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STREAMING EVENTS (SSE) v4.0
+// STREAMING EVENTS (SSE) v5.0 (EXTENDED THINKING SUPPORT)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Serializable
@@ -216,6 +216,9 @@ data class StreamDelta(
 
     @SerialName("text")
     val text: String? = null,
+
+    @SerialName("thinking")
+    val thinking: String? = null,
 
     @SerialName("partial_json")
     val partialJson: String? = null,
