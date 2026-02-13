@@ -7,12 +7,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🔧 TOOL EXECUTOR v2.0 (FIXED)
+ * 🔧 TOOL EXECUTOR v3.0 (LONG CONTEXT OPTIMIZED)
  *
- * ✅ v2.0 FIXES:
+ * ✅ v3.0 CHANGES:
+ * - MAX_FILES_PER_READ: 10 → 250 (для работы с огромными кодовыми базами)
+ * - MAX_FILE_SIZE_BYTES: 150KB → 1.5MB (позволяет читать очень крупные файлы)
+ * - MAX_SEARCH_RESULTS: 30 → 250 (пропорционально увеличено)
  * - lazy toolDefinitions — не пересоздаются на каждый вызов
- * - Bounded results (MAX_SEARCH_RESULTS)
  * - Path validation (no traversal)
+ * - Bounded results
  */
 @Singleton
 class ToolExecutor @Inject constructor(
@@ -21,9 +24,9 @@ class ToolExecutor @Inject constructor(
 ) {
     companion object {
         private const val TAG = "ToolExecutor"
-        private const val MAX_FILES_PER_READ = 10
-        private const val MAX_FILE_SIZE_BYTES = 150_000
-        private const val MAX_SEARCH_RESULTS = 30
+        private const val MAX_FILES_PER_READ = 250           // было 10
+        private const val MAX_FILE_SIZE_BYTES = 1_500_000    // было 150_000 (1.5MB)
+        private const val MAX_SEARCH_RESULTS = 250           // было 30
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
