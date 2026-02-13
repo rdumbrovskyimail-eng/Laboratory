@@ -21,13 +21,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🤖 REPOSITORY ANALYZER v12.0 (CACHE FIX + FIRST MESSAGE CACHING)
+ * 🤖 REPOSITORY ANALYZER v13.0 (EXTENDED THINKING + LONG CONTEXT SUPPORT)
  *
- * ✅ ИСПРАВЛЕНИЯ:
- * 1. Кеш работает НЕЗАВИСИМО от истории (history не влияет на cache key)
- * 2. System + Tools + Первое сообщение кешируются при включении Cache Mode
- * 3. Таймер правильно обновляется при cache hit
- * 4. Cache read/write статистика работает корректно
+ * ✅ v13.0 CHANGES:
+ * 1. Прокидка параметров thinking (enableThinking, thinkingBudget)
+ * 2. Прокидка флагов sendTools и sendSystemPrompt
+ * 3. Поддержка Long Context режима (через параметры API)
+ * 4. Кеш работает независимо от истории
+ * 5. System + Tools + Первое сообщение кешируются при Cache Mode
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
@@ -50,7 +51,7 @@ class RepositoryAnalyzer @Inject constructor(
 
     private val sessionManager = ClaudeModelConfig.SessionManager
 
-    init { Log.i(TAG, "RepositoryAnalyzer v12.0 initialized (Cache Fixed + First Message Caching)") }
+    init { Log.i(TAG, "RepositoryAnalyzer v13.0 initialized (Extended Thinking + Long Context)") }
 
     fun createSession(sessionId: String, model: ClaudeModelConfig.ClaudeModel): ClaudeModelConfig.ChatSession {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
@@ -94,7 +95,11 @@ class RepositoryAnalyzer @Inject constructor(
         conversationHistory: List<ChatMessageEntity>,
         model: ClaudeModelConfig.ClaudeModel,
         enableCaching: Boolean = false,
-        maxTokens: Int = 8192
+        maxTokens: Int = 8192,
+        enableThinking: Boolean = false,
+        thinkingBudget: Int = 40000,
+        sendTools: Boolean = true,
+        sendSystemPrompt: Boolean = true
     ): Flow<AnalysisResult> = flow {
         try {
             require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
@@ -165,7 +170,11 @@ class RepositoryAnalyzer @Inject constructor(
                     systemPrompt = systemPrompt,
                     maxTokens = maxTokens,
                     enableCaching = enableCaching,
-                    tools = tools
+                    tools = tools,
+                    enableThinking = enableThinking,
+                    thinkingBudget = thinkingBudget,
+                    sendTools = sendTools,
+                    sendSystemPrompt = sendSystemPrompt
                 ).collect { result ->
                     when (result) {
                         is StreamingResult.Started -> {
