@@ -6,6 +6,7 @@ import com.opuside.app.core.database.dao.ChatDao
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
+import com.opuside.app.core.network.anthropic.ResilientStreamingClient
 import com.opuside.app.core.network.anthropic.StreamingResult
 import com.opuside.app.core.network.anthropic.ToolCall
 import com.opuside.app.core.network.anthropic.model.ClaudeMessage
@@ -21,18 +22,18 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🤖 REPOSITORY ANALYZER v13.0 (EXTENDED THINKING + LONG CONTEXT SUPPORT)
+ * 🤖 REPOSITORY ANALYZER v14.0 (RESILIENT STREAMING + EXTENDED THINKING)
  *
- * ✅ v13.0 CHANGES:
- * 1. Прокидка параметров thinking (enableThinking, thinkingBudget)
- * 2. Прокидка флагов sendTools и sendSystemPrompt
- * 3. Поддержка Long Context режима (через параметры API)
- * 4. Кеш работает независимо от истории
- * 5. System + Tools + Первое сообщение кешируются при Cache Mode
+ * ✅ v14.0 CHANGES:
+ * 1. Интеграция ResilientStreamingClient для автоматического retry при обрывах сети
+ * 2. Новые AnalysisResult типы: WaitingForNetwork, Retrying
+ * 3. Поддержка totalRetries в Completed
+ * 4. Все предыдущие фичи v13.0 сохранены
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
     private val claudeClient: ClaudeApiClient,
+    private val resilientClient: ResilientStreamingClient,  // ★ NEW
     private val repoIndexManager: RepoIndexManager,
     private val toolExecutor: ToolExecutor,
     private val chatDao: ChatDao,
@@ -51,7 +52,7 @@ class RepositoryAnalyzer @Inject constructor(
 
     private val sessionManager = ClaudeModelConfig.SessionManager
 
-    init { Log.i(TAG, "RepositoryAnalyzer v13.0 initialized (Extended Thinking + Long Context)") }
+    init { Log.i(TAG, "RepositoryAnalyzer v14.0 initialized (Resilient Streaming + Extended Thinking)") }
 
     fun createSession(sessionId: String, model: ClaudeModelConfig.ClaudeModel): ClaudeModelConfig.ChatSession {
         require(sessionId.isNotBlank()) { "Session ID cannot be blank" }
@@ -148,7 +149,7 @@ class RepositoryAnalyzer @Inject constructor(
             }
 
             // ═══════════════════════════════════════════════════════════════
-            // STEP 3: TOOL LOOP
+            // STEP 3: TOOL LOOP (с ResilientStreamingClient)
             // ═══════════════════════════════════════════════════════════════
             var currentMessages = sanitizedMessages.toMutableList()
             var fullResponseText = ""
@@ -156,6 +157,7 @@ class RepositoryAnalyzer @Inject constructor(
             var totalOutputTokens = 0
             var totalCachedReadTokens = 0
             var totalCachedWriteTokens = 0
+            var totalRetries = 0  // ★ NEW
             var iteration = 0
             var streamingStartedEmitted = false
 
@@ -164,7 +166,8 @@ class RepositoryAnalyzer @Inject constructor(
 
                 var iterationComplete = false
 
-                claudeClient.streamMessage(
+                // ★ CHANGED: используем resilientClient вместо claudeClient
+                resilientClient.streamWithRetry(
                     model = model.modelId,
                     messages = currentMessages,
                     systemPrompt = systemPrompt,
@@ -177,14 +180,17 @@ class RepositoryAnalyzer @Inject constructor(
                     sendSystemPrompt = sendSystemPrompt
                 ).collect { result ->
                     when (result) {
-                        is StreamingResult.Started -> {
+                        is ResilientStreamingClient.ResilientResult.Started -> {
                             if (!streamingStartedEmitted) {
                                 streamingStartedEmitted = true
                                 emit(AnalysisResult.StreamingStarted)
                             }
+                            if (result.isRetry) {
+                                Log.i(TAG, "Stream resumed after retry")
+                            }
                         }
 
-                        is StreamingResult.Delta -> {
+                        is ResilientStreamingClient.ResilientResult.Delta -> {
                             fullResponseText = result.accumulated
                             if (!streamingStartedEmitted) {
                                 streamingStartedEmitted = true
@@ -193,7 +199,25 @@ class RepositoryAnalyzer @Inject constructor(
                             emit(AnalysisResult.Streaming(result.accumulated))
                         }
 
-                        is StreamingResult.ToolUse -> {
+                        // ★ NEW: Обработка retry-событий
+                        is ResilientStreamingClient.ResilientResult.WaitingForNetwork -> {
+                            emit(AnalysisResult.WaitingForNetwork(
+                                result.attempt,
+                                result.maxAttempts,
+                                result.accumulatedText,
+                                result.accumulatedTokens
+                            ))
+                        }
+
+                        is ResilientStreamingClient.ResilientResult.Retrying -> {
+                            emit(AnalysisResult.Retrying(
+                                result.attempt,
+                                result.maxAttempts,
+                                result.backoffMs
+                            ))
+                        }
+
+                        is ResilientStreamingClient.ResilientResult.ToolUse -> {
                             result.usage?.let { usage ->
                                 totalInputTokens += usage.inputTokens
                                 totalOutputTokens += usage.outputTokens
@@ -225,8 +249,10 @@ class RepositoryAnalyzer @Inject constructor(
                             currentMessages.add(ClaudeMessage("user", toolResultContent, isJsonContent = true))
                         }
 
-                        is StreamingResult.Completed -> {
+                        is ResilientStreamingClient.ResilientResult.Completed -> {
                             fullResponseText = result.fullText
+                            totalRetries = result.totalRetries  // ★ NEW
+                            
                             result.usage?.let { usage ->
                                 totalInputTokens += usage.inputTokens
                                 totalOutputTokens += usage.outputTokens
@@ -248,17 +274,16 @@ class RepositoryAnalyzer @Inject constructor(
                                 text = fullResponseText,
                                 cost = cost,
                                 session = session,
-                                toolIterations = iteration
+                                toolIterations = iteration,
+                                totalRetries = totalRetries  // ★ NEW
                             ))
                             iterationComplete = true
                         }
 
-                        is StreamingResult.Error -> {
+                        is ResilientStreamingClient.ResilientResult.Error -> {
                             emit(AnalysisResult.Error(result.exception.message ?: "Unknown error"))
                             iterationComplete = true
                         }
-
-                        else -> {}
                     }
                 }
 
@@ -270,7 +295,10 @@ class RepositoryAnalyzer @Inject constructor(
                     totalCachedReadTokens, totalCachedWriteTokens)
                 emit(AnalysisResult.Completed(
                     text = fullResponseText + "\n\n⚠️ Tool loop limit reached.",
-                    cost = cost, session = session, toolIterations = iteration
+                    cost = cost, 
+                    session = session, 
+                    toolIterations = iteration,
+                    totalRetries = totalRetries  // ★ NEW
                 ))
             } else if (iteration >= MAX_TOOL_ITERATIONS) {
                 emit(AnalysisResult.Error("Tool loop limit reached ($MAX_TOOL_ITERATIONS)"))
@@ -405,12 +433,29 @@ RULES:
             val isError: Boolean,
             val operation: ToolExecutor.FileOperation?
         ) : AnalysisResult()
+        
+        // ★ NEW: Retry events
+        data class WaitingForNetwork(
+            val attempt: Int,
+            val maxAttempts: Int,
+            val accumulatedText: String,
+            val accumulatedTokens: Int
+        ) : AnalysisResult()
+
+        data class Retrying(
+            val attempt: Int,
+            val maxAttempts: Int,
+            val backoffMs: Long
+        ) : AnalysisResult()
+
         data class Completed(
             val text: String,
             val cost: ClaudeModelConfig.ModelCost,
             val session: ClaudeModelConfig.ChatSession,
-            val toolIterations: Int = 1
+            val toolIterations: Int = 1,
+            val totalRetries: Int = 0  // ★ NEW
         ) : AnalysisResult()
+        
         data class Error(val message: String) : AnalysisResult()
     }
 }
