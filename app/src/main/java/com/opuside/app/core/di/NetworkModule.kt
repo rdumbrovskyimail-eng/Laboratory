@@ -38,14 +38,18 @@ import javax.inject.Singleton
  *    Причина: Claude может думать 2-3 минуты перед первым токеном (thinking)
  *    Защита: MAX_STREAMING_TIME_MS в ClaudeApiClient (90 минут)
  *
- * 2. OkHttp writeTimeout = 120s — для отправки больших файлов (до 2MB)
+ * 2. OkHttp writeTimeout = 0 (INFINITE) — для отправки больших файлов (до 2MB)
+ *    ✅ ИСПРАВЛЕНИЕ #5: было 120s, стало 0 (бесконечный)
  *
- * 3. Ktor requestTimeout = INFINITE — SSE стрим без обрывов
+ * 3. OkHttp pingInterval = 20s — для keep-alive
+ *    ✅ ИСПРАВЛЕНИЕ #2: добавлено для поддержания соединения
+ *
+ * 4. Ktor requestTimeout = INFINITE — SSE стрим без обрывов
  *    Причина: readTimeout=120s убивает соединение если между чанками >120s
  *
- * 4. Ktor socketTimeout = INFINITE — матчит OkHttp readTimeout=0
+ * 5. Ktor socketTimeout = INFINITE — матчит OkHttp readTimeout=0
  *
- * 5. retryOnConnectionFailure(false) — нет скрытых задержек на retry
+ * 6. retryOnConnectionFailure(false) — нет скрытых задержек на retry
  *
  * ТЕСТОВЫЙ СЦЕНАРИЙ:
  * - 1MB файл → 270K input tokens
@@ -85,7 +89,8 @@ object NetworkModule {
      *
      * КРИТИЧНО для стабильности SSE стриминга:
      * - readTimeout = 0 (бесконечный) — SSE может ждать сколько угодно между чанками
-     * - writeTimeout = 120s — отправка 2MB файла занимает время
+     * - writeTimeout = 0 (бесконечный) — отправка больших файлов без ограничений
+     * - pingInterval = 20s — keep-alive для долгих соединений
      * - Ktor requestTimeout = null (INFINITE) — не обрывает долгие запросы
      * - Ktor socketTimeout = null (INFINITE) — матчит readTimeout=0
      *
@@ -100,7 +105,8 @@ object NetworkModule {
                 config {
                     connectTimeout(30, TimeUnit.SECONDS)
                     readTimeout(0, TimeUnit.SECONDS)       // 0 = бесконечный (SSE стрим)
-                    writeTimeout(120, TimeUnit.SECONDS)    // Для отправки 2MB файла
+                    writeTimeout(0, TimeUnit.SECONDS)      // ✅ ИСПРАВЛЕНИЕ #5: было 120s, стало 0 (бесконечный)
+                    pingInterval(20, TimeUnit.SECONDS)     // ✅ ИСПРАВЛЕНИЕ #2: добавлено для keep-alive
                     retryOnConnectionFailure(false)        // Нет скрытых retry
                 }
             }
