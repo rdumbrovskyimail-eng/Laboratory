@@ -30,10 +30,10 @@ class ResilientStreamingClient @Inject constructor(
 ) {
     companion object {
         private const val TAG = "ResilientStream"
-        private const val MAX_RETRIES = 50
-        private const val INITIAL_BACKOFF_MS = 2000L
-        private const val MAX_BACKOFF_MS = 60_000L
-        private const val NETWORK_WAIT_TIMEOUT_MS = 10 * 60 * 1000L // 10 минут ждём сеть
+        private const val MAX_RETRIES = 3              // ✅ ИСПРАВЛЕНИЕ #6: было 50, стало 3
+        private const val INITIAL_BACKOFF_MS = 5000L   // ✅ ИСПРАВЛЕНО: было 2000, стало 5000
+        private const val MAX_BACKOFF_MS = 10_000L     // ✅ ИСПРАВЛЕНО: было 60_000, стало 10_000
+        private const val NETWORK_WAIT_TIMEOUT_MS = 2 * 60 * 1000L  // ✅ ИСПРАВЛЕНО: было 10 минут, стало 2
     }
 
     // ══════════════════════════════════════════════════════════════════
