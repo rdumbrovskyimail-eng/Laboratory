@@ -29,6 +29,7 @@ import javax.inject.Singleton
  * 2. Новые AnalysisResult типы: WaitingForNetwork, Retrying
  * 3. Поддержка totalRetries в Completed
  * 4. Все предыдущие фичи v13.0 сохранены
+ * 5. ✅ ИСПРАВЛЕНИЕ #1: thinkingBudget снижен с 40000 до 16000 для стабильности стриминга
  */
 @Singleton
 class RepositoryAnalyzer @Inject constructor(
@@ -89,6 +90,21 @@ class RepositoryAnalyzer @Inject constructor(
     // MAIN ENTRY POINT
     // ═══════════════════════════════════════════════════════════════════════════
 
+    /**
+     * Основная функция анализа файлов репозитория.
+     *
+     * ✅ ИСПРАВЛЕНИЕ #1: thinkingBudget = 16000 (было 40000)
+     * 
+     * ПОЧЕМУ 16000 вместо 40000:
+     * Из официальной документации Anthropic:
+     * "For thinking budgets above 32K, we recommend using batch processing to avoid 
+     *  networking issues. Requests pushing the model to think above 32k tokens causes 
+     *  long running requests that might run up against system timeouts and open 
+     *  connection limits."
+     *
+     * 40K > 32K = гарантированные таймауты и обрывы соединения
+     * 16K < 32K = безопасно для streaming
+     */
     suspend fun scanFilesV2(
         sessionId: String,
         filePaths: List<String>,
@@ -98,7 +114,7 @@ class RepositoryAnalyzer @Inject constructor(
         enableCaching: Boolean = false,
         maxTokens: Int = 8192,
         enableThinking: Boolean = false,
-        thinkingBudget: Int = 40000,
+        thinkingBudget: Int = 16000,               // ✅ ИСПРАВЛЕНИЕ #1: было 40000, стало 16000
         sendTools: Boolean = true,
         sendSystemPrompt: Boolean = true
     ): Flow<AnalysisResult> = flow {
