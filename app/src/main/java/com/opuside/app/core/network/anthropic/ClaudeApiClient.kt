@@ -57,6 +57,11 @@ import javax.inject.Singleton
  * 4. Temperature = null при thinking (требование API)
  *
  * 5. Prompt Caching остаётся 100% совместимым с документацией
+ *
+ * 6. IDLE TIMEOUT DETECTION (исправление #4):
+ *    - Отслеживание времени последнего SSE события
+ *    - Timeout 120 секунд (2 минуты) без событий
+ *    - Защита от "зависших" стримов когда сервер не отвечает
  */
 @Singleton
 class ClaudeApiClient @Inject constructor(
@@ -71,6 +76,7 @@ class ClaudeApiClient @Inject constructor(
         private const val API_VERSION = "2023-06-01"
         private const val ANTHROPIC_BETA = "prompt-caching-2024-07-31"
         private const val MAX_STREAMING_TIME_MS = 90 * 60 * 1000L // 90 минут для long output
+        private const val IDLE_TIMEOUT_MS = 120_000L // 2 минуты без событий
     }
 
     private suspend fun getApiKey(): String {
@@ -141,7 +147,7 @@ class ClaudeApiClient @Inject constructor(
 
     /**
      * ═══════════════════════════════════════════════════════════════════════
-     * STREAMING С EXTENDED THINKING + PROMPT CACHING
+     * STREAMING С EXTENDED THINKING + PROMPT CACHING + IDLE TIMEOUT DETECTION
      * ═══════════════════════════════════════════════════════════════════════
      */
     fun streamMessage(
@@ -195,6 +201,7 @@ class ClaudeApiClient @Inject constructor(
             val currentText = StringBuilder()
             var totalUsage: Usage? = null
             val startTime = System.currentTimeMillis()
+            var lastEventTime = System.currentTimeMillis()  // ✅ Отслеживание времени последнего события
 
             var currentToolId: String? = null
             var currentToolName: String? = null
@@ -202,12 +209,29 @@ class ClaudeApiClient @Inject constructor(
             val pendingToolCalls = mutableListOf<ToolCall>()
 
             while (!channel.isClosedForRead) {
+                // Existing timeout check (90 минут максимум)
                 if (System.currentTimeMillis() - startTime > MAX_STREAMING_TIME_MS) {
                     emit(StreamingResult.Error(ClaudeApiException("timeout", "Streaming exceeded 90 minutes")))
                     return@flow
                 }
 
+                // ✅ IDLE TIMEOUT CHECK - защита от зависших стримов
+                val timeSinceLastEvent = System.currentTimeMillis() - lastEventTime
+                if (timeSinceLastEvent > IDLE_TIMEOUT_MS) {
+                    Log.w(TAG, "SSE stream idle for ${timeSinceLastEvent / 1000}s - possible server stall")
+                    emit(StreamingResult.Error(ClaudeApiException(
+                        "idle_timeout",
+                        "No SSE events received for ${timeSinceLastEvent / 1000} seconds. " +
+                        "This may indicate a server-side stall or network issue."
+                    )))
+                    return@flow
+                }
+
                 val line = channel.readUTF8Line() ?: break
+                
+                // ✅ Обновляем время при получении ЛЮБОЙ строки (включая пустые и ping)
+                lastEventTime = System.currentTimeMillis()
+                
                 if (!line.startsWith("data: ")) continue
 
                 val data = line.substring(6).trim()
