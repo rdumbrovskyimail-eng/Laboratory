@@ -397,6 +397,73 @@ data class Artifact(
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// GITHUB RELEASES (★ NEW)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+@Serializable
+data class GitHubRelease(
+    @SerialName("id")
+    val id: Long,
+    
+    @SerialName("tag_name")
+    val tagName: String,
+    
+    @SerialName("name")
+    val name: String?,
+    
+    @SerialName("body")
+    val body: String?,
+    
+    @SerialName("draft")
+    val draft: Boolean,
+    
+    @SerialName("prerelease")
+    val prerelease: Boolean,
+    
+    @SerialName("created_at")
+    val createdAt: String,
+    
+    @SerialName("published_at")
+    val publishedAt: String?,
+    
+    @SerialName("assets")
+    val assets: List<GitHubReleaseAsset>,
+    
+    @SerialName("html_url")
+    val htmlUrl: String
+)
+
+@Serializable
+data class GitHubReleaseAsset(
+    @SerialName("id")
+    val id: Long,
+    
+    @SerialName("name")
+    val name: String,
+    
+    @SerialName("label")
+    val label: String?,
+    
+    @SerialName("content_type")
+    val contentType: String,
+    
+    @SerialName("size")
+    val size: Long,
+    
+    @SerialName("download_count")
+    val downloadCount: Int,
+    
+    @SerialName("created_at")
+    val createdAt: String,
+    
+    @SerialName("updated_at")
+    val updatedAt: String,
+    
+    @SerialName("browser_download_url")
+    val browserDownloadUrl: String
+)
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // GRAPHQL
 // ═══════════════════════════════════════════════════════════════════════════════
 
