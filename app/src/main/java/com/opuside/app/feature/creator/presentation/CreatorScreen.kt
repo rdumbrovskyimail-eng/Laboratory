@@ -859,9 +859,66 @@ private fun processAIFindReplace(content: String, prompt: String): String {
     var result = content
     
     try {
-        // Pattern 1: Replace X with Y
-        if (lowerPrompt.contains("replace") && lowerPrompt.contains("with")) {
-            val replacePattern = """replace\s+["']?(.+?)["']?\s+with\s+["']?(.+?)["']?""".toRegex()
+        // PRIORITY PATTERN: Multi-line replacement (check this FIRST before simple patterns)
+        // Looks for "Replace:" followed by multiple lines, then "With:" followed by replacement
+        if (lowerPrompt.contains("replace") && lowerPrompt.contains("with") && prompt.lines().size > 3) {
+            val lines = prompt.lines()
+            var collectingOld = false
+            var collectingNew = false
+            val oldLines = mutableListOf<String>()
+            val newLines = mutableListOf<String>()
+            
+            for (line in lines) {
+                val trimmed = line.trim()
+                when {
+                    trimmed.lowercase().startsWith("replace") -> {
+                        collectingOld = true
+                        collectingNew = false
+                        // Check if there's code on same line after "replace:"
+                        val afterReplace = line.substringAfter(":", "").trim()
+                        if (afterReplace.isNotEmpty() && !afterReplace.lowercase().contains("with")) {
+                            oldLines.add(afterReplace)
+                        }
+                    }
+                    trimmed.lowercase().startsWith("with") -> {
+                        collectingOld = false
+                        collectingNew = true
+                        // Check if there's code on same line after "with:"
+                        val afterWith = line.substringAfter(":", "").trim()
+                        if (afterWith.isNotEmpty()) {
+                            newLines.add(afterWith)
+                        }
+                    }
+                    collectingOld && trimmed.isNotEmpty() -> {
+                        oldLines.add(trimmed)
+                    }
+                    collectingNew && trimmed.isNotEmpty() -> {
+                        newLines.add(trimmed)
+                    }
+                }
+            }
+            
+            if (oldLines.isNotEmpty() && newLines.isNotEmpty()) {
+                val oldBlock = oldLines.joinToString("\n")
+                val newBlock = newLines.joinToString("\n")
+                
+                // Try exact match first
+                if (oldBlock in result) {
+                    result = result.replace(oldBlock, newBlock)
+                    return result
+                }
+                
+                // Try with normalized whitespace
+                val normalizedOld = oldBlock.lines().joinToString("\n") { it.trim() }
+                val pattern = normalizedOld.lines().joinToString("\\s*") { Regex.escape(it.trim()) }
+                result = result.replace(pattern.toRegex(), newBlock)
+                return result
+            }
+        }
+        
+        // Pattern 1: Simple Replace X with Y (single line)
+        if (lowerPrompt.contains("replace") && lowerPrompt.contains("with") && prompt.lines().size <= 2) {
+            val replacePattern = """replace\s+(?:all\s+)?["']?(.+?)["']?\s+with\s+["']?(.+?)["']?""".toRegex()
             val match = replacePattern.find(lowerPrompt)
             if (match != null) {
                 val (oldText, newText) = match.destructured
