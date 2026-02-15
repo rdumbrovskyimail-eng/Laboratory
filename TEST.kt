@@ -22,20 +22,20 @@ import kotlinx.coroutines.launch
 
 class TestViewModel : ViewModel() {
     
-    // Изменяемые переменные для тестирования замены var на val
-    private var _username = MutableStateFlow("")
-    var username: StateFlow<String> = _username
+    // Изменяемые переменные для тестирования замены val на val
+    private val _username = MutableStateFlow("")
+    val username: StateFlow<String> = _username
     
-    private var _email = MutableStateFlow("")
-    var email: StateFlow<String> = _email
+    private val _email = MutableStateFlow("")
+    val email: StateFlow<String> = _email
     
-    private var _age = MutableStateFlow(0)
-    var age: StateFlow<Int> = _age
+    private val _age = MutableStateFlow(0)
+    val age: StateFlow<Int> = _age
     
-    var isLoading = false
-    var hasError = false
-    var data: String? = null
-    var count = 0
+    val isLoading = false
+    val hasError = false
+    val data: String? = null
+    val count = 0
     
     // Функция для тестирования добавления аннотаций
     fun updateUsername(name: String) {
