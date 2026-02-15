@@ -1,5 +1,8 @@
 package com.opuside.app.feature.workflows.presentation
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.animation.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -649,6 +652,8 @@ private fun WorkflowDetailDialog(
     onDismiss: () -> Unit,
     onLoadLogs: () -> Unit
 ) {
+    val context = LocalContext.current
+    
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier
@@ -719,12 +724,42 @@ private fun WorkflowDetailDialog(
                     
                     // Fast Build Debug APK Logs
                     item {
-                        Text(
-                            text = "Fast Build Debug APK - Logs",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Fast Build Debug APK - Logs",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            
+                            // Кнопка копирования логов
+                            if (jobLogs != null && jobLogs.isNotEmpty()) {
+                                IconButton(
+                                    onClick = {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        val clip = android.content.ClipData.newPlainText("Workflow Logs", jobLogs)
+                                        clipboard.setPrimaryClip(clip)
+                                        
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "Логи скопированы в буфер обмена",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy Logs",
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
                         
                         when {
                             isLoadingLogs -> {
@@ -775,6 +810,38 @@ private fun WorkflowDetailDialog(
                                 }
                             }
                         }
+                    }
+                }
+                
+                // Bottom buttons
+                Divider()
+                
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Кнопка Fast Build Debug APK
+                    Button(
+                        onClick = {
+                            // Открываем ссылку на GitHub Actions для запуска workflow
+                            val url = "https://github.com/${workflow.repository?.fullName}/actions"
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF3DDC84) // Android green
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Fast Build Debug APK")
                     }
                 }
             }
