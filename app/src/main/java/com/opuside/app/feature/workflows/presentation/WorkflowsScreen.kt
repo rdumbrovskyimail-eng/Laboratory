@@ -825,9 +825,8 @@ private fun WorkflowDetailDialog(
                     // Кнопка Fast Build Debug APK
                     Button(
                         onClick = {
-                            // Открываем ссылку на GitHub Actions для запуска workflow
-                            val url = "https://github.com/${workflow.repository?.fullName}/actions"
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                            // Открываем ссылку на этот workflow run на GitHub
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(workflow.htmlUrl))
                             context.startActivity(intent)
                         },
                         modifier = Modifier.weight(1f),
