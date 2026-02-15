@@ -123,7 +123,7 @@ fun WorkflowsScreen(
                     // Releases Tab
                     ReleasesTab(
                         state = state,
-                        onDownloadApk = { viewModel.downloadApk(context, it) },
+                        onDownloadApk = { viewModel.openReleaseUrl(context, it.downloadUrl) },
                         onRefresh = { viewModel.loadReleases() }
                     )
                 }
@@ -231,7 +231,7 @@ private fun ReleasesTab(
         else -> {
             ReleasesList(
                 releases = state.releases,
-                onDownloadApk = onDownloadApk
+                onOpenUrl = onDownloadApk
             )
         }
     }
@@ -244,7 +244,7 @@ private fun ReleasesTab(
 @Composable
 private fun ReleasesList(
     releases: List<ReleaseItem>,
-    onDownloadApk: (ReleaseItem) -> Unit
+    onOpenUrl: (ReleaseItem) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -253,18 +253,25 @@ private fun ReleasesList(
     ) {
         // Header
         item {
-            Text(
-                text = "${releases.size} APK релизов доступно",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
+            Column(modifier = Modifier.padding(bottom = 8.dp)) {
+                Text(
+                    text = "${releases.size} релизов с APK",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "GitHub Releases",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         
         // Список релизов
-        items(releases, key = { it.artifactId }) { release ->
+        items(releases, key = { it.assetId }) { release ->
             ReleaseCard(
                 release = release,
-                onDownload = { onDownloadApk(release) }
+                onOpenUrl = { onOpenUrl(release) }
             )
         }
     }
@@ -277,7 +284,7 @@ private fun ReleasesList(
 @Composable
 private fun ReleaseCard(
     release: ReleaseItem,
-    onDownload: () -> Unit
+    onOpenUrl: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -288,7 +295,7 @@ private fun ReleaseCard(
                 .fillMaxWidth()
                 .padding(16.dp)
         ) {
-            // Header: название и иконка APK
+            // Header: название релиза и тег
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -308,63 +315,103 @@ private fun ReleaseCard(
                     
                     Column {
                         Text(
-                            text = release.artifactName,
+                            text = release.releaseName,
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = release.releaseTag,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+            }
+            
+            // Описание релиза (если есть)
+            if (release.releaseBody.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = release.releaseBody.take(150) + if (release.releaseBody.length > 150) "..." else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 3
+                )
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // Информация о файле
+            Column(
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.InsertDriveFile,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = release.assetName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Storage,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Text(
-                            text = release.workflowName,
+                            text = formatFileSize(release.sizeInBytes),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "${release.downloadCount} скачиваний",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-            }
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            // Детали
-            Column(
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Code,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "${release.branch} • ${release.commitSha.take(7)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
                 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Storage,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = formatFileSize(release.sizeInBytes),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = Icons.Default.Schedule,
@@ -382,21 +429,21 @@ private fun ReleaseCard(
             
             Spacer(modifier = Modifier.height(12.dp))
             
-            // Кнопка скачивания
+            // Кнопка открытия ссылки
             Button(
-                onClick = onDownload,
+                onClick = onOpenUrl,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF3DDC84)
                 )
             ) {
                 Icon(
-                    imageVector = Icons.Default.Download,
+                    imageVector = Icons.Default.OpenInBrowser,
                     contentDescription = null,
                     modifier = Modifier.size(20.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Скачать APK")
+                Text("Открыть ссылку для скачивания")
             }
         }
     }
