@@ -4,9 +4,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Analytics
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -27,6 +29,7 @@ import androidx.navigation.compose.rememberNavController
 import com.opuside.app.feature.analyzer.presentation.AnalyzerScreen
 import com.opuside.app.feature.creator.presentation.CreatorScreen
 import com.opuside.app.feature.settings.presentation.SettingsScreen
+import com.opuside.app.feature.workflows.presentation.WorkflowsScreen
 import com.opuside.app.core.security.SecureSettingsDataStore
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -52,6 +55,13 @@ sealed class Screen(
         selectedIcon = Icons.Filled.Analytics,
         unselectedIcon = Icons.Outlined.Analytics
     )
+    
+    data object Workflows : Screen(
+        route = "workflows",
+        title = "Actions",
+        selectedIcon = Icons.Filled.PlayCircle,
+        unselectedIcon = Icons.Outlined.PlayCircle
+    )
 
     data object Settings : Screen(
         route = "settings",
@@ -65,6 +75,7 @@ sealed class Screen(
 val bottomNavItems = listOf(
     Screen.Creator,
     Screen.Analyzer,
+    Screen.Workflows,
     Screen.Settings
 )
 
@@ -73,7 +84,7 @@ val bottomNavItems = listOf(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /**
- * ✅ ОБНОВЛЕНО v3.0: Удалён ClaudeHelper route
+ * ✅ ОБНОВЛЕНО v4.0: Добавлен экран Workflows (GitHub Actions)
  * 
  * Когда sensitiveFeatureDisabled = true, следующие функции должны быть отключены:
  * - Сохранение Anthropic API ключа (Settings)
@@ -137,6 +148,10 @@ fun OpusIDENavigation(
             
             composable(Screen.Analyzer.route) {
                 AnalyzerScreen()
+            }
+            
+            composable(Screen.Workflows.route) {
+                WorkflowsScreen()
             }
             
             composable(Screen.Settings.route) {
