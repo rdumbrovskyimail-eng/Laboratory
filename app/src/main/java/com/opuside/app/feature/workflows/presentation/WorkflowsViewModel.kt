@@ -148,24 +148,21 @@ class WorkflowsViewModel @Inject constructor(
                 
                 // URL для скачивания ZIP архива
                 val zipUrl = "https://github.com/${config.owner}/${config.repo}/archive/refs/heads/${config.branch}.zip"
-                val fileName = "${config.repo}-${config.branch}.zip"
                 
-                // Используем DownloadManager для скачивания
-                val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
-                
-                val request = android.app.DownloadManager.Request(android.net.Uri.parse(zipUrl)).apply {
-                    setTitle("Скачивание репозитория")
-                    setDescription("${config.owner}/${config.repo}")
-                    setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, fileName)
-                    setAllowedOverMetered(true)
-                    setAllowedOverRoaming(true)
-                }
-                
-                downloadManager.enqueue(request)
-                
-                _state.update { 
-                    it.copy(message = "Скачивание началось. Проверьте уведомления.") 
+                // Открываем ссылку в браузере для скачивания
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(zipUrl))
+                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    context.startActivity(intent)
+                    
+                    _state.update { 
+                        it.copy(message = "Открываем браузер для скачивания ZIP...") 
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("WorkflowsVM", "Failed to open browser", e)
+                    _state.update { 
+                        it.copy(message = "Ошибка: не удалось открыть браузер") 
+                    }
                 }
                 
             } catch (e: Exception) {
@@ -248,29 +245,7 @@ class WorkflowsViewModel @Inject constructor(
     }
 
     fun downloadApkWithManager(context: Context, releaseItem: ReleaseItem) {
-        try {
-            val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as android.app.DownloadManager
-            
-            val request = android.app.DownloadManager.Request(Uri.parse(releaseItem.downloadUrl)).apply {
-                setTitle("Скачивание APK")
-                setDescription(releaseItem.assetName)
-                setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(android.os.Environment.DIRECTORY_DOWNLOADS, releaseItem.assetName)
-                setAllowedOverMetered(true)
-                setAllowedOverRoaming(true)
-            }
-            
-            downloadManager.enqueue(request)
-            
-            _state.update { 
-                it.copy(message = "Скачивание началось. Проверьте уведомления.") 
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("WorkflowsVM", "APK download error", e)
-            _state.update { 
-                it.copy(message = "Ошибка скачивания: ${e.message}") 
-            }
-        }
+        openReleaseUrl(context, releaseItem.downloadUrl)
     }
 
     // ════════════════════════════════════════════════════════════════════════
