@@ -23,10 +23,13 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * GitHub API Client v2.0
+ * GitHub API Client v2.1
  *
  * ✅ ДОБАВЛЕНО: getFullTree() — Git Trees API для загрузки полного дерева репозитория
  *    одним запросом. Используется RepoIndexManager для быстрой индексации.
+ *
+ * ✅ ДОБАВЛЕНО: getReleases(), getRelease(), getLatestRelease() — GitHub Releases API
+ *    для работы с релизами и скачивания APK файлов.
  *
  * ✅ СОХРАНЕНО: Все оригинальные методы без изменений.
  */
@@ -447,6 +450,76 @@ class GitHubApiClient @Inject constructor(
             }
         } catch (e: Exception) {
             Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ★ NEW: GITHUB RELEASES
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Получить все releases репозитория
+     * 
+     * GET /repos/{owner}/{repo}/releases
+     * 
+     * @param perPage Количество релизов на страницу (по умолчанию 30)
+     * @return Список релизов с assets (APK файлами)
+     */
+    suspend fun getReleases(perPage: Int = 30): Result<List<GitHubRelease>> {
+        val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/releases") {
+                setupHeaders(config.token)
+                parameter("per_page", perPage)
+            }
+        }
+    }
+
+    /**
+     * Получить конкретный release по тегу
+     * 
+     * GET /repos/{owner}/{repo}/releases/tags/{tag}
+     * 
+     * @param tag Тег релиза (например, "v1.0.0")
+     * @return Release с указанным тегом
+     */
+    suspend fun getRelease(tag: String): Result<GitHubRelease> {
+        val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/releases/tags/$tag") {
+                setupHeaders(config.token)
+            }
+        }
+    }
+
+    /**
+     * Получить последний release
+     * 
+     * GET /repos/{owner}/{repo}/releases/latest
+     * 
+     * @return Последний опубликованный release
+     */
+    suspend fun getLatestRelease(): Result<GitHubRelease> {
+        val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
+        
+        return apiCall {
+            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/releases/latest") {
+                setupHeaders(config.token)
+            }
         }
     }
 
