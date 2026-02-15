@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.network.github.model.WorkflowRun
@@ -45,29 +46,63 @@ fun WorkflowsScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
+    var selectedTabIndex by remember { mutableStateOf(0) }
+    
+    // Загружаем релизы при переходе на вкладку
+    LaunchedEffect(selectedTabIndex) {
+        if (selectedTabIndex == 1 && state.releases.isEmpty() && !state.isLoadingReleases) {
+            viewModel.loadReleases()
+        }
+    }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("GitHub Actions") },
-                actions = {
-                    // Кнопка обновления
-                    IconButton(onClick = { viewModel.refreshWorkflows() }) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "Refresh"
-                        )
+            Column {
+                TopAppBar(
+                    title = { Text("GitHub Actions") },
+                    actions = {
+                        // Кнопка обновления
+                        IconButton(onClick = { 
+                            if (selectedTabIndex == 0) {
+                                viewModel.refreshWorkflows()
+                            } else {
+                                viewModel.loadReleases()
+                            }
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Refresh"
+                            )
+                        }
+                        
+                        // Кнопка скачивания репозитория (только на вкладке Workflows)
+                        if (selectedTabIndex == 0) {
+                            IconButton(onClick = { viewModel.downloadRepository(context) }) {
+                                Icon(
+                                    imageVector = Icons.Default.Download,
+                                    contentDescription = "Download Repository as ZIP"
+                                )
+                            }
+                        }
                     }
-                    
-                    // Кнопка скачивания репозитория
-                    IconButton(onClick = { viewModel.downloadRepository(context) }) {
-                        Icon(
-                            imageVector = Icons.Default.Download,
-                            contentDescription = "Download Repository as ZIP"
-                        )
-                    }
+                )
+                
+                // Tabs
+                TabRow(
+                    selectedTabIndex = selectedTabIndex
+                ) {
+                    Tab(
+                        selected = selectedTabIndex == 0,
+                        onClick = { selectedTabIndex = 0 },
+                        text = { Text("Workflows") }
+                    )
+                    Tab(
+                        selected = selectedTabIndex == 1,
+                        onClick = { selectedTabIndex = 1 },
+                        text = { Text("Releases") }
+                    )
                 }
-            )
+            }
         }
     ) { paddingValues ->
         Box(
@@ -75,33 +110,21 @@ fun WorkflowsScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            when {
-                state.isLoading && state.workflows.isEmpty() -> {
-                    // Первоначальная загрузка
-                    LoadingState()
-                }
-                
-                state.error != null && state.workflows.isEmpty() -> {
-                    // Ошибка при первой загрузке
-                    ErrorState(
-                        error = state.error!!,
-                        onRetry = { viewModel.refreshWorkflows() }
+            when (selectedTabIndex) {
+                0 -> {
+                    // Workflows Tab
+                    WorkflowsTab(
+                        state = state,
+                        onWorkflowClick = { viewModel.selectWorkflow(it) },
+                        onRefresh = { viewModel.refreshWorkflows() }
                     )
                 }
-                
-                state.workflows.isEmpty() -> {
-                    // Нет workflow runs
-                    EmptyState()
-                }
-                
-                else -> {
-                    // Показываем список workflows
-                    WorkflowsList(
-                        workflows = state.workflows,
-                        selectedWorkflow = state.selectedWorkflow,
-                        onWorkflowClick = { viewModel.selectWorkflow(it) },
-                        onRefresh = { viewModel.refreshWorkflows() },
-                        isRefreshing = state.isLoading
+                1 -> {
+                    // Releases Tab
+                    ReleasesTab(
+                        state = state,
+                        onDownloadApk = { viewModel.downloadApk(context, it) },
+                        onRefresh = { viewModel.loadReleases() }
                     )
                 }
             }
@@ -138,6 +161,244 @@ fun WorkflowsScreen(
             onDismiss = { viewModel.clearSelection() },
             onLoadLogs = { viewModel.loadWorkflowLogs(workflow.id) }
         )
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// WORKFLOWS TAB
+// ════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun WorkflowsTab(
+    state: WorkflowsState,
+    onWorkflowClick: (WorkflowRun) -> Unit,
+    onRefresh: () -> Unit
+) {
+    when {
+        state.isLoading && state.workflows.isEmpty() -> {
+            LoadingState()
+        }
+        
+        state.error != null && state.workflows.isEmpty() -> {
+            ErrorState(
+                error = state.error,
+                onRetry = onRefresh
+            )
+        }
+        
+        state.workflows.isEmpty() -> {
+            EmptyState()
+        }
+        
+        else -> {
+            WorkflowsList(
+                workflows = state.workflows,
+                selectedWorkflow = state.selectedWorkflow,
+                onWorkflowClick = onWorkflowClick,
+                onRefresh = onRefresh,
+                isRefreshing = state.isLoading
+            )
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RELEASES TAB
+// ════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ReleasesTab(
+    state: WorkflowsState,
+    onDownloadApk: (ReleaseItem) -> Unit,
+    onRefresh: () -> Unit
+) {
+    when {
+        state.isLoadingReleases && state.releases.isEmpty() -> {
+            LoadingState()
+        }
+        
+        state.releasesError != null && state.releases.isEmpty() -> {
+            ErrorState(
+                error = state.releasesError,
+                onRetry = onRefresh
+            )
+        }
+        
+        state.releases.isEmpty() -> {
+            EmptyReleasesState()
+        }
+        
+        else -> {
+            ReleasesList(
+                releases = state.releases,
+                onDownloadApk = onDownloadApk
+            )
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RELEASES LIST
+// ════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ReleasesList(
+    releases: List<ReleaseItem>,
+    onDownloadApk: (ReleaseItem) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Header
+        item {
+            Text(
+                text = "${releases.size} APK релизов доступно",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(bottom = 8.dp)
+            )
+        }
+        
+        // Список релизов
+        items(releases, key = { it.artifactId }) { release ->
+            ReleaseCard(
+                release = release,
+                onDownload = { onDownloadApk(release) }
+            )
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// RELEASE CARD
+// ════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ReleaseCard(
+    release: ReleaseItem,
+    onDownload: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Header: название и иконка APK
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Android,
+                        contentDescription = null,
+                        modifier = Modifier.size(40.dp),
+                        tint = Color(0xFF3DDC84) // Android green
+                    )
+                    
+                    Column {
+                        Text(
+                            text = release.artifactName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = release.workflowName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // Детали
+            Column(
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Code,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "${release.branch} • ${release.commitSha.take(7)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Storage,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = formatFileSize(release.sizeInBytes),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Schedule,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = formatTime(release.createdAt),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            // Кнопка скачивания
+            Button(
+                onClick = onDownload,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF3DDC84)
+                )
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Download,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Скачать APK")
+            }
+        }
     }
 }
 
@@ -675,6 +936,38 @@ private fun EmptyState() {
     }
 }
 
+@Composable
+private fun EmptyReleasesState() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp),
+            modifier = Modifier.padding(32.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Android,
+                contentDescription = null,
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Нет доступных APK",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "APK релизы будут появляться здесь после успешных сборок",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ════════════════════════════════════════════════════════════════════════════
@@ -706,5 +999,14 @@ private fun calculateDuration(startTime: String, endTime: String): String {
         }
     } catch (e: Exception) {
         "N/A"
+    }
+}
+
+private fun formatFileSize(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+        bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
+        else -> "${bytes / (1024 * 1024 * 1024)} GB"
     }
 }
