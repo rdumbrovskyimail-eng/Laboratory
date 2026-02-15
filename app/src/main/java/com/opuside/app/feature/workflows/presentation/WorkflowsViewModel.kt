@@ -135,7 +135,7 @@ class WorkflowsViewModel @Inject constructor(
 
     fun downloadRepository(context: Context) {
         viewModelScope.launch {
-            _state.update { it.copy(message = "Starting download...") }
+            _state.update { it.copy(message = "Начинается скачивание...") }
             
             try {
                 // Получаем конфигурацию GitHub
@@ -143,10 +143,12 @@ class WorkflowsViewModel @Inject constructor(
                 
                 if (config.owner.isEmpty() || config.repo.isEmpty()) {
                     _state.update { 
-                        it.copy(message = "GitHub not configured. Please set owner and repository in Settings.") 
+                        it.copy(message = "GitHub не настроен. Укажите owner и repository в Settings.") 
                     }
                     return@launch
                 }
+                
+                val token = appSettings.gitHubToken.first()
                 
                 // URL для скачивания ZIP архива
                 val zipUrl = "https://github.com/${config.owner}/${config.repo}/archive/refs/heads/${config.branch}.zip"
@@ -154,41 +156,86 @@ class WorkflowsViewModel @Inject constructor(
                 
                 // Скачиваем в фоновом потоке
                 withContext(Dispatchers.IO) {
-                    val outputFile = File(context.cacheDir, fileName)
+                    // Сохраняем в Downloads
+                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    )
+                    val outputFile = File(downloadsDir, fileName)
                     
                     val url = URL(zipUrl)
                     val connection = url.openConnection() as HttpURLConnection
                     
                     try {
+                        connection.requestMethod = "GET"
+                        connection.connectTimeout = 15000
+                        connection.readTimeout = 15000
+                        
+                        // Добавляем токен если есть
+                        if (token.isNotEmpty()) {
+                            connection.setRequestProperty("Authorization", "Bearer $token")
+                        }
+                        
                         connection.connect()
                         
-                        if (connection.responseCode == HttpURLConnection.HTTP_OK) {
-                            connection.inputStream.use { input ->
-                                FileOutputStream(outputFile).use { output ->
-                                    input.copyTo(output)
+                        when (connection.responseCode) {
+                            HttpURLConnection.HTTP_OK -> {
+                                val totalSize = connection.contentLength
+                                var downloaded = 0L
+                                
+                                connection.inputStream.use { input ->
+                                    FileOutputStream(outputFile).use { output ->
+                                        val buffer = ByteArray(8192)
+                                        var bytesRead: Int
+                                        
+                                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                                            output.write(buffer, 0, bytesRead)
+                                            downloaded += bytesRead
+                                            
+                                            // Обновляем прогресс
+                                            if (totalSize > 0) {
+                                                val progress = (downloaded * 100 / totalSize).toInt()
+                                                withContext(Dispatchers.Main) {
+                                                    _state.update { 
+                                                        it.copy(message = "Скачивание... $progress%") 
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                withContext(Dispatchers.Main) {
+                                    _state.update { 
+                                        it.copy(message = "✓ Репозиторий скачан: ${outputFile.absolutePath}") 
+                                    }
+                                }
+                                
+                                // Сканируем файл для MediaStore
+                                android.media.MediaScannerConnection.scanFile(
+                                    context,
+                                    arrayOf(outputFile.absolutePath),
+                                    arrayOf("application/zip"),
+                                    null
+                                )
+                            }
+                            
+                            HttpURLConnection.HTTP_MOVED_TEMP,
+                            HttpURLConnection.HTTP_MOVED_PERM,
+                            HttpURLConnection.HTTP_SEE_OTHER -> {
+                                val location = connection.getHeaderField("Location")
+                                withContext(Dispatchers.Main) {
+                                    _state.update { 
+                                        it.copy(message = "Ошибка: редирект на $location") 
+                                    }
                                 }
                             }
                             
-                            // Открываем файл через Intent
-                            val uri = FileProvider.getUriForFile(
-                                context,
-                                "${context.packageName}.fileprovider",
-                                outputFile
-                            )
-                            
-                            val intent = Intent(Intent.ACTION_VIEW).apply {
-                                setDataAndType(uri, "application/zip")
-                                flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK
-                            }
-                            
-                            context.startActivity(Intent.createChooser(intent, "Open ZIP file"))
-                            
-                            _state.update { 
-                                it.copy(message = "Repository downloaded: $fileName") 
-                            }
-                        } else {
-                            _state.update { 
-                                it.copy(message = "Download failed: HTTP ${connection.responseCode}") 
+                            else -> {
+                                withContext(Dispatchers.Main) {
+                                    _state.update { 
+                                        it.copy(message = "Ошибка скачивания: HTTP ${connection.responseCode}") 
+                                    }
+                                }
                             }
                         }
                     } finally {
@@ -196,8 +243,180 @@ class WorkflowsViewModel @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
+                android.util.Log.e("WorkflowsVM", "Download error", e)
                 _state.update { 
-                    it.copy(message = "Download error: ${e.message}") 
+                    it.copy(message = "Ошибка: ${e.message}") 
+                }
+            }
+        }
+    }
+
+    fun loadReleases() {
+        viewModelScope.launch {
+            _state.update { it.copy(isLoadingReleases = true, releasesError = null) }
+            
+            try {
+                // Получаем последние workflow runs которые завершились успешно
+                val runsResult = gitHubApiClient.getWorkflowRuns(
+                    status = "completed",
+                    perPage = 20
+                )
+                
+                runsResult.fold(
+                    onSuccess = { response ->
+                        val successfulRuns = response.workflowRuns.filter { 
+                            it.conclusion == "success" 
+                        }
+                        
+                        // Для каждого успешного run загружаем артефакты
+                        val releasesWithApk = mutableListOf<ReleaseItem>()
+                        
+                        successfulRuns.forEach { run ->
+                            val artifactsResult = gitHubApiClient.getRunArtifacts(run.id)
+                            
+                            artifactsResult.fold(
+                                onSuccess = { artifacts ->
+                                    // Ищем APK артефакты
+                                    val apkArtifacts = artifacts.artifacts.filter { artifact ->
+                                        artifact.name.contains("apk", ignoreCase = true) ||
+                                        artifact.name.contains("debug", ignoreCase = true)
+                                    }
+                                    
+                                    apkArtifacts.forEach { artifact ->
+                                        releasesWithApk.add(
+                                            ReleaseItem(
+                                                workflowName = run.name ?: "Build",
+                                                branch = run.headBranch,
+                                                commitSha = run.headSha,
+                                                artifactName = artifact.name,
+                                                artifactId = artifact.id,
+                                                sizeInBytes = artifact.sizeInBytes,
+                                                createdAt = artifact.createdAt,
+                                                downloadUrl = artifact.archiveDownloadUrl
+                                            )
+                                        )
+                                    }
+                                },
+                                onFailure = { /* Игнорируем ошибки для отдельных runs */ }
+                            )
+                        }
+                        
+                        _state.update { 
+                            it.copy(
+                                releases = releasesWithApk,
+                                isLoadingReleases = false,
+                                releasesError = null
+                            ) 
+                        }
+                    },
+                    onFailure = { error ->
+                        _state.update { 
+                            it.copy(
+                                isLoadingReleases = false,
+                                releasesError = error.message ?: "Unknown error"
+                            ) 
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                _state.update { 
+                    it.copy(
+                        isLoadingReleases = false,
+                        releasesError = e.message ?: "Unknown error"
+                    ) 
+                }
+            }
+        }
+    }
+
+    fun downloadApk(context: Context, releaseItem: ReleaseItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(message = "Подготовка к скачиванию APK...") }
+            
+            try {
+                val token = appSettings.gitHubToken.first()
+                
+                if (token.isEmpty()) {
+                    _state.update { 
+                        it.copy(message = "Требуется GitHub токен для скачивания APK") 
+                    }
+                    return@launch
+                }
+                
+                withContext(Dispatchers.IO) {
+                    val downloadsDir = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    )
+                    val fileName = "${releaseItem.artifactName}.zip"
+                    val outputFile = File(downloadsDir, fileName)
+                    
+                    val url = URL(releaseItem.downloadUrl)
+                    val connection = url.openConnection() as HttpURLConnection
+                    
+                    try {
+                        connection.requestMethod = "GET"
+                        connection.setRequestProperty("Authorization", "Bearer $token")
+                        connection.setRequestProperty("Accept", "application/vnd.github+json")
+                        connection.connectTimeout = 15000
+                        connection.readTimeout = 30000
+                        connection.connect()
+                        
+                        when (connection.responseCode) {
+                            HttpURLConnection.HTTP_OK -> {
+                                val totalSize = connection.contentLength
+                                var downloaded = 0L
+                                
+                                connection.inputStream.use { input ->
+                                    FileOutputStream(outputFile).use { output ->
+                                        val buffer = ByteArray(8192)
+                                        var bytesRead: Int
+                                        
+                                        while (input.read(buffer).also { bytesRead = it } != -1) {
+                                            output.write(buffer, 0, bytesRead)
+                                            downloaded += bytesRead
+                                            
+                                            if (totalSize > 0) {
+                                                val progress = (downloaded * 100 / totalSize).toInt()
+                                                withContext(Dispatchers.Main) {
+                                                    _state.update { 
+                                                        it.copy(message = "Скачивание APK... $progress%") 
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                
+                                withContext(Dispatchers.Main) {
+                                    _state.update { 
+                                        it.copy(message = "✓ APK скачан: ${outputFile.absolutePath}") 
+                                    }
+                                }
+                                
+                                android.media.MediaScannerConnection.scanFile(
+                                    context,
+                                    arrayOf(outputFile.absolutePath),
+                                    arrayOf("application/zip"),
+                                    null
+                                )
+                            }
+                            
+                            else -> {
+                                withContext(Dispatchers.Main) {
+                                    _state.update { 
+                                        it.copy(message = "Ошибка скачивания APK: HTTP ${connection.responseCode}") 
+                                    }
+                                }
+                            }
+                        }
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("WorkflowsVM", "APK download error", e)
+                _state.update { 
+                    it.copy(message = "Ошибка скачивания: ${e.message}") 
                 }
             }
         }
@@ -278,5 +497,20 @@ data class WorkflowsState(
     val isLoading: Boolean = false,
     val isLoadingLogs: Boolean = false,
     val error: String? = null,
-    val message: String? = null
+    val message: String? = null,
+    // Releases tab
+    val releases: List<ReleaseItem> = emptyList(),
+    val isLoadingReleases: Boolean = false,
+    val releasesError: String? = null
+)
+
+data class ReleaseItem(
+    val workflowName: String,
+    val branch: String,
+    val commitSha: String,
+    val artifactName: String,
+    val artifactId: Long,
+    val sizeInBytes: Long,
+    val createdAt: String,
+    val downloadUrl: String
 )
