@@ -1,6 +1,7 @@
 package com.opuside.app.feature.creator.di
 
 import com.opuside.app.core.data.AppSettings
+import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.feature.creator.data.CreatorAIEditService
 import dagger.Module
 import dagger.Provides
@@ -25,8 +26,9 @@ object CreatorModule {
     @Provides
     @Singleton
     fun provideCreatorAIEditService(
-        appSettings: AppSettings
+        appSettings: AppSettings,
+        secureSettings: SecureSettingsDataStore
     ): CreatorAIEditService {
-        return CreatorAIEditService(appSettings)
+        return CreatorAIEditService(appSettings, secureSettings)
     }
 }
