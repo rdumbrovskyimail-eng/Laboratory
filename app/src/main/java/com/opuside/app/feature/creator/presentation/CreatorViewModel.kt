@@ -10,6 +10,7 @@ import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
 import com.opuside.app.core.network.github.model.GitHubBranch
 import com.opuside.app.core.network.github.model.GitHubContent
+import com.opuside.app.feature.creator.data.CreatorAIEditService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -20,7 +21,8 @@ class CreatorViewModel @Inject constructor(
     private val gitHubClient: GitHubApiClient,
     private val graphQLClient: GitHubGraphQLClient,
     private val appSettings: AppSettings,
-    private val conflictResolver: GitConflictResolver
+    private val conflictResolver: GitConflictResolver,
+    private val aiEditService: CreatorAIEditService
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -82,6 +84,21 @@ class CreatorViewModel @Inject constructor(
 
     private val _conflictState = MutableStateFlow<ConflictResult?>(null)
     val conflictState: StateFlow<ConflictResult?> = _conflictState.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ★ AI EDIT STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val _aiEditStatus = MutableStateFlow<CreatorAIEditService.EditStatus>(
+        CreatorAIEditService.EditStatus.Idle
+    )
+    val aiEditStatus: StateFlow<CreatorAIEditService.EditStatus> = _aiEditStatus.asStateFlow()
+
+    private val _showAIEditScreen = MutableStateFlow(false)
+    val showAIEditScreen: StateFlow<Boolean> = _showAIEditScreen.asStateFlow()
+
+    /** Контент после применения AI-изменений (превью перед apply) */
+    private var _aiEditNewContent: String = ""
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INITIALIZATION
@@ -518,6 +535,130 @@ class CreatorViewModel @Inject constructor(
             
             _isLoading.value = false
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ★ AI EDIT OPERATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Открывает полноэкранный AI Edit
+     */
+    fun openAIEdit() {
+        if (_selectedFile.value == null) return
+        _showAIEditScreen.value = true
+        _aiEditStatus.value = CreatorAIEditService.EditStatus.Idle
+        _aiEditNewContent = ""
+        android.util.Log.d("CreatorViewModel", "🤖 AI Edit opened for: ${_selectedFile.value?.name}")
+    }
+
+    /**
+     * Закрывает AI Edit экран
+     */
+    fun closeAIEdit() {
+        _showAIEditScreen.value = false
+        _aiEditStatus.value = CreatorAIEditService.EditStatus.Idle
+        _aiEditNewContent = ""
+        android.util.Log.d("CreatorViewModel", "🤖 AI Edit closed")
+    }
+
+    /**
+     * Отправляет файл + инструкции в Haiku 4.5 для обработки.
+     * Отправляется ТОЛЬКО текущий открытый файл — НЕ весь репозиторий.
+     */
+    fun processAIEdit(instructions: String) {
+        val file = _selectedFile.value ?: return
+        val currentContent = _fileContent.value
+
+        if (instructions.isBlank()) {
+            _aiEditStatus.value = CreatorAIEditService.EditStatus.Error("Введите инструкции")
+            return
+        }
+
+        viewModelScope.launch {
+            _aiEditStatus.value = CreatorAIEditService.EditStatus.Processing
+
+            android.util.Log.d("CreatorViewModel", "🤖 Processing AI edit: ${instructions.take(80)}...")
+
+            aiEditService.processEdit(
+                fileContent = currentContent,
+                fileName = file.name,
+                instructions = instructions
+            ).onSuccess { result ->
+                if (result.blocks.isEmpty()) {
+                    _aiEditStatus.value = CreatorAIEditService.EditStatus.Error(
+                        "AI не нашёл изменений: ${result.summary}"
+                    )
+                    return@launch
+                }
+
+                // Применяем блоки к контенту (4-уровневый матчинг)
+                aiEditService.applyEdits(currentContent, result.blocks)
+                    .onSuccess { applyResult ->
+                        _aiEditNewContent = applyResult.newContent
+
+                        // Обновляем блоки с реальными статусами матчинга
+                        val updatedResult = result.copy(
+                            blocks = applyResult.appliedBlocks,
+                            summary = if (applyResult.isFullyApplied) {
+                                result.summary
+                            } else {
+                                "${result.summary} | ⚠️ ${applyResult.statusMessage}"
+                            }
+                        )
+
+                        _aiEditStatus.value = CreatorAIEditService.EditStatus.Success(
+                            result = updatedResult,
+                            newContent = applyResult.newContent
+                        )
+
+                        android.util.Log.d("CreatorViewModel",
+                            "✅ AI edit ready: ${applyResult.totalApplied}/${result.blocks.size} blocks applied, " +
+                            "${result.inputTokens}in+${result.outputTokens}out, " +
+                            "€${String.format("%.5f", result.costEUR)}"
+                        )
+
+                        if (!applyResult.isFullyApplied) {
+                            android.util.Log.w("CreatorViewModel",
+                                "⚠️ ${applyResult.statusMessage}"
+                            )
+                        }
+                    }
+                    .onFailure { e ->
+                        _aiEditStatus.value = CreatorAIEditService.EditStatus.Error(
+                            "Ошибка применения блоков: ${e.message}"
+                        )
+                    }
+
+            }.onFailure { e ->
+                _aiEditStatus.value = CreatorAIEditService.EditStatus.Error(
+                    e.message ?: "Неизвестная ошибка API"
+                )
+                android.util.Log.e("CreatorViewModel", "❌ AI edit failed", e)
+            }
+        }
+    }
+
+    /**
+     * Применяет результат AI-редактирования к файлу в редакторе
+     */
+    fun applyAIEdit() {
+        if (_aiEditNewContent.isBlank()) return
+
+        _fileContent.value = _aiEditNewContent
+        android.util.Log.d("CreatorViewModel", "✅ AI edit applied to file content")
+
+        // Закрываем AI Edit экран
+        closeAIEdit()
+    }
+
+    /**
+     * Сбрасывает результат AI-редактирования (без закрытия экрана)
+     */
+    fun discardAIEdit() {
+        _aiEditStatus.value = CreatorAIEditService.EditStatus.Idle
+        _aiEditNewContent = ""
+        android.util.Log.d("CreatorViewModel", "↩️ AI edit discarded")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
