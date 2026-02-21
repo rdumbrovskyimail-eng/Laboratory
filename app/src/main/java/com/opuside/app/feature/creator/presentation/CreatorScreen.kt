@@ -48,14 +48,22 @@ fun CreatorScreen(
     val isSaving by viewModel.isSaving.collectAsState()
     val conflictState by viewModel.conflictState.collectAsState()
 
+    // ★ AI Edit states
+    val showAIEditScreen by viewModel.showAIEditScreen.collectAsState()
+    val aiEditStatus by viewModel.aiEditStatus.collectAsState()
+
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showCommitDialog by remember { mutableStateOf(false) }
     var itemToDelete by remember { mutableStateOf<GitHubContent?>(null) }
-    var showFindReplaceDialog by remember { mutableStateOf(false) }
 
     val clipboardManager = LocalClipboardManager.current
 
-    BackHandler(enabled = canGoBack) {
+    // ★ BackHandler: AI Edit экран имеет приоритет
+    BackHandler(enabled = showAIEditScreen) {
+        viewModel.closeAIEdit()
+    }
+
+    BackHandler(enabled = canGoBack && !showAIEditScreen) {
         viewModel.navigateBack()
     }
 
@@ -75,17 +83,6 @@ fun CreatorScreen(
             onCommit = { message ->
                 viewModel.saveFile(message)
                 showCommitDialog = false
-            }
-        )
-    }
-
-    if (showFindReplaceDialog && selectedFile != null) {
-        AIFindReplaceDialog(
-            currentContent = fileContent,
-            onDismiss = { showFindReplaceDialog = false },
-            onApply = { newContent ->
-                viewModel.updateFileContent(newContent)
-                showFindReplaceDialog = false
             }
         )
     }
@@ -118,55 +115,79 @@ fun CreatorScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        TopBar(
-            path = currentPath,
-            canGoBack = canGoBack,
-            onBack = viewModel::navigateBack,
-            onRefresh = viewModel::refresh,
-            onNewFile = { showNewFileDialog = true },
-            selectedFile = selectedFile,
-            onCloseFile = viewModel::closeFile
-        )
+    // ★ Обёрнуто в Box для overlay AIEditScreen поверх основного контента
+    Box(modifier = Modifier.fillMaxSize()) {
 
-        error?.let {
-            ErrorBanner(
-                message = it,
-                onDismiss = viewModel::clearError
+        // ═══ Основной контент ═══
+        Column(modifier = Modifier.fillMaxSize()) {
+            TopBar(
+                path = currentPath,
+                canGoBack = canGoBack,
+                onBack = viewModel::navigateBack,
+                onRefresh = viewModel::refresh,
+                onNewFile = { showNewFileDialog = true },
+                selectedFile = selectedFile,
+                onCloseFile = viewModel::closeFile
             )
+
+            error?.let {
+                ErrorBanner(
+                    message = it,
+                    onDismiss = viewModel::clearError
+                )
+            }
+
+            if (selectedFile != null) {
+                EditorMode(
+                    file = selectedFile!!,
+                    content = fileContent,
+                    hasChanges = hasChanges,
+                    isSaving = isSaving,
+                    onContentChange = viewModel::updateFileContent,
+                    onSave = { showCommitDialog = true },
+                    onCopyAll = {
+                        clipboardManager.setText(AnnotatedString(fileContent))
+                    },
+                    onPasteAll = {
+                        clipboardManager.getText()?.text?.let { pastedText ->
+                            viewModel.updateFileContent(pastedText)
+                        }
+                    },
+                    onAIEdit = viewModel::openAIEdit,
+                    modifier = Modifier.weight(1f)
+                )
+            } else {
+                when {
+                    isLoading -> LoadingState()
+                    currentOwner.isBlank() || currentRepo.isBlank() -> {
+                        ConfigurationNeededState()
+                    }
+                    else -> FileBrowser(
+                        contents = contents,
+                        onFolderClick = viewModel::navigateToFolder,
+                        onFileClick = viewModel::openFile,
+                        onDeleteItem = { itemToDelete = it },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
         }
 
-        if (selectedFile != null) {
-            EditorMode(
-                file = selectedFile!!,
-                content = fileContent,
-                hasChanges = hasChanges,
-                isSaving = isSaving,
-                onContentChange = viewModel::updateFileContent,
-                onSave = { showCommitDialog = true },
-                onCopyAll = {
-                    clipboardManager.setText(AnnotatedString(fileContent))
-                },
-                onPasteAll = {
-                    clipboardManager.getText()?.text?.let { pastedText ->
-                        viewModel.updateFileContent(pastedText)
-                    }
-                },
-                onFindReplace = { showFindReplaceDialog = true },
-                modifier = Modifier.weight(1f)
-            )
-        } else {
-            when {
-                isLoading -> LoadingState()
-                currentOwner.isBlank() || currentRepo.isBlank() -> {
-                    ConfigurationNeededState()
-                }
-                else -> FileBrowser(
-                    contents = contents,
-                    onFolderClick = viewModel::navigateToFolder,
-                    onFileClick = viewModel::openFile,
-                    onDeleteItem = { itemToDelete = it },
-                    modifier = Modifier.weight(1f)
+        // ═══ AI Edit fullscreen overlay ═══
+        AnimatedVisibility(
+            visible = showAIEditScreen,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut()
+        ) {
+            selectedFile?.let { file ->
+                AIEditScreen(
+                    fileName = file.name,
+                    fileContent = fileContent,
+                    editStatus = aiEditStatus,
+                    onProcess = viewModel::processAIEdit,
+                    onApply = viewModel::applyAIEdit,
+                    onDiscard = viewModel::discardAIEdit,
+                    onClose = viewModel::closeAIEdit
                 )
             }
         }
@@ -495,7 +516,7 @@ private fun FileItem(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EDITOR MODE (ENHANCED)
+// EDITOR MODE
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -508,7 +529,7 @@ private fun EditorMode(
     onSave: () -> Unit,
     onCopyAll: () -> Unit,
     onPasteAll: () -> Unit,
-    onFindReplace: () -> Unit,
+    onAIEdit: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -519,7 +540,7 @@ private fun EditorMode(
             onSave = onSave,
             onCopyAll = onCopyAll,
             onPasteAll = onPasteAll,
-            onFindReplace = onFindReplace
+            onAIEdit = onAIEdit
         )
 
         key(file.path) {
@@ -542,7 +563,7 @@ private fun EditorMode(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EDITOR TOOLBAR (ENHANCED)
+// EDITOR TOOLBAR (★ кнопка ⚡ AI Edit вместо FindReplace)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -553,11 +574,10 @@ private fun EditorToolbar(
     onSave: () -> Unit,
     onCopyAll: () -> Unit,
     onPasteAll: () -> Unit,
-    onFindReplace: () -> Unit
+    onAIEdit: () -> Unit
 ) {
     Surface(tonalElevation = 1.dp) {
         Column {
-            // Main toolbar row
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -585,17 +605,19 @@ private fun EditorToolbar(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Find & Replace button
-                    IconButton(
-                        onClick = onFindReplace,
-                        modifier = Modifier.size(36.dp)
+                    // ★ AI Edit button
+                    FilledTonalButton(
+                        onClick = onAIEdit,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        ),
+                        modifier = Modifier.height(34.dp)
                     ) {
-                        Icon(
-                            Icons.Default.FindReplace,
-                            contentDescription = "Find & Replace",
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
+                        Text("⚡", fontSize = 14.sp)
+                        Spacer(Modifier.width(4.dp))
+                        Text("AI Edit", style = MaterialTheme.typography.labelMedium)
                     }
                     
                     // Copy All button
@@ -648,382 +670,6 @@ private fun EditorToolbar(
             }
         }
     }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// AI FIND & REPLACE DIALOG
-// ═══════════════════════════════════════════════════════════════════════════════
-
-@Composable
-private fun AIFindReplaceDialog(
-    currentContent: String,
-    onDismiss: () -> Unit,
-    onApply: (String) -> Unit
-) {
-    var aiPrompt by remember { mutableStateOf("") }
-    var isProcessing by remember { mutableStateOf(false) }
-    var previewContent by remember { mutableStateOf<String?>(null) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
-    
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    Icons.Default.AutoFixHigh,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text("AI Find & Replace")
-            }
-        },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    "Describe the changes you want to make:",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                OutlinedTextField(
-                    value = aiPrompt,
-                    onValueChange = { aiPrompt = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(120.dp),
-                    placeholder = { 
-                        Text(
-                            "Example:\n" +
-                            "• Replace all 'var' with 'val'\n" +
-                            "• Add @Composable to all functions\n" +
-                            "• Fix all TODO comments\n" +
-                            "• Rename variable 'data' to 'userData'"
-                        ) 
-                    },
-                    minLines = 5,
-                    maxLines = 5
-                )
-                
-                errorMessage?.let { error ->
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        )
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(8.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.Error,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                error,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                        }
-                    }
-                }
-                
-                previewContent?.let { preview ->
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer
-                        )
-                    ) {
-                        Column(Modifier.padding(8.dp)) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    Icons.Default.Preview,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                                Text(
-                                    "Preview:",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                preview.take(200) + if (preview.length > 200) "..." else "",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                            )
-                        }
-                    }
-                }
-                
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.Info,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            "The AI will intelligently analyze your code and apply the requested changes accurately.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (previewContent == null) {
-                    Button(
-                        onClick = {
-                            isProcessing = true
-                            errorMessage = null
-                            // Simulate AI processing
-                            previewContent = processAIFindReplace(currentContent, aiPrompt)
-                            isProcessing = false
-                            if (previewContent == currentContent) {
-                                errorMessage = "No changes detected. Try a different prompt."
-                                previewContent = null
-                            }
-                        },
-                        enabled = aiPrompt.isNotBlank() && !isProcessing
-                    ) {
-                        if (isProcessing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(16.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary
-                            )
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text("Preview Changes")
-                    }
-                } else {
-                    TextButton(onClick = { previewContent = null }) {
-                        Text("Re-edit")
-                    }
-                    Button(
-                        onClick = {
-                            onApply(previewContent!!)
-                        }
-                    ) {
-                        Icon(Icons.Default.Check, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Apply")
-                    }
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
-    )
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// AI PROCESSING FUNCTION
-// ═══════════════════════════════════════════════════════════════════════════════
-
-/**
- * AI-powered find & replace logic
- * This function intelligently processes the code based on natural language instructions
- */
-private fun processAIFindReplace(content: String, prompt: String): String {
-    // Convert prompt to lowercase for easier matching
-    val lowerPrompt = prompt.lowercase()
-    
-    var result = content
-    
-    try {
-        // PRIORITY PATTERN: Multi-line replacement (check this FIRST before simple patterns)
-        // Looks for "Replace:" followed by multiple lines, then "With:" followed by replacement
-        if (lowerPrompt.contains("replace") && lowerPrompt.contains("with") && prompt.lines().size > 3) {
-            val lines = prompt.lines()
-            var collectingOld = false
-            var collectingNew = false
-            val oldLines = mutableListOf<String>()
-            val newLines = mutableListOf<String>()
-            
-            for (line in lines) {
-                val trimmed = line.trim()
-                when {
-                    trimmed.lowercase().startsWith("replace") -> {
-                        collectingOld = true
-                        collectingNew = false
-                        // Check if there's code on same line after "replace:"
-                        val afterReplace = line.substringAfter(":", "").trim()
-                        if (afterReplace.isNotEmpty() && !afterReplace.lowercase().contains("with")) {
-                            oldLines.add(afterReplace)
-                        }
-                    }
-                    trimmed.lowercase().startsWith("with") -> {
-                        collectingOld = false
-                        collectingNew = true
-                        // Check if there's code on same line after "with:"
-                        val afterWith = line.substringAfter(":", "").trim()
-                        if (afterWith.isNotEmpty()) {
-                            newLines.add(afterWith)
-                        }
-                    }
-                    collectingOld && trimmed.isNotEmpty() -> {
-                        oldLines.add(trimmed)
-                    }
-                    collectingNew && trimmed.isNotEmpty() -> {
-                        newLines.add(trimmed)
-                    }
-                }
-            }
-            
-            if (oldLines.isNotEmpty() && newLines.isNotEmpty()) {
-                val oldBlock = oldLines.joinToString("\n")
-                val newBlock = newLines.joinToString("\n")
-                
-                // Try exact match first
-                if (oldBlock in result) {
-                    result = result.replace(oldBlock, newBlock)
-                    return result
-                }
-                
-                // Try with normalized whitespace
-                val normalizedOld = oldBlock.lines().joinToString("\n") { it.trim() }
-                val pattern = normalizedOld.lines().joinToString("\\s*") { Regex.escape(it.trim()) }
-                result = result.replace(pattern.toRegex(), newBlock)
-                return result
-            }
-        }
-        
-        // Pattern 1: Simple Replace X with Y (single line)
-        if (lowerPrompt.contains("replace") && lowerPrompt.contains("with") && prompt.lines().size <= 2) {
-            val replacePattern = """replace\s+(?:all\s+)?["']?(.+?)["']?\s+with\s+["']?(.+?)["']?""".toRegex()
-            val match = replacePattern.find(lowerPrompt)
-            if (match != null) {
-                val (oldText, newText) = match.destructured
-                result = result.replace(oldText.trim(), newText.trim())
-            }
-        }
-        
-        // Pattern 2: Change all X to Y
-        if (lowerPrompt.contains("change") && lowerPrompt.contains("to")) {
-            val changePattern = """change\s+(?:all\s+)?["']?(.+?)["']?\s+to\s+["']?(.+?)["']?""".toRegex()
-            val match = changePattern.find(lowerPrompt)
-            if (match != null) {
-                val (oldText, newText) = match.destructured
-                result = result.replace(oldText.trim(), newText.trim())
-            }
-        }
-        
-        // Pattern 3: Add annotation/decorator
-        if (lowerPrompt.contains("add") && (lowerPrompt.contains("@") || lowerPrompt.contains("annotation"))) {
-            val addPattern = """add\s+(@\w+)""".toRegex()
-            val match = addPattern.find(lowerPrompt)
-            if (match != null) {
-                val annotation = match.groupValues[1]
-                // Add annotation before function declarations
-                result = result.replace("""(\n\s*)(fun\s+)""".toRegex(), "$1$annotation\n$1$2")
-            }
-        }
-        
-        // Pattern 4: Remove X
-        if (lowerPrompt.contains("remove") || lowerPrompt.contains("delete")) {
-            val removePattern = """(?:remove|delete)\s+["']?(.+?)["']?""".toRegex()
-            val match = removePattern.find(lowerPrompt)
-            if (match != null) {
-                val textToRemove = match.groupValues[1].trim()
-                result = result.replace(textToRemove, "")
-            }
-        }
-        
-        // Pattern 5: Fix TODO comments
-        if (lowerPrompt.contains("todo") || lowerPrompt.contains("fix todo")) {
-            result = result.replace("""//\s*TODO:?\s*(.+)""".toRegex()) { matchResult ->
-                "// DONE: ${matchResult.groupValues[1]}"
-            }
-        }
-        
-        // Pattern 6: Rename variable/class/function
-        if (lowerPrompt.contains("rename")) {
-            val renamePattern = """rename\s+["']?(\w+)["']?\s+to\s+["']?(\w+)["']?""".toRegex()
-            val match = renamePattern.find(lowerPrompt)
-            if (match != null) {
-                val (oldName, newName) = match.destructured
-                // Word boundary replacement to avoid partial matches
-                result = result.replace("""\b$oldName\b""".toRegex(), newName)
-            }
-        }
-        
-        // Pattern 7: Convert var to val (Kotlin specific)
-        if (lowerPrompt.contains("var") && lowerPrompt.contains("val")) {
-            result = result.replace("""\bvar\b""".toRegex(), "val")
-        }
-        
-        // Pattern 8: Add imports
-        if (lowerPrompt.contains("add import") || lowerPrompt.contains("import")) {
-            val importPattern = """(?:add\s+)?import\s+([\w.]+)""".toRegex()
-            val match = importPattern.find(lowerPrompt)
-            if (match != null) {
-                val importStatement = "import ${match.groupValues[1]}\n"
-                if (!result.contains(importStatement)) {
-                    // Find the package declaration and add import after it
-                    result = result.replace(
-                        """(package\s+[\w.]+\s*\n)""".toRegex(),
-                        "$1\n$importStatement"
-                    )
-                }
-            }
-        }
-        
-        // Pattern 9: Format/beautify code (basic)
-        if (lowerPrompt.contains("format") || lowerPrompt.contains("beautify") || lowerPrompt.contains("clean")) {
-            // Remove trailing whitespace
-            result = result.replace("""[ \t]+$""".toRegex(RegexOption.MULTILINE), "")
-            // Ensure consistent line endings
-            result = result.replace("\r\n", "\n")
-            // Remove multiple consecutive empty lines
-            result = result.replace("""\n{3,}""".toRegex(), "\n\n")
-        }
-        
-        // Pattern 10: Add documentation/comments
-        if (lowerPrompt.contains("add doc") || lowerPrompt.contains("document")) {
-            result = result.replace("""(\n\s*)(fun\s+\w+)""".toRegex()) { matchResult ->
-                val indent = matchResult.groupValues[1]
-                val funDecl = matchResult.groupValues[2]
-                """$indent/**
-$indent * TODO: Add function documentation
-$indent */
-$indent$funDecl"""
-            }
-        }
-        
-    } catch (e: Exception) {
-        // Return original content if any error occurs
-        return content
-    }
-    
-    return result
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
