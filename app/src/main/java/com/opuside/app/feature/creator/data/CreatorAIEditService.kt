@@ -2,6 +2,7 @@ package com.opuside.app.feature.creator.data
 
 import android.util.Log
 import com.opuside.app.core.data.AppSettings
+import com.opuside.app.core.security.SecureSettingsDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -14,28 +15,10 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * CreatorAIEditService v2.0
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Отдельный легковесный обработчик Claude Haiku 4.5 для Creator.
- * НЕ зависит от RepositoryAnalyzer, AnalyzerViewModel или ChatDao.
- *
- * v2.0 изменения:
- * - Нумерация строк для файлов > 300 строк (точная навигация AI)
- * - Максимально строгий system prompt (zero-error editing)
- * - Улучшенный 4-уровневый матчинг блоков
- * - Валидация результатов перед применением
- * - Детальные ошибки при неудачном матчинге
- *
- * Модель: claude-haiku-4-5-20251001
- * Отправляется: ТОЛЬКО один открытый файл + инструкции
- * Получается: ТОЛЬКО блоки search/replace в XML
- */
 @Singleton
 class CreatorAIEditService @Inject constructor(
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val secureSettings: SecureSettingsDataStore
 ) {
     companion object {
         private const val TAG = "CreatorAIEdit"
@@ -44,10 +27,6 @@ class CreatorAIEditService @Inject constructor(
         private const val MAX_OUTPUT_TOKENS = 8192
         private const val API_VERSION = "2023-06-01"
         private const val LINE_NUMBER_THRESHOLD = 300
-
-        // ═══════════════════════════════════════════════════════════════
-        // SYSTEM PROMPT v2.0 — МАКСИМАЛЬНО СТРОГИЙ
-        // ═══════════════════════════════════════════════════════════════
 
         private val SYSTEM_PROMPT = """
 You are a PRECISION CODE EDITOR. Your ONLY job is to produce exact search/replace blocks for a given source file.
@@ -169,22 +148,18 @@ User: "add null check before calling api.fetch()"
 """.trimIndent()
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // DATA MODELS
-    // ═══════════════════════════════════════════════════════════════════
-
     data class EditBlock(
         val search: String,
         val replace: String,
         val matchStatus: MatchStatus = MatchStatus.PENDING
     ) {
         enum class MatchStatus {
-            PENDING,        // ещё не проверялся
-            EXACT,          // точное совпадение
-            NORMALIZED,     // совпал после нормализации пробелов
-            FUZZY,          // совпал по граничным строкам
-            LINE_RANGE,     // совпал по диапазону строк
-            NOT_FOUND       // не найден
+            PENDING,
+            EXACT,
+            NORMALIZED,
+            FUZZY,
+            LINE_RANGE,
+            NOT_FOUND
         }
     }
 
@@ -220,26 +195,17 @@ User: "add null check before calling api.fetch()"
             }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // MAIN API CALL
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Отправляет ОДИН файл + инструкции в Haiku 4.5.
-     * Получает ТОЛЬКО блоки замен. Репозиторий НЕ отправляется.
-     *
-     * @param fileContent полное содержимое ОДНОГО файла
-     * @param fileName имя файла (для контекста языка)
-     * @param instructions инструкции пользователя
-     * @return EditResult с блоками замен
-     */
     suspend fun processEdit(
         fileContent: String,
         fileName: String,
         instructions: String
     ): Result<EditResult> = withContext(Dispatchers.IO) {
         try {
-            val apiKey = appSettings.claudeApiKey.first()
+            val apiKey = try {
+                secureSettings.getAnthropicApiKey().first()
+            } catch (e: Exception) {
+                ""
+            }
             if (apiKey.isBlank()) {
                 return@withContext Result.failure(
                     Exception("Claude API key не настроен. Укажите ключ в Settings.")
@@ -272,7 +238,7 @@ User: "add null check before calling api.fetch()"
                 setRequestProperty("x-api-key", apiKey)
                 setRequestProperty("anthropic-version", API_VERSION)
                 connectTimeout = 30_000
-                readTimeout = 120_000  // 2 мин для больших файлов
+                readTimeout = 120_000
                 doOutput = true
             }
 
@@ -295,7 +261,6 @@ User: "add null check before calling api.fetch()"
 
             val json = JSONObject(responseBody)
 
-            // Извлекаем текст из content[]
             val content = json.getJSONArray("content").let { arr ->
                 (0 until arr.length())
                     .map { arr.getJSONObject(it) }
@@ -303,12 +268,10 @@ User: "add null check before calling api.fetch()"
                     .joinToString("") { it.getString("text") }
             }
 
-            // Токены и стоимость
             val usage = json.getJSONObject("usage")
             val inputTokens = usage.getInt("input_tokens")
             val outputTokens = usage.getInt("output_tokens")
 
-            // Haiku 4.5: $0.80/1M input, $4.00/1M output
             val costUSD = (inputTokens * 0.80 + outputTokens * 4.00) / 1_000_000.0
             val costEUR = costUSD * 0.92
 
@@ -335,10 +298,6 @@ User: "add null check before calling api.fetch()"
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // BUILD USER MESSAGE
-    // ═══════════════════════════════════════════════════════════════════
-
     private fun buildUserMessage(
         fileContent: String,
         fileName: String,
@@ -364,10 +323,6 @@ User: "add null check before calling api.fetch()"
         appendLine("═══ INSTRUCTIONS ═══")
         appendLine(instructions)
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // BUILD SYSTEM PROMPT (с дополнением для нумерации)
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun buildSystemPrompt(useLineNumbers: Boolean): String {
         return if (useLineNumbers) {
@@ -400,19 +355,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // APPLY EDITS — 4-уровневый матчинг
-    // ═══════════════════════════════════════════════════════════════════
-
-    /**
-     * Применяет блоки замен к содержимому файла.
-     *
-     * 4 уровня матчинга (от точного к нечёткому):
-     * 1. EXACT — побайтовое совпадение
-     * 2. NORMALIZED — совпадение после trim trailing whitespace
-     * 3. FUZZY — совпадение по первым+последним значимым строкам
-     * 4. LINE_RANGE — поиск по нескольким ключевым фрагментам
-     */
     fun applyEdits(content: String, blocks: List<EditBlock>): Result<ApplyResult> {
         var result = content
         val appliedBlocks = mutableListOf<EditBlock>()
@@ -421,19 +363,16 @@ You may reference line numbers in <summary> for clarity, e.g.:
         blocks.forEachIndexed { index, block ->
             val blockNum = index + 1
 
-            // Очищаем search от случайных номеров строк
             val cleanSearch = stripLineNumbers(block.search)
             val cleanReplace = stripLineNumbers(block.replace)
 
             if (cleanSearch.isBlank()) {
-                // Пустой search = добавить в конец файла
                 result = result.trimEnd() + "\n\n" + cleanReplace + "\n"
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.EXACT))
                 Log.d(TAG, "  ✓ Block $blockNum: appended to end of file")
                 return@forEachIndexed
             }
 
-            // === УРОВЕНЬ 1: EXACT MATCH ===
             if (cleanSearch in result) {
                 result = result.replaceFirst(cleanSearch, cleanReplace)
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.EXACT))
@@ -441,7 +380,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
                 return@forEachIndexed
             }
 
-            // === УРОВЕНЬ 2: NORMALIZED WHITESPACE ===
             val normalizedSearch = normalizeWhitespace(cleanSearch)
             val normalizedContent = normalizeWhitespace(result)
             val normIdx = normalizedContent.indexOf(normalizedSearch)
@@ -458,7 +396,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
                 }
             }
 
-            // === УРОВЕНЬ 3: FUZZY — по граничным строкам ===
             val fuzzyResult = fuzzyMatch(result, cleanSearch, cleanReplace)
             if (fuzzyResult != null) {
                 result = fuzzyResult
@@ -467,7 +404,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
                 return@forEachIndexed
             }
 
-            // === УРОВЕНЬ 4: LINE_RANGE — по ключевым фрагментам ===
             val lineRangeResult = lineRangeMatch(result, cleanSearch, cleanReplace)
             if (lineRangeResult != null) {
                 result = lineRangeResult
@@ -476,7 +412,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
                 return@forEachIndexed
             }
 
-            // === НЕ НАЙДЕНО ===
             failedBlocks.add(blockNum to block)
             appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.NOT_FOUND))
             Log.w(TAG, "  ✗ Block $blockNum: NOT FOUND")
@@ -497,10 +432,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
             )
         )
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // MATCHING HELPERS
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun normalizeWhitespace(text: String): String {
         return text.lines().joinToString("\n") { it.trimEnd() }
@@ -531,7 +462,7 @@ You may reference line numbers in <summary> for clarity, e.g.:
                     endLineIdx = i
                     break
                 }
-                normCharPos = lineEnd + 1 // +1 for \n
+                normCharPos = lineEnd + 1
             }
             if (endLineIdx == -1) endLineIdx = origLines.lastIndex + 1
 
@@ -550,7 +481,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
     private fun fuzzyMatch(content: String, search: String, replace: String): String? {
         val searchLines = search.lines().filter { it.isNotBlank() }
         if (searchLines.size < 2) {
-            // Однострочный поиск
             val singleLine = searchLines.firstOrNull()?.trim() ?: return null
             val contentLines = content.lines()
             val idx = contentLines.indexOfFirst { it.trim() == singleLine }
@@ -575,7 +505,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
 
         if (endIdx < startIdx) return null
 
-        // Проверяем разумность диапазона
         val matchedSignificant = (startIdx..endIdx).count { contentLines[it].isNotBlank() }
         if (matchedSignificant < searchLines.size - 1 || matchedSignificant > searchLines.size + 3) {
             return null
@@ -592,7 +521,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
 
         val contentLines = content.lines()
 
-        // Берём первую, среднюю и последнюю значимые строки
         val keyLines = listOf(
             searchLines.first().trim(),
             searchLines[searchLines.size / 2].trim(),
@@ -621,10 +549,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
         return (before + replace.lines() + after).joinToString("\n")
     }
 
-    /**
-     * Убирает номера строк из текста, если AI случайно их включил.
-     * Формат: "42| код" → "код"
-     */
     private fun stripLineNumbers(text: String): String {
         if (text.isBlank()) return text
 
@@ -640,10 +564,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
             text
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // PARSING
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun parseEditResponse(
         response: String,
@@ -683,19 +603,12 @@ You may reference line numbers in <summary> for clarity, e.g.:
         )
     }
 
-    /**
-     * Убирает ведущий и завершающий \n (артефакт XML)
-     */
     private fun trimXmlNewlines(text: String): String {
         var result = text
         if (result.startsWith("\n")) result = result.removePrefix("\n")
         if (result.endsWith("\n")) result = result.removeSuffix("\n")
         return result
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // ERROR FORMATTING
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun formatApiError(code: Int, body: String): String {
         val msg = try {
