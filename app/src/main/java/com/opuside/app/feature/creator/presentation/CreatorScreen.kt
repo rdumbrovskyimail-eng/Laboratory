@@ -1,8 +1,10 @@
 package com.opuside.app.feature.creator.presentation
 
+import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -11,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -19,10 +22,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.git.ConflictResolverDialog
 import com.opuside.app.core.git.ConflictResult
@@ -30,6 +35,7 @@ import com.opuside.app.core.network.github.model.GitHubContent
 import com.opuside.app.core.ui.components.EditorConfig
 import com.opuside.app.core.ui.components.VirtualizedCodeEditor
 import com.opuside.app.core.util.detectLanguage
+import java.io.File
 
 @Composable
 fun CreatorScreen(
@@ -52,11 +58,20 @@ fun CreatorScreen(
     val showAIEditScreen by viewModel.showAIEditScreen.collectAsState()
     val aiEditStatus by viewModel.aiEditStatus.collectAsState()
 
+    // ★ Selection / Move / Collect states
+    val selectionMode by viewModel.selectionMode.collectAsState()
+    val selectedPaths by viewModel.selectedPaths.collectAsState()
+    val selectedCount by viewModel.selectedCount.collectAsState()
+    val moveStatus by viewModel.moveStatus.collectAsState()
+    val collectedTxt by viewModel.collectedTxt.collectAsState()
+
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showCommitDialog by remember { mutableStateOf(false) }
     var itemToDelete by remember { mutableStateOf<GitHubContent?>(null) }
+    var showMoveDialog by remember { mutableStateOf(false) }
 
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     // ★ BackHandler: AI Edit экран имеет приоритет
     BackHandler(enabled = showAIEditScreen) {
@@ -115,6 +130,50 @@ fun CreatorScreen(
         }
     }
 
+    // ★ Обработка moveStatus
+    LaunchedEffect(moveStatus) {
+        when (moveStatus) {
+            is MoveStatus.Done -> viewModel.dismissMoveStatus()
+            is MoveStatus.Err  -> viewModel.dismissMoveStatus()
+            else -> {}
+        }
+    }
+
+    // ★ Обработка collectedTxt (share sheet)
+    collectedTxt?.let { txt ->
+        CollectedTxtDialog(
+            text = txt,
+            onDismiss = viewModel::clearCollectedTxt,
+            onShare = { content ->
+                val file = File(context.cacheDir, "collected.txt").also { it.writeText(content) }
+                val uri = FileProvider.getUriForFile(
+                    context,
+                    "${context.packageName}.provider",
+                    file
+                )
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "Сохранить / поделиться"))
+                viewModel.clearCollectedTxt()
+            }
+        )
+    }
+
+    if (showMoveDialog) {
+        MoveDialog(
+            selectedCount = selectedCount,
+            isMoving      = moveStatus is MoveStatus.Progress,
+            onDismiss     = { showMoveDialog = false },
+            onMove        = { destPath ->
+                viewModel.moveSelectedItems(destPath)
+                showMoveDialog = false
+            }
+        )
+    }
+
     // ★ Обёрнуто в Box для overlay AIEditScreen поверх основного контента
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -129,6 +188,22 @@ fun CreatorScreen(
                 selectedFile = selectedFile,
                 onCloseFile = viewModel::closeFile
             )
+
+            AnimatedVisibility(visible = selectionMode) {
+                SelectionToolbar(
+                    selectedCount = selectedCount,
+                    totalCount    = contents.size,
+                    isMoving      = moveStatus is MoveStatus.Progress,
+                    moveStatus    = moveStatus,
+                    onSelectAll   = viewModel::selectAll,
+                    onMove        = { showMoveDialog = true },
+                    onCollectTxt  = {
+                        viewModel.collectSelectedToTxt()
+                        viewModel.exitSelectionMode()
+                    },
+                    onCancel      = viewModel::exitSelectionMode
+                )
+            }
 
             error?.let {
                 ErrorBanner(
@@ -163,11 +238,18 @@ fun CreatorScreen(
                         ConfigurationNeededState()
                     }
                     else -> FileBrowser(
-                        contents = contents,
-                        onFolderClick = viewModel::navigateToFolder,
-                        onFileClick = viewModel::openFile,
-                        onDeleteItem = { itemToDelete = it },
-                        modifier = Modifier.weight(1f)
+                        contents       = contents,
+                        selectionMode  = selectionMode,
+                        selectedPaths  = selectedPaths,
+                        onFolderClick  = viewModel::navigateToFolder,
+                        onFileClick    = viewModel::openFile,
+                        onDeleteItem   = { itemToDelete = it },
+                        onLongClick    = { item ->
+                            if (!selectionMode) viewModel.enterSelectionMode()
+                            viewModel.toggleItemSelection(item.path)
+                        },
+                        onToggleSelect = { item -> viewModel.toggleItemSelection(item.path) },
+                        modifier       = Modifier.weight(1f)
                     )
                 }
             }
@@ -401,35 +483,137 @@ private fun ConfigurationNeededState() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// SELECTION TOOLBAR
+// ═══════════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SelectionToolbar(
+    selectedCount : Int,
+    totalCount    : Int,
+    isMoving      : Boolean,
+    moveStatus    : MoveStatus,
+    onSelectAll   : () -> Unit,
+    onMove        : () -> Unit,
+    onCollectTxt  : () -> Unit,
+    onCancel      : () -> Unit
+) {
+    Surface(
+        tonalElevation = 4.dp,
+        color          = MaterialTheme.colorScheme.secondaryContainer
+    ) {
+        Column {
+            AnimatedVisibility(visible = isMoving) {
+                if (moveStatus is MoveStatus.Progress) {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        LinearProgressIndicator(
+                            progress = {
+                                if (moveStatus.total > 0)
+                                    moveStatus.done.toFloat() / moveStatus.total else 0f
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text  = "Перемещение: ${moveStatus.currentFile} (${moveStatus.done}/${moveStatus.total})",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                        )
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment     = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                IconButton(onClick = onCancel) {
+                    Icon(Icons.Default.Close, "Отмена", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                }
+
+                Text(
+                    text     = "$selectedCount / $totalCount",
+                    style    = MaterialTheme.typography.titleSmall,
+                    color    = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.weight(1f)
+                )
+
+                IconButton(onClick = onSelectAll) {
+                    Icon(Icons.Default.SelectAll, "Выбрать все", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+                }
+
+                FilledTonalButton(
+                    onClick        = onMove,
+                    enabled        = selectedCount > 0 && !isMoving,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    modifier       = Modifier.height(34.dp)
+                ) {
+                    Icon(Icons.Default.DriveFileMove, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Переместить", style = MaterialTheme.typography.labelMedium)
+                }
+
+                FilledTonalButton(
+                    onClick        = onCollectTxt,
+                    enabled        = selectedCount > 0 && !isMoving,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    colors         = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor   = MaterialTheme.colorScheme.onTertiaryContainer
+                    ),
+                    modifier       = Modifier.height(34.dp)
+                ) {
+                    Icon(Icons.Default.FileDownload, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("→ TXT", style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // FILE BROWSER
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun FileBrowser(
-    contents: List<GitHubContent>,
-    onFolderClick: (String) -> Unit,
-    onFileClick: (GitHubContent) -> Unit,
-    onDeleteItem: (GitHubContent) -> Unit,
-    modifier: Modifier = Modifier
+    contents       : List<GitHubContent>,
+    selectionMode  : Boolean,
+    selectedPaths  : Set<String>,
+    onFolderClick  : (String) -> Unit,
+    onFileClick    : (GitHubContent) -> Unit,
+    onDeleteItem   : (GitHubContent) -> Unit,
+    onLongClick    : (GitHubContent) -> Unit,
+    onToggleSelect : (GitHubContent) -> Unit,
+    modifier       : Modifier = Modifier
 ) {
     if (contents.isEmpty()) {
         EmptyFolderState(modifier = modifier)
     } else {
         LazyColumn(
-            modifier = modifier
+            modifier            = modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(vertical = 8.dp),
+            contentPadding      = PaddingValues(vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(items = contents, key = { it.path }) { item ->
                 FileItem(
-                    content = item,
-                    onClick = { 
-                        if (item.type == "dir") onFolderClick(item.path) 
-                        else onFileClick(item) 
+                    content        = item,
+                    selectionMode  = selectionMode,
+                    isSelected     = item.path in selectedPaths,
+                    onClick        = {
+                        if (selectionMode) {
+                            onToggleSelect(item)
+                        } else {
+                            if (item.type == "dir") onFolderClick(item.path)
+                            else onFileClick(item)
+                        }
                     },
-                    onDelete = { onDeleteItem(item) }
+                    onLongClick    = { onLongClick(item) },
+                    onDelete       = { onDeleteItem(item) }
                 )
             }
         }
@@ -469,31 +653,63 @@ private fun EmptyFolderState(modifier: Modifier = Modifier) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FileItem(
-    content: GitHubContent,
-    onClick: () -> Unit,
-    onDelete: () -> Unit
+    content       : GitHubContent,
+    selectionMode : Boolean,
+    isSelected    : Boolean,
+    onClick       : () -> Unit,
+    onLongClick   : () -> Unit,
+    onDelete      : () -> Unit
 ) {
     val isDir = content.type == "dir"
-    
-    Card(modifier = Modifier.fillMaxWidth()) {
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (isSelected) Modifier.border(
+                    width = 2.dp,
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = MaterialTheme.shapes.medium
+                ) else Modifier
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected)
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+            else
+                MaterialTheme.colorScheme.surface
+        )
+    ) {
         Row(
             modifier = Modifier
                 .combinedClickable(
-                    onClick = onClick,
-                    onLongClick = onDelete
+                    onClick     = onClick,
+                    onLongClick = onLongClick
                 )
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(
-                imageVector = if (isDir) Icons.Default.Folder else Icons.Default.Description,
-                contentDescription = null,
-                tint = if (isDir) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(24.dp)
-            )
-            
+            AnimatedContent(targetState = selectionMode, label = "icon") { inSelection ->
+                if (inSelection) {
+                    Icon(
+                        imageVector        = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                        contentDescription = null,
+                        tint               = if (isSelected) MaterialTheme.colorScheme.primary
+                                             else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier           = Modifier.size(24.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector        = if (isDir) Icons.Default.Folder else Icons.Default.Description,
+                        contentDescription = null,
+                        tint               = if (isDir) MaterialTheme.colorScheme.primary
+                                             else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier           = Modifier.size(24.dp)
+                    )
+                }
+            }
+
             Spacer(Modifier.width(12.dp))
-            
+
             Column(modifier = Modifier.weight(1f)) {
                 Text(content.name, style = MaterialTheme.typography.bodyLarge)
                 if (!isDir) {
@@ -504,13 +720,15 @@ private fun FileItem(
                     )
                 }
             }
-            
-            Icon(
-                Icons.Default.ChevronRight,
-                null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
-            )
+
+            if (!selectionMode) {
+                Icon(
+                    Icons.Default.ChevronRight,
+                    null,
+                    tint     = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
     }
 }
