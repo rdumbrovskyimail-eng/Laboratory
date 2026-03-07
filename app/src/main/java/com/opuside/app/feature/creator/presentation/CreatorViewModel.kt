@@ -86,6 +86,27 @@ class CreatorViewModel @Inject constructor(
     val conflictState: StateFlow<ConflictResult?> = _conflictState.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // ★ SELECTION & BATCH OPERATIONS STATE
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    private val _selectionMode  = MutableStateFlow(false)
+    val selectionMode: StateFlow<Boolean> = _selectionMode.asStateFlow()
+
+    private val _selectedPaths  = MutableStateFlow<Set<String>>(emptySet())
+    val selectedPaths: StateFlow<Set<String>> = _selectedPaths.asStateFlow()
+
+    val selectedCount: StateFlow<Int> = _selectedPaths
+        .map { it.size }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    private val _moveStatus = MutableStateFlow<MoveStatus>(MoveStatus.Idle)
+    val moveStatus: StateFlow<MoveStatus> = _moveStatus.asStateFlow()
+
+    // null = нет данных; непустая строка = готово к показу
+    private val _collectedTxt = MutableStateFlow<String?>(null)
+    val collectedTxt: StateFlow<String?> = _collectedTxt.asStateFlow()
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // ★ AI EDIT STATE
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -662,6 +683,199 @@ class CreatorViewModel @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
+    // SELECTION OPERATIONS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    fun enterSelectionMode() {
+        _selectionMode.value = true
+        _selectedPaths.value  = emptySet()
+    }
+
+    fun exitSelectionMode() {
+        _selectionMode.value = false
+        _selectedPaths.value  = emptySet()
+    }
+
+    fun toggleItemSelection(path: String) {
+        val cur = _selectedPaths.value
+        _selectedPaths.value = if (path in cur) cur - path else cur + path
+    }
+
+    fun selectAll() {
+        _selectedPaths.value = _contents.value.map { it.path }.toSet()
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // MOVE SELECTED ITEMS
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Перемещает выбранные файлы/папки в [destinationBasePath].
+     * GitHub не имеет atomic move, поэтому: getContent → createOrUpdate → delete.
+     * Папки обходятся рекурсивно.
+     */
+    fun moveSelectedItems(destinationBasePath: String) {
+        val selectedItems = _contents.value.filter { it.path in _selectedPaths.value }
+        if (selectedItems.isEmpty()) return
+
+        val dest = destinationBasePath.trim().trimEnd('/')
+
+        viewModelScope.launch {
+            _moveStatus.value = MoveStatus.Progress(0, 0, "Scanning…")
+
+            // Шаг 1: собираем плоский список (srcFile → destPath)
+            val plan = mutableListOf<Pair<com.opuside.app.core.network.github.model.GitHubContent, String>>()
+
+            for (item in selectedItems) {
+                val itemDest = if (dest.isEmpty()) item.name else "$dest/${item.name}"
+                if (item.type == "dir") {
+                    _collectFilesForMove(item.path, itemDest, plan)
+                } else {
+                    plan.add(item to itemDest)
+                }
+            }
+
+            if (plan.isEmpty()) {
+                _moveStatus.value = MoveStatus.Err("Нет файлов для перемещения")
+                return@launch
+            }
+
+            // Шаг 2: copy → delete каждый файл
+            var done = 0
+            val errors = mutableListOf<String>()
+
+            for ((file, newPath) in plan) {
+                _moveStatus.value = MoveStatus.Progress(done, plan.size, file.name)
+
+                gitHubClient.getFileContentDecoded(file.path, _currentBranch.value)
+                    .onSuccess { content ->
+                        gitHubClient.createOrUpdateFile(
+                            path    = newPath,
+                            content = content,
+                            message = "Move ${file.path} → $newPath",
+                            branch  = _currentBranch.value
+                        ).onSuccess {
+                            gitHubClient.deleteFile(
+                                path    = file.path,
+                                message = "Move: remove old ${file.path}",
+                                sha     = file.sha,
+                                branch  = _currentBranch.value
+                            ).onSuccess {
+                                done++
+                            }.onFailure { e ->
+                                errors.add("delete ${file.path}: ${e.message}")
+                            }
+                        }.onFailure { e ->
+                            errors.add("create $newPath: ${e.message}")
+                        }
+                    }
+                    .onFailure { e ->
+                        errors.add("read ${file.path}: ${e.message}")
+                    }
+            }
+
+            _moveStatus.value = if (errors.isEmpty()) {
+                MoveStatus.Done(done)
+            } else {
+                MoveStatus.Err("Перемещено $done/${plan.size}. Ошибки:\n${errors.take(3).joinToString("\n")}")
+            }
+
+            exitSelectionMode()
+            refresh()
+        }
+    }
+
+    private suspend fun _collectFilesForMove(
+        srcPath: String,
+        destPath: String,
+        out: MutableList<Pair<com.opuside.app.core.network.github.model.GitHubContent, String>>
+    ) {
+        val children = gitHubClient.getContent(srcPath, _currentBranch.value).getOrNull() ?: return
+        for (child in children) {
+            val childDest = "$destPath/${child.name}"
+            if (child.type == "dir") {
+                _collectFilesForMove(child.path, childDest, out)
+            } else {
+                out.add(child to childDest)
+            }
+        }
+    }
+
+    fun dismissMoveStatus() {
+        _moveStatus.value = MoveStatus.Idle
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COLLECT SELECTED TO TXT
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Собирает содержимое всех выбранных файлов (и рекурсивно папок) в один текст.
+     * Каждый файл разделён шапкой с путём.
+     */
+    fun collectSelectedToTxt() {
+        val selectedItems = _contents.value.filter { it.path in _selectedPaths.value }
+        if (selectedItems.isEmpty()) return
+
+        viewModelScope.launch {
+            _isLoading.value = true
+
+            val sb = StringBuilder()
+            sb.appendLine("# Collected by VoiceDeutsch Master")
+            sb.appendLine("# Branch: ${_currentBranch.value}")
+            sb.appendLine("# Items: ${selectedItems.size}")
+            sb.appendLine()
+
+            for (item in selectedItems) {
+                if (item.type == "dir") {
+                    _collectFolderToTxt(item.path, sb)
+                } else {
+                    _appendFileTxt(item.path, item.sha, sb)
+                }
+            }
+
+            _collectedTxt.value = sb.toString()
+            _isLoading.value = false
+        }
+    }
+
+    private suspend fun _collectFolderToTxt(path: String, sb: StringBuilder) {
+        val children = gitHubClient.getContent(path, _currentBranch.value).getOrNull() ?: return
+        val sorted = children.sortedWith(compareBy<com.opuside.app.core.network.github.model.GitHubContent> { it.type != "dir" }.thenBy { it.name })
+        for (child in sorted) {
+            if (child.type == "dir") {
+                _collectFolderToTxt(child.path, sb)
+            } else {
+                _appendFileTxt(child.path, child.sha, sb)
+            }
+        }
+    }
+
+    private suspend fun _appendFileTxt(
+        path: String,
+        @Suppress("UNUSED_PARAMETER") sha: String,
+        sb: StringBuilder
+    ) {
+        gitHubClient.getFileContentDecoded(path, _currentBranch.value)
+            .onSuccess { content ->
+                val divider = "─".repeat(60)
+                sb.appendLine(divider)
+                sb.appendLine(">>> FILE: $path")
+                sb.appendLine(divider)
+                sb.appendLine(content)
+                sb.appendLine()
+            }
+            .onFailure {
+                sb.appendLine(">>> FILE: $path  [ERROR: ${it.message}]")
+                sb.appendLine()
+            }
+    }
+
+    fun clearCollectedTxt() {
+        _collectedTxt.value = null
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
     // BRANCH OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -704,5 +918,12 @@ class CreatorViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), listOf("root"))
     
     val gitHubConfig = appSettings.gitHubConfig
+}
+
+sealed class MoveStatus {
+    object Idle    : MoveStatus()
+    data class Progress(val done: Int, val total: Int, val currentFile: String) : MoveStatus()
+    data class Done(val movedCount: Int)   : MoveStatus()
+    data class Err(val message: String)    : MoveStatus()
 }
  
