@@ -1047,3 +1047,198 @@ private fun formatFileSize(bytes: Int): String = when {
     bytes < 1024 * 1024 -> "${bytes / 1024} KB"
     else -> "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB"
 }
+
+@Composable
+private fun MoveDialog(
+    selectedCount : Int,
+    isMoving      : Boolean,
+    onDismiss     : () -> Unit,
+    onMove        : (String) -> Unit
+) {
+    var destPath by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = { if (!isMoving) onDismiss() },
+        icon  = { Icon(Icons.Default.DriveFileMove, null, Modifier.size(32.dp)) },
+        title = { Text("Переместить файлы ($selectedCount)") },
+        text  = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Введите путь назначения в репозитории:",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                OutlinedTextField(
+                    value          = destPath,
+                    onValueChange  = { destPath = it },
+                    label          = { Text("Путь назначения") },
+                    placeholder    = { Text("app/src/main/kotlin/feature/") },
+                    singleLine     = true,
+                    modifier       = Modifier.fillMaxWidth(),
+                    leadingIcon    = { Icon(Icons.Default.Folder, null) },
+                    supportingText = {
+                        Text(
+                            if (destPath.isEmpty()) "Пустое поле = корень репозитория"
+                            else "Файлы будут скопированы в: $destPath/",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                )
+
+                Text(
+                    "Быстрый выбор:",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("app/", "src/", "docs/", "test/").forEach { suggestion ->
+                        SuggestionChip(
+                            onClick = { destPath = suggestion.trimEnd('/') },
+                            label   = { Text(suggestion, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
+                    )
+                ) {
+                    Row(
+                        modifier          = Modifier.padding(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Info, null,
+                            Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "GitHub не поддерживает атомарный move. " +
+                            "Файлы будут скопированы в новое место, затем оригиналы удалены.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onMove(destPath.trim()) },
+                enabled = !isMoving
+            ) {
+                if (isMoving) {
+                    CircularProgressIndicator(
+                        Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Перемещение…")
+                } else {
+                    Icon(Icons.Default.DriveFileMove, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Переместить")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isMoving) { Text("Отмена") }
+        }
+    )
+}
+
+@Composable
+private fun CollectedTxtDialog(
+    text      : String,
+    onDismiss : () -> Unit,
+    onShare   : (String) -> Unit
+) {
+    val clipboardManager = LocalClipboardManager.current
+    val charCount = text.length
+    val lineCount = text.lines().size
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon  = { Icon(Icons.Default.FileDownload, null, Modifier.size(32.dp)) },
+        title = { Text("Файлы собраны") },
+        text  = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    StatChip(label = "Символов", value = charCount.toString())
+                    StatChip(label = "Строк",    value = lineCount.toString())
+                    StatChip(label = "КБ",       value = "%.1f".format(charCount / 1024f))
+                }
+
+                Surface(
+                    shape    = MaterialTheme.shapes.small,
+                    color    = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text     = text.take(800).let { if (text.length > 800) "$it\n…" else it },
+                        style    = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            fontSize   = 10.sp
+                        ),
+                        modifier = Modifier
+                            .padding(10.dp)
+                            .heightIn(max = 200.dp)
+                            .verticalScroll(rememberScrollState())
+                    )
+                }
+
+                Text(
+                    "Поделитесь файлом или скопируйте текст в буфер.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    clipboardManager.setText(AnnotatedString(text))
+                    onDismiss()
+                }) {
+                    Icon(Icons.Default.ContentCopy, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Копировать")
+                }
+                Button(onClick = { onShare(text) }) {
+                    Icon(Icons.Default.FileDownload, null, Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Сохранить…")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Закрыть") }
+        }
+    )
+}
+
+@Composable
+private fun StatChip(label: String, value: String) {
+    Surface(
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        Column(
+            modifier            = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                value,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
