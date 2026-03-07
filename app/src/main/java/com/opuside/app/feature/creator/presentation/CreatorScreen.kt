@@ -148,7 +148,7 @@ fun CreatorScreen(
                 val file = File(context.cacheDir, "collected.txt").also { it.writeText(content) }
                 val uri = FileProvider.getUriForFile(
                     context,
-                    "${context.packageName}.provider",
+                    "${context.packageName}.fileprovider",
                     file
                 )
                 val intent = Intent(Intent.ACTION_SEND).apply {
