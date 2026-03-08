@@ -662,6 +662,8 @@ private fun FileItem(
 ) {
     val isDir = content.type == "dir"
 
+    var showMenu by remember { mutableStateOf(false) }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -679,11 +681,15 @@ private fun FileItem(
                 MaterialTheme.colorScheme.surface
         )
     ) {
+        Box {
         Row(
             modifier = Modifier
                 .combinedClickable(
                     onClick     = onClick,
-                    onLongClick = onLongClick
+                    onLongClick = {
+                        if (!selectionMode) showMenu = true
+                        onLongClick()
+                    }
                 )
                 .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
