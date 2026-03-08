@@ -66,7 +66,37 @@ class WorkflowsViewModel @Inject constructor(
         _state.update { it.copy(message = null) }
     }
 
+    fun cancelAllExceptLatest() {
+        val activeWorkflows = _state.value.workflows
+            .filter { it.status == "in_progress" || it.status == "queued" }
+            .sortedByDescending { it.createdAt }
+
+        if (activeWorkflows.size <= 1) {
+            _state.update { it.copy(message = "Нет workflow для отмены") }
+            return
+        }
+
+        val toCancel = activeWorkflows.drop(1) // всё кроме самого нового
+
+        viewModelScope.launch {
+            var cancelled = 0
+            toCancel.forEach { workflow ->
+                gitHubApiClient.cancelWorkflowRun(workflow.id)
+                    .onSuccess { cancelled++ }
+                    .onFailure { e ->
+                        android.util.Log.e("WorkflowsVM", "Failed to cancel ${workflow.id}", e)
+                    }
+            }
+            _state.update {
+                it.copy(message = "Отменено $cancelled из ${toCancel.size} workflows")
+            }
+            delay(1500)
+            loadWorkflows()
+        }
+    }
+
     fun loadWorkflowLogs(runId: Long) {
+</search>
         viewModelScope.launch {
             _state.update { it.copy(isLoadingLogs = true) }
             
