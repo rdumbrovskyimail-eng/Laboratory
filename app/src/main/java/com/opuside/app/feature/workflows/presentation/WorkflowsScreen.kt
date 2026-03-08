@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.network.github.model.WorkflowRun
+import kotlinx.coroutines.delay
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
@@ -581,22 +582,54 @@ private fun WorkflowCard(
                     )
                 }
                 
-                // Время выполнения
+                // Время выполнения (живой таймер для активных)
                 workflow.runStartedAt?.let { startTime ->
-                    val duration = calculateDuration(startTime, workflow.updatedAt)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Timer,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = duration,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                    val isActive = workflow.status == "in_progress" || workflow.status == "queued"
+
+                    if (isActive) {
+                        var elapsed by remember { mutableStateOf(0L) }
+                        LaunchedEffect(startTime) {
+                            val startInstant = try { java.time.Instant.parse(startTime) } catch (_: Exception) { null }
+                            if (startInstant != null) {
+                                while (true) {
+                                    elapsed = java.time.Duration.between(startInstant, java.time.Instant.now()).seconds
+                                    delay(1000)
+                                }
+                            }
+                        }
+                        val m = elapsed / 60
+                        val s = elapsed % 60
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Timer,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = Color(0xFF3B82F6)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (m > 0) "${m}m ${s}s" else "${s}s",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF3B82F6)
+                            )
+                        }
+                    } else {
+                        val duration = calculateDuration(startTime, workflow.updatedAt)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Timer,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = duration,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
