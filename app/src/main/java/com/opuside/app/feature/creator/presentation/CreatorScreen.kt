@@ -1116,11 +1116,18 @@ private fun MoveDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("app/", "src/", "docs/", "test/").forEach { suggestion ->
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.horizontalScroll(rememberScrollState())
+                ) {
+                    listOf(
+                        "app/src/main/java",
+                        "app/src/test/java",
+                        "app/src/androidTest/java"
+                    ).forEach { suggestion ->
                         SuggestionChip(
-                            onClick = { destPath = suggestion.trimEnd('/') },
-                            label   = { Text(suggestion, style = MaterialTheme.typography.labelSmall) }
+                            onClick = { destPath = suggestion },
+                            label   = { Text(suggestion.substringAfterLast("/"), style = MaterialTheme.typography.labelSmall) }
                         )
                     }
                 }
