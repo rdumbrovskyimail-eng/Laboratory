@@ -170,7 +170,7 @@ class WorkflowsViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(isLoadingArtifacts = true) }
             try {
-                gitHubApiClient.getWorkflowArtifacts(runId).fold(
+                gitHubApiClient.getRunArtifacts(runId).fold(
                     onSuccess = { response ->
                         val items = response.artifacts.map { artifact ->
                             ArtifactItem(
