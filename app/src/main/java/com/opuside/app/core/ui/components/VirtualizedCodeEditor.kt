@@ -379,7 +379,26 @@ private fun Editor(
             imeAction = ImeAction.None
         ),
         readOnly = readOnly,
-        onTextLayout = { textLayoutResult = it },
+        onTextLayout = { layout ->
+            textLayoutResult = layout
+            // Scroll to cursor when it changes
+            val offset = value.selection.start.coerceIn(0, value.text.length)
+            try {
+                val cursorRect = layout.getCursorRect(offset)
+                val viewportTop = vScrollState.value.toFloat()
+                val viewportBottom = viewportTop + vScrollState.viewportSize.toFloat()
+                
+                if (cursorRect.bottom > viewportBottom - 100f) {
+                    kotlinx.coroutines.MainScope().launch {
+                        vScrollState.animateScrollTo((cursorRect.bottom - vScrollState.viewportSize + 200f).toInt().coerceAtLeast(0))
+                    }
+                } else if (cursorRect.top < viewportTop) {
+                    kotlinx.coroutines.MainScope().launch {
+                        vScrollState.animateScrollTo((cursorRect.top - 100f).toInt().coerceAtLeast(0))
+                    }
+                }
+            } catch (_: Exception) {}
+        },
         decorationBox = @Composable { innerTextField ->
             innerTextField()
         },
