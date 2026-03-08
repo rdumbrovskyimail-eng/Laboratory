@@ -79,12 +79,12 @@ class WorkflowsViewModel @Inject constructor(
             return
         }
 
-        val toCancel = activeWorkflows.drop(1) // всё кроме самого нового
+        val toCancel = activeWorkflows.drop(1)
 
         viewModelScope.launch {
             var cancelled = 0
             toCancel.forEach { workflow ->
-                gitHubApiClient.cancelWorkflowRun(workflow.id)
+                gitHubApiClient.cancelWorkflow(workflow.id)
                     .onSuccess { cancelled++ }
                     .onFailure { e ->
                         android.util.Log.e("WorkflowsVM", "Failed to cancel ${workflow.id}", e)
@@ -99,24 +99,20 @@ class WorkflowsViewModel @Inject constructor(
     }
 
     fun loadWorkflowLogs(runId: Long) {
-</search>
         viewModelScope.launch {
             _state.update { it.copy(isLoadingLogs = true) }
             
             try {
-                // Получаем jobs для этого run
                 val jobsResult = gitHubApiClient.getWorkflowJobs(runId)
                 
                 jobsResult.fold(
                     onSuccess = { jobsResponse ->
-                        // Ищем job с названием "Fast Build Debug APK"
                         val fastBuildJob = jobsResponse.jobs.find { job ->
                             job.name.contains("Fast Build", ignoreCase = true) ||
                             job.name.contains("Debug", ignoreCase = true)
                         } ?: jobsResponse.jobs.firstOrNull()
                         
                         if (fastBuildJob != null) {
-                            // Загружаем логи этого job
                             val logsResult = gitHubApiClient.getJobLogs(fastBuildJob.id)
                             
                             logsResult.fold(
@@ -224,7 +220,6 @@ class WorkflowsViewModel @Inject constructor(
     fun downloadRepository(context: Context) {
         viewModelScope.launch {
             try {
-                // Получаем конфигурацию GitHub
                 val config = appSettings.gitHubConfig.first()
                 
                 if (config.owner.isEmpty() || config.repo.isEmpty()) {
@@ -234,10 +229,8 @@ class WorkflowsViewModel @Inject constructor(
                     return@launch
                 }
                 
-                // URL для скачивания ZIP архива
                 val zipUrl = "https://github.com/${config.owner}/${config.repo}/archive/refs/heads/${config.branch}.zip"
                 
-                // Открываем ссылку в браузере для скачивания
                 try {
                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(zipUrl))
                     intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
@@ -267,14 +260,11 @@ class WorkflowsViewModel @Inject constructor(
             _state.update { it.copy(isLoadingReleases = true, releasesError = null) }
             
             try {
-                // Получаем GitHub Releases
                 val releasesResult = gitHubApiClient.getReleases()
                 
                 releasesResult.fold(
                     onSuccess = { releases ->
-                        // Преобразуем в ReleaseItem
                         val releaseItems = releases.flatMap { release ->
-                            // Ищем APK файлы в assets
                             release.assets
                                 .filter { asset -> 
                                     asset.name.endsWith(".apk", ignoreCase = true)
@@ -346,7 +336,7 @@ class WorkflowsViewModel @Inject constructor(
             
             try {
                 val result = gitHubApiClient.getWorkflowRuns(
-                    perPage = 50  // Загружаем последние 50 runs
+                    perPage = 50
                 )
                 
                 result.fold(
@@ -379,14 +369,10 @@ class WorkflowsViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Автоматически обновляет workflow runs каждые 5 секунд
-     * если есть активные (running/queued) workflows
-     */
     private fun startAutoRefresh() {
         viewModelScope.launch {
             while (true) {
-                delay(5_000) // 5 секунд
+                delay(5_000)
                 
                 val hasActiveWorkflows = _state.value.workflows.any { workflow ->
                     workflow.status == "in_progress" || workflow.status == "queued"
@@ -412,11 +398,9 @@ data class WorkflowsState(
     val isLoadingLogs: Boolean = false,
     val error: String? = null,
     val message: String? = null,
-    // Releases tab
     val releases: List<ReleaseItem> = emptyList(),
     val isLoadingReleases: Boolean = false,
     val releasesError: String? = null,
-    // Artifacts
     val artifacts: List<ArtifactItem> = emptyList(),
     val isLoadingArtifacts: Boolean = false
 )
