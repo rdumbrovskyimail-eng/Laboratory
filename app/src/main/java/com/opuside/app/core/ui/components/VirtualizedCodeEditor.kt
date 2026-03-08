@@ -35,20 +35,11 @@ import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import java.util.LinkedList
-import androidx.compose.runtime.rememberUpdatedState
 import kotlin.math.min
 
 /**
- * 🚀 ULTIMATE CODE EDITOR - FLAGSHIP OPTIMIZED
- * 
- * Performance optimizations for high-end devices:
- * ✅ Aggressive derivedStateOf to prevent recomposition
- * ✅ Remember scopes isolation
- * ✅ Debounced rendering with smart cancellation
- * ✅ Layout result caching
- * ✅ Optimized draw operations
+ * ULTIMATE CODE EDITOR - FLAGSHIP OPTIMIZED
  */
 
 @Stable
@@ -92,7 +83,6 @@ fun VirtualizedCodeEditor(
     showLineNumbers: Boolean = config.showLineNumbers,
     fontSize: Int = config.fontSize
 ) {
-    // 🚀 OPTIMIZATION 1: Stable config to prevent cascade recomposition
     val finalConfig = remember(config, readOnly, showLineNumbers, fontSize) {
         config.copy(
             readOnly = readOnly,
@@ -100,39 +90,33 @@ fun VirtualizedCodeEditor(
             fontSize = fontSize
         )
     }
-    
-    // 🚀 OPTIMIZATION 2: Separate text state from UI state
+
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(
             text = content,
             selection = TextRange(content.length)
         ))
     }
-    
-    // 🚀 OPTIMIZATION 3: Highlighting state with smart cancellation
+
     var highlightedText by remember { mutableStateOf(AnnotatedString(content)) }
     var highlightJob by remember { mutableStateOf<Job?>(null) }
-    
-    // 🚀 OPTIMIZATION 4: Debounced highlighting with job cancellation
+
     LaunchedEffect(textFieldValue.text, language) {
         if (highlightedText.text == textFieldValue.text) return@LaunchedEffect
-        
-        // Cancel previous job
+
         highlightJob?.cancel()
-        
+
         highlightJob = launch {
-            delay(100) // Reduced from 150ms for flagship devices
-            
+            delay(100)
+
             highlightedText = withContext(Dispatchers.Default) {
                 try {
-                    // 🚀 Chunked processing for large files
                     val lines = textFieldValue.text.lines()
-                    
+
                     buildAnnotatedString {
                         lines.forEachIndexed { i, line ->
-                            // Check cancellation every 50 lines
                             if (i % 50 == 0 && !isActive) return@withContext highlightedText
-                            
+
                             append(SyntaxHighlighter.highlight(line, language))
                             if (i < lines.size - 1) append("\n")
                         }
@@ -143,14 +127,12 @@ fun VirtualizedCodeEditor(
             }
         }
     }
-    
-    // Undo/Redo Manager
+
     val undoManager = rememberSaveable(
         saver = DiffUndoManager.Saver,
         init = { DiffUndoManager(content, finalConfig.maxUndoSteps) }
     )
-    
-    // Content sync
+
     LaunchedEffect(content) {
         if (textFieldValue.text != content) {
             val cursorPosition = textFieldValue.selection.start.coerceIn(0, content.length)
@@ -162,34 +144,30 @@ fun VirtualizedCodeEditor(
             undoManager.reset(content)
         }
     }
-    
-    // Record changes for undo
+
     LaunchedEffect(textFieldValue.text) {
-        delay(400) // Reduced from 500ms
+        delay(400)
         if (textFieldValue.text != undoManager.getCurrentText()) {
             undoManager.recordChange(textFieldValue.text)
         }
     }
-    
-    // Propagate changes
+
     LaunchedEffect(textFieldValue.text) {
         if (textFieldValue.text != content) {
             onContentChange(textFieldValue.text)
         }
     }
-    
-    // 🚀 OPTIMIZATION 5: derivedStateOf for cursor position (prevents recomposition)
+
     val cursorPos by remember {
         derivedStateOf {
             calculateCursorPosition(textFieldValue.text, textFieldValue.selection.start)
         }
     }
-    
+
     LaunchedEffect(cursorPos) {
         onCursorPositionChanged?.invoke(cursorPos.line, cursorPos.column)
     }
-    
-    // 🚀 OPTIMIZATION 6: Memoized keyboard handler
+
     val keyHandler = remember(finalConfig) {
         Modifier.onPreviewKeyEvent { event ->
             handleKeyEvent(
@@ -201,32 +179,30 @@ fun VirtualizedCodeEditor(
             )
         }
     }
-    
-    // 🚀 OPTIMIZATION 7: derivedStateOf for lines (prevents recalculation)
+
     val lines by remember {
         derivedStateOf {
             textFieldValue.text.lines().ifEmpty { listOf("") }
         }
     }
-    
+
     val lineNumberWidth by remember {
         derivedStateOf {
             calculateLineNumberWidth(lines.size, finalConfig.fontSize)
         }
     }
-    
+
     val vScrollState = rememberScrollState()
     val hScrollState = rememberScrollState()
     val focusRequester = remember { FocusRequester() }
-    
-    // Custom selection colors
+
     val customSelectionColors = remember(theme) {
         TextSelectionColors(
             handleColor = theme.selectionHandle,
             backgroundColor = theme.selection
         )
     }
-    
+
     CompositionLocalProvider(
         LocalLayoutDirection provides LayoutDirection.Ltr,
         LocalTextSelectionColors provides customSelectionColors
@@ -234,7 +210,6 @@ fun VirtualizedCodeEditor(
         Surface(modifier = modifier.then(keyHandler).imePadding(), color = theme.background) {
             Row(Modifier.fillMaxSize()) {
                 if (finalConfig.showLineNumbers) {
-                    // 🚀 OPTIMIZATION 8: Isolated composition for line numbers
                     key("line-numbers") {
                         LineNumbers(
                             count = lines.size,
@@ -250,8 +225,7 @@ fun VirtualizedCodeEditor(
                         color = theme.divider
                     )
                 }
-                
-                // 🚀 OPTIMIZATION 9: Isolated editor composition
+
                 key("editor") {
                     Editor(
                         value = textFieldValue,
@@ -275,7 +249,7 @@ fun VirtualizedCodeEditor(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// EDITOR COMPONENT (OPTIMIZED)
+// EDITOR COMPONENT
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
@@ -294,7 +268,7 @@ private fun Editor(
 ) {
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var isCursorVisible by remember { mutableStateOf(true) }
-    
+
     LaunchedEffect(value.selection) { isCursorVisible = true }
     LaunchedEffect(Unit) {
         while (true) {
@@ -302,16 +276,38 @@ private fun Editor(
             isCursorVisible = !isCursorVisible
         }
     }
-    
-    // 🚀 OPTIMIZATION 10: derivedStateOf for bracket matching
+
+    // Auto-scroll to keep cursor visible (safe — runs in coroutine scope)
+    LaunchedEffect(value.selection.start) {
+        val layout = textLayoutResult ?: return@LaunchedEffect
+        val viewportSize = vScrollState.viewportSize
+        if (viewportSize <= 0) return@LaunchedEffect
+
+        try {
+            val offset = value.selection.start.coerceIn(0, value.text.length)
+            val cursorRect = layout.getCursorRect(offset)
+            val viewportTop = vScrollState.value.toFloat()
+            val viewportBottom = viewportTop + viewportSize.toFloat()
+
+            if (cursorRect.bottom > viewportBottom - 100f) {
+                vScrollState.animateScrollTo(
+                    (cursorRect.bottom - viewportSize + 200f).toInt().coerceAtLeast(0)
+                )
+            } else if (cursorRect.top < viewportTop + 50f) {
+                vScrollState.animateScrollTo(
+                    (cursorRect.top - 100f).toInt().coerceAtLeast(0)
+                )
+            }
+        } catch (_: Exception) {}
+    }
+
     val bracketMatch by remember {
         derivedStateOf {
             if (!config.enableBracketMatching) null
             else findMatchingBracket(value.text, value.selection.start)
         }
     }
-    
-    // 🚀 OPTIMIZATION 11: Memoized display text transformation
+
     val displayText by remember {
         derivedStateOf {
             if (value.text == highlightedText.text && highlightedText.spanStyles.isNotEmpty()) {
@@ -321,8 +317,7 @@ private fun Editor(
             }
         }
     }
-    
-    // 🚀 OPTIMIZATION 12: Stable text style
+
     val textStyle = remember(fontSize, displayText) {
         TextStyle(
             fontFamily = FontFamily.Monospace,
@@ -331,8 +326,8 @@ private fun Editor(
             color = if (displayText.spanStyles.isNotEmpty()) Color.Unspecified else theme.text
         )
     }
-    
-    // 🚀 OPTIMIZATION 13: Cached drawing lambda with live state refs
+
+    // Cached drawing lambda with live state refs
     val currentValue by rememberUpdatedState(value)
     val currentLineState by rememberUpdatedState(currentLine)
     val currentBracketMatch by rememberUpdatedState(bracketMatch)
@@ -354,7 +349,7 @@ private fun Editor(
             }
         }
     }
-    
+
     BasicTextField(
         value = value,
         onValueChange = onValueChange,
@@ -366,7 +361,6 @@ private fun Editor(
             .focusRequester(focusRequester)
             .drawBehind {
                 textLayoutResult?.let { layout ->
-                    // 🚀 Draw decorations only when needed
                     drawDecorations(this, layout)
                 }
             },
@@ -379,26 +373,7 @@ private fun Editor(
             imeAction = ImeAction.None
         ),
         readOnly = readOnly,
-        onTextLayout = { layout ->
-            textLayoutResult = layout
-            // Scroll to cursor when it changes
-            val offset = value.selection.start.coerceIn(0, value.text.length)
-            try {
-                val cursorRect = layout.getCursorRect(offset)
-                val viewportTop = vScrollState.value.toFloat()
-                val viewportBottom = viewportTop + vScrollState.viewportSize.toFloat()
-                
-                if (cursorRect.bottom > viewportBottom - 100f) {
-                    kotlinx.coroutines.MainScope().launch {
-                        vScrollState.animateScrollTo((cursorRect.bottom - vScrollState.viewportSize + 200f).toInt().coerceAtLeast(0))
-                    }
-                } else if (cursorRect.top < viewportTop) {
-                    kotlinx.coroutines.MainScope().launch {
-                        vScrollState.animateScrollTo((cursorRect.top - 100f).toInt().coerceAtLeast(0))
-                    }
-                }
-            } catch (_: Exception) {}
-        },
+        onTextLayout = { textLayoutResult = it },
         decorationBox = @Composable { innerTextField ->
             innerTextField()
         },
@@ -415,7 +390,7 @@ private fun Editor(
 }
 
 // ═══════════════════════════════════════════════════════════════
-// DRAWING DECORATIONS (OPTIMIZED)
+// DRAWING DECORATIONS
 // ═══════════════════════════════════════════════════════════════
 
 private fun DrawScope.drawEditorDecorations(
@@ -428,14 +403,13 @@ private fun DrawScope.drawEditorDecorations(
     theme: EditorTheme,
     config: EditorConfig
 ) {
-    // 🚀 OPTIMIZATION 14: Early return if nothing to draw
     val hasSelection = !value.selection.collapsed
     val hasCursor = isCursorVisible && !readOnly && value.selection.collapsed
-    
+
     if (!config.highlightCurrentLine && !hasSelection && !hasCursor && bracketMatch == null) {
         return
     }
-    
+
     // Current line highlight
     if (config.highlightCurrentLine && currentLine >= 0 && currentLine < layout.lineCount) {
         try {
@@ -448,30 +422,29 @@ private fun DrawScope.drawEditorDecorations(
             )
         } catch (_: Exception) {}
     }
-    
-    // Text selection (🚀 optimized multi-line drawing)
+
+    // Text selection
     if (hasSelection) {
         try {
             val start = value.selection.min
             val end = value.selection.max
-            
+
             val startLine = layout.getLineForOffset(start)
             val endLine = layout.getLineForOffset(end)
-            
-            // 🚀 Batch draw operations
+
             for (line in startLine..endLine) {
                 val lineStart = layout.getLineStart(line)
                 val lineEnd = layout.getLineEnd(line)
-                
+
                 val selStart = maxOf(start, lineStart)
                 val selEnd = minOf(end, lineEnd)
-                
+
                 if (selStart < selEnd) {
                     val leftX = layout.getHorizontalPosition(selStart, true)
                     val rightX = layout.getHorizontalPosition(selEnd, true)
                     val topY = layout.getLineTop(line)
                     val bottomY = layout.getLineBottom(line)
-                    
+
                     drawRect(
                         color = theme.selection,
                         topLeft = Offset(leftX, topY),
@@ -481,7 +454,7 @@ private fun DrawScope.drawEditorDecorations(
             }
         } catch (_: Exception) {}
     }
-    
+
     // Bracket matching
     bracketMatch?.let { pos ->
         try {
@@ -493,13 +466,13 @@ private fun DrawScope.drawEditorDecorations(
             )
         } catch (_: Exception) {}
     }
-    
+
     // Cursor
     if (hasCursor) {
         try {
             val offset = value.selection.start.coerceIn(0, value.text.length)
             val cursorRect = layout.getCursorRect(offset)
-            
+
             drawLine(
                 color = theme.cursor,
                 start = Offset(cursorRect.left, cursorRect.top),
@@ -522,7 +495,7 @@ private fun handleKeyEvent(
     onValueChange: (TextFieldValue) -> Unit
 ): Boolean {
     if (event.type != KeyEventType.KeyDown || config.readOnly) return false
-    
+
     return when {
         event.isCtrlPressed && event.key == Key.Z && !event.isShiftPressed -> {
             undoManager.undo()?.let { text ->
@@ -533,7 +506,7 @@ private fun handleKeyEvent(
             }
             true
         }
-        
+
         (event.isCtrlPressed && event.isShiftPressed && event.key == Key.Z) ||
         (event.isCtrlPressed && event.key == Key.Y) -> {
             undoManager.redo()?.let { text ->
@@ -544,7 +517,7 @@ private fun handleKeyEvent(
             }
             true
         }
-        
+
         event.key == Key.Tab && !event.isShiftPressed -> {
             val indent = " ".repeat(config.tabSize)
             val selection = textFieldValue.selection
@@ -559,12 +532,12 @@ private fun handleKeyEvent(
             ))
             true
         }
-        
+
         event.key == Key.Enter && config.autoIndent -> {
             val cursorPos = textFieldValue.selection.start
             val textBefore = textFieldValue.text.take(cursorPos)
             val currentLine = textBefore.substringAfterLast('\n')
-            
+
             val baseIndent = currentLine.takeWhile { it.isWhitespace() }
             val lastChar = currentLine.trimEnd().lastOrNull()
             val extraIndent = if (lastChar != null && lastChar in setOf('{', '(', '[')) {
@@ -572,27 +545,27 @@ private fun handleKeyEvent(
             } else {
                 ""
             }
-            
+
             val insertion = "\n$baseIndent$extraIndent"
             val newText = textFieldValue.text.replaceRange(
                 textFieldValue.selection.start,
                 textFieldValue.selection.end,
                 insertion
             )
-            
+
             onValueChange(TextFieldValue(
                 text = newText,
                 selection = TextRange(cursorPos + insertion.length)
             ))
             true
         }
-        
+
         else -> false
     }
 }
 
 // ═══════════════════════════════════════════════════════════════
-// LINE NUMBERS (OPTIMIZED)
+// LINE NUMBERS
 // ═══════════════════════════════════════════════════════════════
 
 @Composable
@@ -605,8 +578,7 @@ private fun LineNumbers(
     theme: EditorTheme
 ) {
     val lineHeight = with(LocalDensity.current) { (fontSize * 1.5).sp.toDp() }
-    
-    // 🚀 OPTIMIZATION 15: Stable text style
+
     val normalStyle = remember(fontSize, theme) {
         TextStyle(
             fontFamily = FontFamily.Monospace,
@@ -615,7 +587,7 @@ private fun LineNumbers(
             color = theme.lineNumberText
         )
     }
-    
+
     val currentStyle = remember(fontSize, theme) {
         TextStyle(
             fontFamily = FontFamily.Monospace,
@@ -624,7 +596,7 @@ private fun LineNumbers(
             color = theme.lineNumberCurrent
         )
     }
-    
+
     Column(
         modifier = Modifier
             .width(width)
@@ -655,71 +627,71 @@ private class DiffUndoManager(
     private val maxSteps: Int = 100
 ) {
     private data class Patch(val pos: Int, val deleted: String, val inserted: String)
-    
+
     private var baseText = initialText
     private val patches = LinkedList<Patch>()
     private var currentIndex = -1
-    
+
     fun getCurrentText() = baseText
-    
+
     fun reset(text: String) {
         baseText = text
         patches.clear()
         currentIndex = -1
     }
-    
+
     fun recordChange(newText: String) {
         if (newText == baseText) return
-        
+
         val patch = createPatch(baseText, newText)
-        
+
         while (patches.size > currentIndex + 1) {
             patches.removeLast()
         }
-        
+
         patches.add(patch)
         currentIndex++
-        
+
         if (patches.size > maxSteps) {
             baseText = applyPatch(baseText, patches.removeFirst())
             currentIndex--
         }
-        
+
         baseText = newText
     }
-    
+
     fun undo(): String? {
         if (currentIndex < 0) return null
         baseText = reversePatch(baseText, patches[currentIndex])
         currentIndex--
         return baseText
     }
-    
+
     fun redo(): String? {
         if (currentIndex >= patches.size - 1) return null
         currentIndex++
         baseText = applyPatch(baseText, patches[currentIndex])
         return baseText
     }
-    
+
     private fun createPatch(old: String, new: String): Patch {
         val prefixLen = old.commonPrefixWith(new).length
         val suffixLen = old.commonSuffixWith(new).length
         val maxSuffix = min(old.length, new.length) - prefixLen
         val safeSuffix = min(suffixLen, maxSuffix.coerceAtLeast(0))
-        
+
         val deleted = old.substring(prefixLen, old.length - safeSuffix)
         val inserted = new.substring(prefixLen, new.length - safeSuffix)
-        
+
         return Patch(prefixLen, deleted, inserted)
     }
-    
+
     private fun applyPatch(text: String, patch: Patch) =
         text.replaceRange(patch.pos, patch.pos + patch.deleted.length, patch.inserted)
-    
+
     private fun reversePatch(text: String, patch: Patch) =
         text.replaceRange(patch.pos, patch.pos + patch.inserted.length, patch.deleted)
-    
+
     companion object {
         val Saver = Saver<DiffUndoManager, Bundle>(
             save = { Bundle().apply { putString("t", it.baseText) } },
@@ -747,11 +719,11 @@ private fun calculateLineNumberWidth(lineCount: Int, fontSize: Int): androidx.co
 
 private fun findMatchingBracket(text: String, index: Int): Int? {
     if (index !in text.indices) return null
-    
+
     val char = text[index]
     val pairs = mapOf('(' to ')', '{' to '}', '[' to ']')
     val reversePairs = pairs.entries.associate { (k, v) -> v to k }
-    
+
     return when {
         char in pairs -> {
             var depth = 0
