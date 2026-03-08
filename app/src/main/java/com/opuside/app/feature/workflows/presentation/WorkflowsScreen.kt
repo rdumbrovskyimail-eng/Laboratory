@@ -179,8 +179,13 @@ fun WorkflowsScreen(
             workflow = workflow,
             jobLogs = state.jobLogs,
             isLoadingLogs = state.isLoadingLogs,
+            artifacts = state.artifacts,
+            isLoadingArtifacts = state.isLoadingArtifacts,
             onDismiss = { viewModel.clearSelection() },
-            onLoadLogs = { viewModel.loadWorkflowLogs(workflow.id) }
+            onLoadLogs = { viewModel.loadWorkflowLogs(workflow.id) },
+            onDownloadArtifact = { artifact ->
+                viewModel.downloadArtifact(context, artifact.id, artifact.name)
+            }
         )
     }
 }
