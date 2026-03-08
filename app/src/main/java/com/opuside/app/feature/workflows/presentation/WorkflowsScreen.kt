@@ -704,8 +704,11 @@ private fun WorkflowDetailDialog(
     workflow: WorkflowRun,
     jobLogs: String?,
     isLoadingLogs: Boolean,
+    artifacts: List<ArtifactItem>,
+    isLoadingArtifacts: Boolean,
     onDismiss: () -> Unit,
-    onLoadLogs: () -> Unit
+    onLoadLogs: () -> Unit,
+    onDownloadArtifact: (ArtifactItem) -> Unit
 ) {
     val context = LocalContext.current
     
@@ -777,6 +780,91 @@ private fun WorkflowDetailDialog(
                         WorkflowInfoSection(workflow)
                     }
                     
+                    // Artifacts section
+                    if (workflow.status == "completed") {
+                        item {
+                            Text(
+                                text = "Артефакты",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            when {
+                                isLoadingArtifacts -> {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().height(60.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) { CircularProgressIndicator(modifier = Modifier.size(24.dp)) }
+                                }
+                                artifacts.isEmpty() -> {
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                        )
+                                    ) {
+                                        Text(
+                                            text = "Нет артефактов",
+                                            modifier = Modifier.padding(16.dp),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                                else -> {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        artifacts.forEach { artifact ->
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                                )
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(12.dp),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = artifact.name,
+                                                            style = MaterialTheme.typography.bodyMedium,
+                                                            fontWeight = FontWeight.Medium
+                                                        )
+                                                        Text(
+                                                            text = formatFileSize(artifact.sizeInBytes),
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                    if (!artifact.expired) {
+                                                        IconButton(onClick = { onDownloadArtifact(artifact) }) {
+                                                            Icon(
+                                                                Icons.Default.Download,
+                                                                "Download",
+                                                                tint = Color(0xFF3DDC84)
+                                                            )
+                                                        }
+                                                    } else {
+                                                        Text(
+                                                            "Expired",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.error
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                        }
+                    }
+
                     // Fast Build Debug APK Logs
                     item {
                         Row(
