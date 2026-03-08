@@ -421,14 +421,6 @@ data class WorkflowsState(
     val isLoadingArtifacts: Boolean = false
 )
 
-data class ArtifactItem(
-    val id: Long,
-    val name: String,
-    val sizeInBytes: Long,
-    val createdAt: String,
-    val expired: Boolean
-)
-
 data class ReleaseItem(
     val releaseName: String,
     val releaseTag: String,
@@ -439,4 +431,12 @@ data class ReleaseItem(
     val createdAt: String,
     val downloadUrl: String,
     val downloadCount: Int
+)
+
+data class ArtifactItem(
+    val id: Long,
+    val name: String,
+    val sizeInBytes: Long,
+    val createdAt: String,
+    val expired: Boolean
 )
