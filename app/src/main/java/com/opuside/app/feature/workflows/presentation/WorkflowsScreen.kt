@@ -78,8 +78,25 @@ fun WorkflowsScreen(
                             )
                         }
                         
-                        // Кнопка скачивания репозитория (только на вкладке Workflows)
                         if (selectedTabIndex == 0) {
+                            // Кнопка отмены всех кроме последнего
+                            val activeCount = state.workflows.count {
+                                it.status == "in_progress" || it.status == "queued"
+                            }
+                            if (activeCount > 1) {
+                                IconButton(onClick = { viewModel.cancelAllExceptLatest() }) {
+                                    BadgedBox(badge = {
+                                        Badge { Text("${activeCount - 1}") }
+                                    }) {
+                                        Icon(
+                                            imageVector = Icons.Default.Cancel,
+                                            contentDescription = "Cancel all except latest"
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Кнопка скачивания репозитория
                             IconButton(onClick = { viewModel.downloadRepository(context) }) {
                                 Icon(
                                     imageVector = Icons.Default.Download,
