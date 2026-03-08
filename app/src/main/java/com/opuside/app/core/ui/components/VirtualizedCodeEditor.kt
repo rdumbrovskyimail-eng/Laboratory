@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import java.util.LinkedList
 import androidx.compose.runtime.rememberUpdatedState
 import kotlin.math.min
@@ -229,7 +231,7 @@ fun VirtualizedCodeEditor(
         LocalLayoutDirection provides LayoutDirection.Ltr,
         LocalTextSelectionColors provides customSelectionColors
     ) {
-        Surface(modifier = modifier.then(keyHandler), color = theme.background) {
+        Surface(modifier = modifier.then(keyHandler).imePadding(), color = theme.background) {
             Row(Modifier.fillMaxSize()) {
                 if (finalConfig.showLineNumbers) {
                     // 🚀 OPTIMIZATION 8: Isolated composition for line numbers
