@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
 import java.util.LinkedList
+import androidx.compose.runtime.rememberUpdatedState
 import kotlin.math.min
 
 /**
@@ -329,16 +330,21 @@ private fun Editor(
         )
     }
     
-    // 🚀 OPTIMIZATION 13: Cached drawing lambda
+    // 🚀 OPTIMIZATION 13: Cached drawing lambda with live state refs
+    val currentValue by rememberUpdatedState(value)
+    val currentLineState by rememberUpdatedState(currentLine)
+    val currentBracketMatch by rememberUpdatedState(bracketMatch)
+    val currentCursorVisible by rememberUpdatedState(isCursorVisible)
+
     val drawDecorations = remember(theme, config) {
         { scope: DrawScope, layout: TextLayoutResult ->
             with(scope) {
                 drawEditorDecorations(
                     layout = layout,
-                    value = value,
-                    currentLine = currentLine,
-                    bracketMatch = bracketMatch,
-                    isCursorVisible = isCursorVisible,
+                    value = currentValue,
+                    currentLine = currentLineState,
+                    bracketMatch = currentBracketMatch,
+                    isCursorVisible = currentCursorVisible,
                     readOnly = readOnly,
                     theme = theme,
                     config = config
