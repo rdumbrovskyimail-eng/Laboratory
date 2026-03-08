@@ -13,8 +13,10 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
@@ -437,19 +439,28 @@ class GitHubApiClient @Inject constructor(
                 message = "GitHub not configured."
             ))
         
-        return try {
-            val response = httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/actions/artifacts/$artifactId/zip") {
-                setupHeaders(config.token)
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = java.net.URL("$BASE_URL/repos/${config.owner}/${config.repo}/actions/artifacts/$artifactId/zip")
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty("Authorization", "Bearer ${config.token}")
+                conn.setRequestProperty("Accept", "application/vnd.github+json")
+                conn.setRequestProperty("X-GitHub-Api-Version", API_VERSION)
+                conn.connect()
+                
+                val location = conn.getHeaderField("Location")
+                val status = conn.responseCode
+                conn.disconnect()
+                
+                if (location != null) {
+                    Result.success(location)
+                } else {
+                    Result.failure(GitHubApiException("no_redirect", "No download URL (status: $status)"))
+                }
+            } catch (e: Exception) {
+                Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
             }
-            
-            val location = response.headers["Location"]
-            if (location != null) {
-                Result.success(location)
-            } else {
-                Result.failure(GitHubApiException("no_redirect", "No download URL returned"))
-            }
-        } catch (e: Exception) {
-            Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
         }
     }
 
