@@ -163,6 +163,61 @@ class WorkflowsViewModel @Inject constructor(
         }
     }
 
+    fun loadArtifacts(runId: Long) {
+        viewModelScope.launch {
+            _state.update { it.copy(isLoadingArtifacts = true) }
+            try {
+                gitHubApiClient.getWorkflowArtifacts(runId).fold(
+                    onSuccess = { response ->
+                        val items = response.artifacts.map { artifact ->
+                            ArtifactItem(
+                                id = artifact.id,
+                                name = artifact.name,
+                                sizeInBytes = artifact.sizeInBytes,
+                                createdAt = artifact.createdAt,
+                                expired = artifact.expired
+                            )
+                        }
+                        _state.update {
+                            it.copy(artifacts = items, isLoadingArtifacts = false)
+                        }
+                    },
+                    onFailure = { e ->
+                        _state.update {
+                            it.copy(
+                                isLoadingArtifacts = false,
+                                message = "Ошибка загрузки артефактов: ${e.message}"
+                            )
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                _state.update {
+                    it.copy(isLoadingArtifacts = false, message = "Ошибка: ${e.message}")
+                }
+            }
+        }
+    }
+
+    fun downloadArtifact(context: Context, artifactId: Long, name: String) {
+        viewModelScope.launch {
+            try {
+                gitHubApiClient.getArtifactDownloadUrl(artifactId).fold(
+                    onSuccess = { url ->
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        context.startActivity(intent)
+                        _state.update { it.copy(message = "Скачиваем $name...") }
+                    },
+                    onFailure = { e ->
+                        _state.update { it.copy(message = "Ошибка: ${e.message}") }
+                    }
+                )
+            } catch (e: Exception) {
+                _state.update { it.copy(message = "Ошибка: ${e.message}") }
+            }
+        }
+    }
+
     fun downloadRepository(context: Context) {
         viewModelScope.launch {
             try {
@@ -357,7 +412,18 @@ data class WorkflowsState(
     // Releases tab
     val releases: List<ReleaseItem> = emptyList(),
     val isLoadingReleases: Boolean = false,
-    val releasesError: String? = null
+    val releasesError: String? = null,
+    // Artifacts tab
+    val artifacts: List<ArtifactItem> = emptyList(),
+    val isLoadingArtifacts: Boolean = false
+)
+
+data class ArtifactItem(
+    val id: Long,
+    val name: String,
+    val sizeInBytes: Long,
+    val createdAt: String,
+    val expired: Boolean
 )
 
 data class ReleaseItem(
