@@ -1,5 +1,7 @@
 package com.opuside.app.core.ui.theme
 
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -157,4 +159,42 @@ enum class AppTheme(val config: ThemeColors) {
         emoji          = "🤍",
         description    = "Чистый белый, максимальная ясность"
     ))
+}
+
+fun AppTheme.toColorScheme() = if (config.isDark) {
+    darkColorScheme(
+        primary          = config.accent,
+        onPrimary        = config.bg,
+        secondary        = config.purple,
+        onSecondary      = config.bg,
+        tertiary         = config.green,
+        onTertiary       = config.bg,
+        background       = config.bg,
+        onBackground     = config.text1,
+        surface          = config.surface,
+        onSurface        = config.text1,
+        surfaceVariant   = config.surfaceVariant,
+        onSurfaceVariant = config.text2,
+        outline          = config.border,
+        error            = config.red,
+        onError          = config.bg
+    )
+} else {
+    lightColorScheme(
+        primary          = config.accent,
+        onPrimary        = Color.White,
+        secondary        = config.purple,
+        onSecondary      = Color.White,
+        tertiary         = config.green,
+        onTertiary       = Color.White,
+        background       = config.bg,
+        onBackground     = config.text1,
+        surface          = config.surface,
+        onSurface        = config.text1,
+        surfaceVariant   = config.surfaceVariant,
+        onSurfaceVariant = config.text2,
+        outline          = config.border,
+        error            = config.red,
+        onError          = Color.White
+    )
 }
