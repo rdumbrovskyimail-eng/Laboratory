@@ -95,7 +95,11 @@ private val opsTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
+fun AnalyzerScreen(
+    viewModel: AnalyzerViewModel = hiltViewModel(),
+    selectedTheme: AppTheme = AppTheme.MIDNIGHT,
+    onThemeChange: (AppTheme) -> Unit = {}
+) {
     val messages by viewModel.messages.collectAsState(initial = emptyList())
     val isStreaming by viewModel.isStreaming.collectAsState()
     val chatError by viewModel.chatError.collectAsState()
@@ -122,7 +126,7 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     var showModelDialog by remember { mutableStateOf(false) }
     var showSessionStats by remember { mutableStateOf(false) }
     var showSettingsPanel by remember { mutableStateOf(false) }
-    var selectedTheme by remember { mutableStateOf(AppTheme.MIDNIGHT) }
+
 
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
