@@ -645,14 +645,42 @@ private fun ProfessionalTopBar(
                     color = pu,
                     onClick = onToggleSystemPrompt
                 )
-                FeatureToggle(
-                    icon = "1M",
-                    label = "Long",
-                    enabled = longContextEnabled,
-                    color = rd,
-                    onClick = onToggleLongContext,
-                    isText = true
-                )
+                if (isStreaming) {
+                    Surface(
+                        onClick = onStopStreaming,
+                        color = rd.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.5.dp, rd)
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Stop,
+                                "Stop",
+                                tint = rd,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                "Stop",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = rd
+                            )
+                        }
+                    }
+                } else {
+                    FeatureToggle(
+                        icon = "1M",
+                        label = "Long",
+                        enabled = longContextEnabled,
+                        color = rd,
+                        onClick = onToggleLongContext,
+                        isText = true
+                    )
+                }
             }
         }
     }
