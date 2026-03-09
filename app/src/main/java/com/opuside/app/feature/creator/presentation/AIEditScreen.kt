@@ -120,7 +120,7 @@ fun AIEditScreen(
                     border = BorderStroke(1.dp, EditColors.blue.copy(alpha = 0.4f))
                 ) {
                     Text(
-                        "⚡ Haiku 4.5",
+                        "⚡ Sonnet 4.6",
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -579,7 +579,7 @@ private fun HintSection() {
                 "📝" to "Опишите изменения на любом языке",
                 "📋" to "Скопируйте инструкции из чата AI и вставьте",
                 "🔄" to "Несколько замен за раз — AI создаст отдельные блоки",
-                "⚡" to "Haiku 4.5 — быстро, точно, дёшево (~€0.003-0.03)",
+                "⚡" to "Sonnet 4.6 — умнее, точнее, быстрее",
                 "👁️" to "Превью diff перед применением + статус матчинга"
             ).forEach { (emoji, text) ->
                 Row(
