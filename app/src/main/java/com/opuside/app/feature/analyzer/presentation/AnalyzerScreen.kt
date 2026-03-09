@@ -26,6 +26,9 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalView
+import android.graphics.Rect
+import android.view.ViewTreeObserver
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -125,8 +128,23 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val opsListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val density = LocalDensity.current
-    val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val imeVisible = imeBottomPx > 0
+    val view = LocalView.current
+    var keyboardHeightPx by remember { mutableIntStateOf(0) }
+    
+    DisposableEffect(view) {
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            val rect = Rect()
+            view.getWindowVisibleDisplayFrame(rect)
+            val screenHeight = view.rootView.height
+            keyboardHeightPx = (screenHeight - rect.bottom).coerceAtLeast(0)
+        }
+        view.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        onDispose {
+            view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+        }
+    }
+    
+    val imeVisible = keyboardHeightPx > 0
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
