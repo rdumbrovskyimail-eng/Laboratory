@@ -1,5 +1,6 @@
 package com.opuside.app.navigation
 
+import com.opuside.app.core.ui.theme.AppTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
@@ -96,7 +97,9 @@ val bottomNavItems = listOf(
  */
 @Composable
 fun OpusIDENavigation(
-    sensitiveFeatureDisabled: Boolean = false
+    sensitiveFeatureDisabled: Boolean = false,
+    selectedTheme: AppTheme = AppTheme.MIDNIGHT,
+    onThemeChange: (AppTheme) -> Unit = {}
 ) {
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
@@ -147,7 +150,10 @@ fun OpusIDENavigation(
             }
             
             composable(Screen.Analyzer.route) {
-                AnalyzerScreen()
+                AnalyzerScreen(
+                    selectedTheme = selectedTheme,
+                    onThemeChange = onThemeChange
+                )
             }
             
             composable(Screen.Workflows.route) {
@@ -156,7 +162,9 @@ fun OpusIDENavigation(
             
             composable(Screen.Settings.route) {
                 SettingsScreen(
-                    sensitiveFeatureDisabled = sensitiveFeatureDisabled
+                    sensitiveFeatureDisabled = sensitiveFeatureDisabled,
+                    selectedTheme = selectedTheme,
+                    onThemeChange = onThemeChange
                 )
             }
         }
