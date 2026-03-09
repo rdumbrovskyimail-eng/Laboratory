@@ -1495,8 +1495,6 @@ private fun SettingsPanel(
     onToggleThinking: () -> Unit,
     onSetThinkingBudget: (Int) -> Unit,
     onClose: () -> Unit,
-    selectedTheme: AppTheme,
-    onSelectTheme: (AppTheme) -> Unit,
     cm: Boolean,
     sf: Color,
     t1: Color,
@@ -1564,72 +1562,7 @@ private fun SettingsPanel(
                 }
             }
 
-            Spacer(Modifier.height(24.dp))
 
-            Text(
-                "Тема интерфейса",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = t1
-            )
-            Spacer(Modifier.height(12.dp))
-
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                AppTheme.entries.forEach { theme ->
-                    val isSelected = theme == selectedTheme
-                    Surface(
-                        onClick = { onSelectTheme(theme) },
-                        color = if (isSelected) theme.config.accent.copy(alpha = 0.12f) else Color.Transparent,
-                        shape = RoundedCornerShape(10.dp),
-                        border = BorderStroke(
-                            if (isSelected) 1.5.dp else 1.dp,
-                            if (isSelected) theme.config.accent else bd
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            // Цветовой превью
-                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Box(Modifier.size(14.dp).clip(CircleShape).background(theme.config.bg))
-                                Box(Modifier.size(14.dp).clip(CircleShape).background(theme.config.surface))
-                                Box(Modifier.size(14.dp).clip(CircleShape).background(theme.config.accent))
-                            }
-                            Column(Modifier.weight(1f)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(theme.config.emoji, fontSize = 13.sp)
-                                    Text(
-                                        theme.config.displayName,
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (isSelected) theme.config.accent else t1
-                                    )
-                                }
-                                Text(
-                                    theme.config.description,
-                                    fontSize = 10.sp,
-                                    color = t2,
-                                    lineHeight = 14.sp
-                                )
-                            }
-                            if (isSelected) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    "Selected",
-                                    tint = theme.config.accent,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 }
