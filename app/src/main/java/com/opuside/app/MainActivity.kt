@@ -1,6 +1,7 @@
 package com.opuside.app
 
 import android.content.Context
+import com.opuside.app.core.ui.theme.AppTheme
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -72,7 +73,8 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
 
         setContent {
-            OpusIDETheme {
+            var selectedTheme by remember { mutableStateOf(AppTheme.MIDNIGHT) }
+            OpusIDETheme(appTheme = selectedTheme) {
                 var showRootDialogSetting by remember { mutableStateOf(true) }
                 var isLoading by remember { mutableStateOf(true) }
                 
@@ -111,7 +113,9 @@ class MainActivity : FragmentActivity() {
                         color = MaterialTheme.colorScheme.background
                     ) {
                         OpusIDENavigation(
-                            sensitiveFeatureDisabled = sensitiveFeatureDisabled
+                            sensitiveFeatureDisabled = sensitiveFeatureDisabled,
+                            selectedTheme = selectedTheme,
+                            onThemeChange = { selectedTheme = it }
                         )
                     }
                 }
