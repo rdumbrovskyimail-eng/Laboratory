@@ -1,6 +1,13 @@
 package com.opuside.app.feature.settings.presentation
 
 import android.widget.Toast
+import com.opuside.app.core.ui.theme.AppTheme
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
@@ -42,7 +49,9 @@ import kotlinx.coroutines.runBlocking
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
-    sensitiveFeatureDisabled: Boolean = false
+    sensitiveFeatureDisabled: Boolean = false,
+    selectedTheme: AppTheme = AppTheme.MIDNIGHT,
+    onThemeChange: (AppTheme) -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -885,6 +894,73 @@ fun SettingsScreen(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFF92400E)
                             )
+                        }
+                    }
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════════════════
+            // THEME
+            // ═══════════════════════════════════════════════════════════════════════════
+            SettingsSection(title = "Тема интерфейса", icon = Icons.Default.Palette) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppTheme.entries.forEach { theme ->
+                        val isSelected = theme == selectedTheme
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onThemeChange(theme) },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isSelected)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                else
+                                    MaterialTheme.colorScheme.surface
+                            ),
+                            border = if (isSelected) BorderStroke(
+                                1.5.dp,
+                                MaterialTheme.colorScheme.primary
+                            ) else null
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Box(Modifier.size(16.dp).clip(CircleShape).background(theme.config.bg))
+                                    Box(Modifier.size(16.dp).clip(CircleShape).background(theme.config.surface))
+                                    Box(Modifier.size(16.dp).clip(CircleShape).background(theme.config.accent))
+                                }
+                                Column(Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(theme.config.emoji, style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            theme.config.displayName,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = if (isSelected)
+                                                MaterialTheme.colorScheme.primary
+                                            else
+                                                MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                    Text(
+                                        theme.config.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (isSelected) {
+                                    Icon(
+                                        Icons.Default.CheckCircle,
+                                        null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
