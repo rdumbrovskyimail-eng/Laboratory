@@ -34,7 +34,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import java.util.LinkedList
 import kotlin.math.min
 
@@ -207,7 +208,7 @@ fun VirtualizedCodeEditor(
         LocalLayoutDirection provides LayoutDirection.Ltr,
         LocalTextSelectionColors provides customSelectionColors
     ) {
-        Surface(modifier = modifier.then(keyHandler).imePadding(), color = theme.background) {
+        Surface(modifier = modifier.then(keyHandler), color = theme.background) {
             Row(Modifier.fillMaxSize()) {
                 if (finalConfig.showLineNumbers) {
                     key("line-numbers") {
@@ -276,6 +277,10 @@ private fun Editor(
             isCursorVisible = !isCursorVisible
         }
     }
+
+    // Dynamic bottom padding to allow scrolling past keyboard
+    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    val keyboardPadding = with(LocalDensity.current) { imeBottom.toDp() }
 
     // Auto-scroll to keep cursor visible (safe — runs in coroutine scope)
     LaunchedEffect(value.selection.start) {
@@ -357,7 +362,7 @@ private fun Editor(
             .fillMaxSize()
             .verticalScroll(vScrollState)
             .horizontalScroll(hScrollState)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
+            .padding(start = 8.dp, end = 8.dp, top = 4.dp, bottom = 4.dp + keyboardPadding)
             .focusRequester(focusRequester)
             .drawBehind {
                 textLayoutResult?.let { layout ->
