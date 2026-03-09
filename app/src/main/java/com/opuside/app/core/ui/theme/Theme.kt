@@ -127,15 +127,17 @@ private val DarkColorScheme = darkColorScheme(
 
 @Composable
 fun OpusIDETheme(
+    appTheme: AppTheme? = null,
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color доступен на Android 12+, но мы на 16, так что работает
     dynamicColor: Boolean = false, // Отключаем чтобы использовать наши цвета
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
+        appTheme != null -> appTheme.toColorScheme()
         dynamicColor -> {
             val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) 
+            if (darkTheme) dynamicDarkColorScheme(context)
             else dynamicLightColorScheme(context)
         }
         darkTheme -> DarkColorScheme
