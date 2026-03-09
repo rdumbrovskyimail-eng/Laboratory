@@ -752,6 +752,15 @@ class AnalyzerViewModel @Inject constructor(
         }
     }
 
+    fun cancelStreaming() {
+        sendJob?.cancel()
+        sendJob = null
+        _isStreaming.value = false
+        _streamingText.value = null
+        StreamingForegroundService.stop(appContext)
+        addOperation("🛑", "Streaming cancelled", OperationLogType.INFO)
+    }
+
     fun clearChat() { viewModelScope.launch { chatDao.clearSession(sessionId) } }
     fun dismissError() { _chatError.value = null }
 
