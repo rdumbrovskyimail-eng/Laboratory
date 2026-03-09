@@ -259,7 +259,7 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
         containerColor = bg
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
-            Column(Modifier.fillMaxSize().imePadding()) {
+            Column(Modifier.fillMaxSize()) {
                 AnimatedVisibility(
                     visible = cacheModeEnabled,
                     enter = expandVertically() + fadeIn(),
