@@ -44,6 +44,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import androidx.compose.foundation.text.selection.SelectionContainer
+import com.opuside.app.core.ui.theme.AppTheme
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ПРОФЕССИОНАЛЬНАЯ ЦВЕТОВАЯ СХЕМА
@@ -121,7 +122,8 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     var showModelDialog by remember { mutableStateOf(false) }
     var showSessionStats by remember { mutableStateOf(false) }
     var showSettingsPanel by remember { mutableStateOf(false) }
-    
+    var selectedTheme by remember { mutableStateOf(AppTheme.MIDNIGHT) }
+
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
@@ -174,19 +176,20 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     }
 
     val cm = cacheModeEnabled
-    val bg = if (cm) ProColors.lightBg else ProColors.darkBg
-    val sf = if (cm) ProColors.lightSurface else ProColors.darkSurface
-    val sfVar = if (cm) ProColors.lightSurfaceVariant else ProColors.darkSurfaceVariant
-    val bd = if (cm) ProColors.lightBorder else ProColors.darkBorder
-    val t1 = if (cm) ProColors.lightText1 else ProColors.darkText1
-    val t2 = if (cm) ProColors.lightText2 else ProColors.darkText2
-    val t3 = if (cm) ProColors.lightText3 else ProColors.darkText3
-    val ac = ProColors.blue
-    val gr = ProColors.green
-    val rd = ProColors.red
-    val yl = ProColors.yellow
-    val or = ProColors.orange
-    val pu = ProColors.purple
+    val themeColors = selectedTheme.config
+    val bg = themeColors.bg
+    val sf = themeColors.surface
+    val sfVar = themeColors.surfaceVariant
+    val bd = themeColors.border
+    val t1 = themeColors.text1
+    val t2 = themeColors.text2
+    val t3 = themeColors.text3
+    val ac = if (cm) ProColors.blue else themeColors.accent
+    val gr = themeColors.green
+    val rd = themeColors.red
+    val yl = themeColors.yellow
+    val or = themeColors.orange
+    val pu = themeColors.purple
 
     val hasStreamingBubble = isStreaming && streamingText != null
     val totalItems = messages.size + (if (hasStreamingBubble) 1 else 0)
@@ -422,6 +425,8 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                     onToggleThinking = { viewModel.toggleThinking() },
                     onSetThinkingBudget = { viewModel.setThinkingBudget(it) },
                     onClose = { showSettingsPanel = false },
+                    selectedTheme = selectedTheme,
+                    onSelectTheme = { selectedTheme = it },
                     cm = cm,
                     sf = sf,
                     t1 = t1,
@@ -624,21 +629,27 @@ private fun ProfessionalTopBar(
                     label = "Think",
                     enabled = thinkingEnabled,
                     color = or,
-                    onClick = onToggleThinking
+                    onClick = onToggleThinking,
+                    disabledColor = t3,
+                    disabledBorder = bd
                 )
                 FeatureToggle(
                     icon = "🔧",
                     label = "Tools",
                     enabled = sendToolsEnabled,
                     color = ac,
-                    onClick = onToggleTools
+                    onClick = onToggleTools,
+                    disabledColor = t3,
+                    disabledBorder = bd
                 )
                 FeatureToggle(
                     icon = "📋",
                     label = "System",
                     enabled = sendSystemPromptEnabled,
                     color = pu,
-                    onClick = onToggleSystemPrompt
+                    onClick = onToggleSystemPrompt,
+                    disabledColor = t3,
+                    disabledBorder = bd
                 )
                 if (isStreaming) {
                     Surface(
@@ -705,13 +716,15 @@ private fun FeatureToggle(
     enabled: Boolean,
     color: Color,
     onClick: () -> Unit,
-    isText: Boolean = false
+    isText: Boolean = false,
+    disabledColor: Color = ProColors.darkText3,
+    disabledBorder: Color = ProColors.darkBorder
 ) {
     Surface(
         onClick = onClick,
         color = if (enabled) color.copy(alpha = 0.15f) else Color.Transparent,
         shape = RoundedCornerShape(8.dp),
-        border = BorderStroke(1.5.dp, if (enabled) color else ProColors.darkBorder)
+        border = BorderStroke(1.5.dp, if (enabled) color else disabledBorder)
     ) {
         Row(
             Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -723,7 +736,7 @@ private fun FeatureToggle(
                     icon,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    color = if (enabled) color else ProColors.darkText3,
+                    color = if (enabled) color else disabledColor,
                     fontFamily = FontFamily.Monospace
                 )
             } else {
@@ -733,7 +746,7 @@ private fun FeatureToggle(
                 label,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = if (enabled) color else ProColors.darkText3
+                color = if (enabled) color else disabledColor
             )
         }
     }
@@ -1478,6 +1491,8 @@ private fun SettingsPanel(
     onToggleThinking: () -> Unit,
     onSetThinkingBudget: (Int) -> Unit,
     onClose: () -> Unit,
+    selectedTheme: AppTheme,
+    onSelectTheme: (AppTheme) -> Unit,
     cm: Boolean,
     sf: Color,
     t1: Color,
@@ -1491,7 +1506,7 @@ private fun SettingsPanel(
         modifier = Modifier.width(320.dp).fillMaxHeight().padding(top = 80.dp),
         shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)
     ) {
-        Column(Modifier.padding(20.dp)) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -1541,6 +1556,73 @@ private fun SettingsPanel(
                             fontWeight = FontWeight.SemiBold,
                             color = if (thinkingBudget == budget) ac else t2
                         )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(24.dp))
+
+            Text(
+                "Тема интерфейса",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = t1
+            )
+            Spacer(Modifier.height(12.dp))
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                AppTheme.entries.forEach { theme ->
+                    val isSelected = theme == selectedTheme
+                    Surface(
+                        onClick = { onSelectTheme(theme) },
+                        color = if (isSelected) theme.config.accent.copy(alpha = 0.12f) else Color.Transparent,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(
+                            if (isSelected) 1.5.dp else 1.dp,
+                            if (isSelected) theme.config.accent else bd
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            // Цветовой превью
+                            Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Box(Modifier.size(14.dp).clip(CircleShape).background(theme.config.bg))
+                                Box(Modifier.size(14.dp).clip(CircleShape).background(theme.config.surface))
+                                Box(Modifier.size(14.dp).clip(CircleShape).background(theme.config.accent))
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(theme.config.emoji, fontSize = 13.sp)
+                                    Text(
+                                        theme.config.displayName,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isSelected) theme.config.accent else t1
+                                    )
+                                }
+                                Text(
+                                    theme.config.description,
+                                    fontSize = 10.sp,
+                                    color = t2,
+                                    lineHeight = 14.sp
+                                )
+                            }
+                            if (isSelected) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    "Selected",
+                                    tint = theme.config.accent,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1681,3 +1763,8 @@ private fun StatsDialog(
         }
     )
 }
+
+
+
+
+
