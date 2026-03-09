@@ -1,6 +1,8 @@
 package com.opuside.app.core.ui.components
 
+import android.graphics.Rect
 import android.os.Bundle
+import android.view.ViewTreeObserver
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -26,6 +28,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.*
@@ -34,8 +37,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.core.util.SyntaxHighlighter
 import kotlinx.coroutines.*
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.ime
 import java.util.LinkedList
 import kotlin.math.min
 
@@ -278,12 +279,30 @@ private fun Editor(
         }
     }
 
-    // Dynamic bottom padding to allow scrolling past keyboard
-    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
-    val keyboardPadding = with(LocalDensity.current) { imeBottom.toDp() }
+    // ── Keyboard height via ViewTreeObserver (works on all Activities) ──
+    val view = LocalView.current
+    val density = LocalDensity.current
+    var keyboardHeightPx by remember { mutableIntStateOf(0) }
 
-    // Auto-scroll to keep cursor visible (safe — runs in coroutine scope)
-    LaunchedEffect(value.selection.start) {
+    DisposableEffect(view) {
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            val rect = Rect()
+            view.getWindowVisibleDisplayFrame(rect)
+            val screenHeight = view.rootView.height
+            keyboardHeightPx = (screenHeight - rect.bottom).coerceAtLeast(0)
+        }
+        view.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        onDispose {
+            view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+        }
+    }
+
+    val keyboardPadding = with(density) { keyboardHeightPx.toDp() }
+
+    // ── Scroll cursor ~1cm above keyboard on cursor move or keyboard appear ──
+    LaunchedEffect(value.selection.start, keyboardHeightPx) {
+        delay(100) // let layout settle after keyboard animation
+
         val layout = textLayoutResult ?: return@LaunchedEffect
         val viewportSize = vScrollState.viewportSize
         if (viewportSize <= 0) return@LaunchedEffect
@@ -291,17 +310,22 @@ private fun Editor(
         try {
             val offset = value.selection.start.coerceIn(0, value.text.length)
             val cursorRect = layout.getCursorRect(offset)
-            val viewportTop = vScrollState.value.toFloat()
-            val viewportBottom = viewportTop + viewportSize.toFloat()
 
-            if (cursorRect.bottom > viewportBottom - 100f) {
-                vScrollState.animateScrollTo(
-                    (cursorRect.bottom - viewportSize + 200f).toInt().coerceAtLeast(0)
-                )
-            } else if (cursorRect.top < viewportTop + 50f) {
-                vScrollState.animateScrollTo(
-                    (cursorRect.top - 100f).toInt().coerceAtLeast(0)
-                )
+            // ~1cm margin above the keyboard
+            val marginPx = with(density) { 40.dp.toPx() }
+
+            // Effective visible bottom = scroll position + viewport - keyboard
+            val visibleBottom = vScrollState.value + viewportSize - keyboardHeightPx
+            val visibleTop = vScrollState.value.toFloat()
+
+            if (cursorRect.bottom > visibleBottom - marginPx) {
+                // Cursor hidden by keyboard — scroll so cursor is marginPx above keyboard
+                val target = (cursorRect.bottom - viewportSize + keyboardHeightPx + marginPx).toInt()
+                vScrollState.animateScrollTo(target.coerceAtLeast(0))
+            } else if (cursorRect.top < visibleTop + marginPx) {
+                // Cursor above visible area — scroll up
+                val target = (cursorRect.top - marginPx).toInt()
+                vScrollState.animateScrollTo(target.coerceAtLeast(0))
             }
         } catch (_: Exception) {}
     }
@@ -332,7 +356,6 @@ private fun Editor(
         )
     }
 
-    // Cached drawing lambda with live state refs
     val currentValue by rememberUpdatedState(value)
     val currentLineState by rememberUpdatedState(currentLine)
     val currentBracketMatch by rememberUpdatedState(bracketMatch)
@@ -415,7 +438,6 @@ private fun DrawScope.drawEditorDecorations(
         return
     }
 
-    // Current line highlight
     if (config.highlightCurrentLine && currentLine >= 0 && currentLine < layout.lineCount) {
         try {
             val top = layout.getLineTop(currentLine)
@@ -428,19 +450,16 @@ private fun DrawScope.drawEditorDecorations(
         } catch (_: Exception) {}
     }
 
-    // Text selection
     if (hasSelection) {
         try {
             val start = value.selection.min
             val end = value.selection.max
-
             val startLine = layout.getLineForOffset(start)
             val endLine = layout.getLineForOffset(end)
 
             for (line in startLine..endLine) {
                 val lineStart = layout.getLineStart(line)
                 val lineEnd = layout.getLineEnd(line)
-
                 val selStart = maxOf(start, lineStart)
                 val selEnd = minOf(end, lineEnd)
 
@@ -460,7 +479,6 @@ private fun DrawScope.drawEditorDecorations(
         } catch (_: Exception) {}
     }
 
-    // Bracket matching
     bracketMatch?.let { pos ->
         try {
             val box = layout.getBoundingBox(pos)
@@ -472,7 +490,6 @@ private fun DrawScope.drawEditorDecorations(
         } catch (_: Exception) {}
     }
 
-    // Cursor
     if (hasCursor) {
         try {
             val offset = value.selection.start.coerceIn(0, value.text.length)
