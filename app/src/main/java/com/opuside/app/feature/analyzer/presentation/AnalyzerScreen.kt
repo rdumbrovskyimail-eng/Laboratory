@@ -24,7 +24,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import android.graphics.Rect
@@ -114,7 +113,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val thinkingEnabled by viewModel.thinkingEnabled.collectAsState()
     val sendToolsEnabled by viewModel.sendToolsEnabled.collectAsState()
     val sendSystemPromptEnabled by viewModel.sendSystemPromptEnabled.collectAsState()
-    val longContextEnabled by viewModel.longContextEnabled.collectAsState()
     val attachedFileName by viewModel.attachedFileName.collectAsState()
     val attachedFileSize by viewModel.attachedFileSize.collectAsState()
     val conversationHistoryEnabled by viewModel.conversationHistoryEnabled.collectAsState()
@@ -127,7 +125,6 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
-    val density = LocalDensity.current
     val view = LocalView.current
     var keyboardHeightPx by remember { mutableIntStateOf(0) }
     
@@ -212,14 +209,12 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                 thinkingEnabled = thinkingEnabled,
                 sendToolsEnabled = sendToolsEnabled,
                 sendSystemPromptEnabled = sendSystemPromptEnabled,
-                longContextEnabled = longContextEnabled,
                 isStreaming = isStreaming,
                 onStopStreaming = { viewModel.cancelStreaming() },
                 conversationHistoryEnabled = conversationHistoryEnabled,
                 onToggleThinking = { viewModel.toggleThinking() },
                 onToggleTools = { viewModel.toggleSendTools() },
                 onToggleSystemPrompt = { viewModel.toggleSendSystemPrompt() },
-                onToggleLongContext = { viewModel.toggleLongContext() },
                 onToggleHistory = { viewModel.toggleConversationHistory() },
                 onCopyChat = {
                     coroutineScope.launch {
@@ -234,6 +229,7 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
                 onShowModel = { showModelDialog = true },
                 onShowStats = { showSessionStats = true },
                 onNewSession = { viewModel.startNewSession() },
+                onEndSession = { viewModel.startNewSession() },
                 onToggleSettings = { showSettingsPanel = !showSettingsPanel },
                 cm = cm,
                 bg = bg,
@@ -260,7 +256,7 @@ fun AnalyzerScreen(viewModel: AnalyzerViewModel = hiltViewModel()) {
         },
         containerColor = bg
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding).imePadding()) {
             Column(Modifier.fillMaxSize()) {
                 AnimatedVisibility(
                     visible = cacheModeEnabled,
@@ -474,20 +470,19 @@ private fun ProfessionalTopBar(
     thinkingEnabled: Boolean,
     sendToolsEnabled: Boolean,
     sendSystemPromptEnabled: Boolean,
-    longContextEnabled: Boolean,
     isStreaming: Boolean,
     onStopStreaming: () -> Unit,
     conversationHistoryEnabled: Boolean,
     onToggleThinking: () -> Unit,
     onToggleTools: () -> Unit,
     onToggleSystemPrompt: () -> Unit,
-    onToggleLongContext: () -> Unit,
     onToggleHistory: () -> Unit,
     onCopyChat: () -> Unit,
     onToggleCache: () -> Unit,
     onShowModel: () -> Unit,
     onShowStats: () -> Unit,
     onNewSession: () -> Unit,
+    onEndSession: () -> Unit,
     onToggleSettings: () -> Unit,
     cm: Boolean,
     bg: Color,
@@ -672,14 +667,31 @@ private fun ProfessionalTopBar(
                         }
                     }
                 } else {
-                    FeatureToggle(
-                        icon = "1M",
-                        label = "Long",
-                        enabled = longContextEnabled,
-                        color = rd,
-                        onClick = onToggleLongContext,
-                        isText = true
-                    )
+                    Surface(
+                        onClick = onEndSession,
+                        color = rd.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.5.dp, rd)
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.ExitToApp,
+                                "End Session",
+                                tint = rd,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                "Завершить сессию",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = rd
+                            )
+                        }
+                    }
                 }
             }
         }
