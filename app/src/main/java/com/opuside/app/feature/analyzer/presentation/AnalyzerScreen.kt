@@ -247,7 +247,8 @@ fun AnalyzerScreen(
                 gr = gr,
                 rd = rd,
                 or = or,
-                pu = pu
+                pu = pu,
+                bd = bd
             )
         },
         snackbarHost = {
@@ -500,7 +501,8 @@ private fun ProfessionalTopBar(
     gr: Color,
     rd: Color,
     or: Color,
-    pu: Color
+    pu: Color,
+    bd: Color
 ) {
     Surface(
         color = bg,
