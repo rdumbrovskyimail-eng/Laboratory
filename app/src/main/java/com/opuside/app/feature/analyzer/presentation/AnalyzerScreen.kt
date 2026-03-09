@@ -429,8 +429,6 @@ fun AnalyzerScreen(
                     onToggleThinking = { viewModel.toggleThinking() },
                     onSetThinkingBudget = { viewModel.setThinkingBudget(it) },
                     onClose = { showSettingsPanel = false },
-                    selectedTheme = selectedTheme,
-                    onSelectTheme = { selectedTheme = it },
                     cm = cm,
                     sf = sf,
                     t1 = t1,
