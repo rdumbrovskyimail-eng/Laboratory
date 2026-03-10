@@ -29,6 +29,11 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import com.opuside.app.core.notification.WorkflowMonitorService
+import com.opuside.app.core.notification.WorkflowNotificationManager
 import javax.inject.Inject
 import kotlin.system.exitProcess
 
@@ -57,6 +62,24 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Создаём каналы уведомлений
+        WorkflowNotificationManager.createChannels(this)
+
+        // Запускаем сервис мониторинга воркфлоу
+        WorkflowMonitorService.start(this)
+
+        // Android 13+ — запрашиваем разрешение на уведомления
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED
+            ) {
+                requestPermissions(
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    100
+                )
+            }
+        }
         
         android.util.Log.d("MainActivity", "━".repeat(80))
         android.util.Log.d("MainActivity", "🚀 MainActivity CREATED")
