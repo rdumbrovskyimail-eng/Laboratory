@@ -24,11 +24,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
 import android.graphics.Rect
 import android.view.ViewTreeObserver
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -137,6 +141,25 @@ fun AnalyzerScreen(
 
     val context = LocalContext.current
 
+    val view = LocalView.current
+    val density = LocalDensity.current
+    var keyboardHeightPx by remember { mutableIntStateOf(0) }
+
+    DisposableEffect(view) {
+        val listener = ViewTreeObserver.OnGlobalLayoutListener {
+            val rect = Rect()
+            view.getWindowVisibleDisplayFrame(rect)
+            val screenHeight = view.rootView.height
+            keyboardHeightPx = (screenHeight - rect.bottom).coerceAtLeast(0)
+        }
+        view.viewTreeObserver.addOnGlobalLayoutListener(listener)
+        onDispose {
+            view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
+        }
+    }
+
+    val keyboardPadding = with(density) { keyboardHeightPx.toDp() }
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -188,7 +211,6 @@ fun AnalyzerScreen(
     }
 
     Scaffold(
-        modifier = Modifier.imePadding(),
         topBar = {
             ProfessionalTopBar(
                 selectedModel = selectedModel,
@@ -369,6 +391,7 @@ fun AnalyzerScreen(
                         userInput = userInput,
                         onInputChange = { userInput = it },
                         isStreaming = isStreaming,
+                        keyboardPadding = keyboardPadding,
                         ecoOutputMode = ecoOutputMode,
                         cacheModeEnabled = cacheModeEnabled,
                         cacheIsWarmed = cacheIsWarmed,
@@ -1346,6 +1369,7 @@ private fun InputArea(
     userInput: String,
     onInputChange: (String) -> Unit,
     isStreaming: Boolean,
+    keyboardPadding: Dp = 0.dp,
     ecoOutputMode: Boolean,
     cacheModeEnabled: Boolean,
     cacheIsWarmed: Boolean,
@@ -1367,7 +1391,9 @@ private fun InputArea(
     Surface(
         color = if (cm) sfVar else sf,
         shadowElevation = if (cm) 4.dp else 0.dp,
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = keyboardPadding)
     ) {
         Row(
             Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
