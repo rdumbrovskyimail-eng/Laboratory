@@ -391,7 +391,6 @@ fun AnalyzerScreen(
                         userInput = userInput,
                         onInputChange = { userInput = it },
                         isStreaming = isStreaming,
-                        keyboardPadding = keyboardPadding,
                         ecoOutputMode = ecoOutputMode,
                         cacheModeEnabled = cacheModeEnabled,
                         cacheIsWarmed = cacheIsWarmed,
@@ -1369,7 +1368,6 @@ private fun InputArea(
     userInput: String,
     onInputChange: (String) -> Unit,
     isStreaming: Boolean,
-    keyboardPadding: Dp = 0.dp,
     ecoOutputMode: Boolean,
     cacheModeEnabled: Boolean,
     cacheIsWarmed: Boolean,
@@ -1393,7 +1391,6 @@ private fun InputArea(
         shadowElevation = if (cm) 4.dp else 0.dp,
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = keyboardPadding)
     ) {
         Row(
             Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
