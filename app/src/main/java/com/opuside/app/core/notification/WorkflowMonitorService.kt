@@ -1,136 +1,161 @@
 package com.opuside.app.core.notification
 
-import android.app.NotificationChannel
+import android.app.Notification
 import android.app.NotificationManager
-import android.app.PendingIntent
+import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
-import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Build
+import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.opuside.app.MainActivity
 import com.opuside.app.R
+import com.opuside.app.core.network.github.GitHubApiClient
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.*
+import javax.inject.Inject
 
-object WorkflowNotificationManager {
+@AndroidEntryPoint
+class WorkflowMonitorService : Service() {
 
-    private const val CHANNEL_SUCCESS_ID = "wf_success"
-    private const val CHANNEL_FAILURE_ID = "wf_failure"
-    const val         CHANNEL_MONITOR_ID = "wf_monitor"
+    @Inject
+    lateinit var gitHubApiClient: GitHubApiClient
 
-    private const val NOTIF_SUCCESS_ID = 1001
-    private const val NOTIF_FAILURE_ID = 1002
-    const val         NOTIF_MONITOR_ID = 1000
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    fun createChannels(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    private var lastWorkflowId: Long? = null
+    private var lastConclusion: String? = null
 
-        // Тихий канал монитора — только иконка в шторке
-        NotificationChannel(
-            CHANNEL_MONITOR_ID,
-            "Мониторинг воркфлоу",
-            NotificationManager.IMPORTANCE_LOW
-        ).apply {
-            description = "Постоянная иконка пока сервис активен"
-            setShowBadge(false)
-        }.also { nm.createNotificationChannel(it) }
-
-        // Канал успеха — со звуком
-        NotificationChannel(
-            CHANNEL_SUCCESS_ID,
-            "Билд успешен",
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            enableVibration(true)
-            vibrationPattern = longArrayOf(0, 200, 100, 200)
-            val attr = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                .build()
-            setSound(
-                Uri.parse("android.resource://${context.packageName}/${R.raw.sound_success}"),
-                attr
-            )
-        }.also { nm.createNotificationChannel(it) }
-
-        // Канал ошибки — со звуком
-        NotificationChannel(
-            CHANNEL_FAILURE_ID,
-            "Билд упал",
-            NotificationManager.IMPORTANCE_HIGH
-        ).apply {
-            enableVibration(true)
-            vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 500)
-            val attr = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
-                .build()
-            setSound(
-                Uri.parse("android.resource://${context.packageName}/${R.raw.sound_failure}"),
-                attr
-            )
-        }.also { nm.createNotificationChannel(it) }
-    }
-
-    fun notifySuccess(context: Context, workflowName: String, duration: String) {
-        playSound(context, R.raw.sound_success)
-        send(
-            context   = context,
-            channelId = CHANNEL_SUCCESS_ID,
-            notifId   = NOTIF_SUCCESS_ID,
-            title     = "✅ Билд успешен!",
-            body      = "$workflowName завершён за $duration",
-            colorArgb = 0xFF10B981.toInt()
-        )
-    }
-
-    fun notifyFailure(context: Context, workflowName: String) {
-        playSound(context, R.raw.sound_failure)
-        send(
-            context   = context,
-            channelId = CHANNEL_FAILURE_ID,
-            notifId   = NOTIF_FAILURE_ID,
-            title     = "❌ Билд упал!",
-            body      = "$workflowName завершился с ошибкой",
-            colorArgb = 0xFFEF4444.toInt()
-        )
-    }
-
-    private fun send(
-        context: Context,
-        channelId: String,
-        notifId: Int,
-        title: String,
-        body: String,
-        colorArgb: Int
-    ) {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-        }
-        val pending = PendingIntent.getActivity(
-            context, notifId, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        val notif = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setColor(colorArgb)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setAutoCancel(true)
-            .setContentIntent(pending)
-            .build()
-
-        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(notifId, notif)
-    }
-
-    private fun playSound(context: Context, resId: Int) {
-        try {
-            MediaPlayer.create(context, resId)?.apply {
-                setOnCompletionListener { release() }
-                start()
+    companion object {
+        fun start(context: Context) {
+            val intent = Intent(context, WorkflowMonitorService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
             }
-        } catch (_: Exception) {}
+        }
+
+        fun stop(context: Context) {
+            context.stopService(Intent(context, WorkflowMonitorService::class.java))
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        startForeground(
+            WorkflowNotificationManager.NOTIF_MONITOR_ID,
+            buildMonitorNotif("🔄 Ожидание воркфлоу...")
+        )
+        startScanning()
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_STICKY
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    private fun startScanning() {
+        scope.launch {
+            while (isActive) {
+                try {
+                    val workflows = gitHubApiClient
+                        .getWorkflowRuns(perPage = 10)
+                        .getOrNull()
+                        ?.workflowRuns
+
+                    val last = workflows?.lastOrNull()
+
+                    if (last != null) {
+
+                        // Обновляем текст в постоянном уведомлении
+                        val statusText = when {
+                            last.status == "queued"      -> "⏳ В очереди: ${last.name}"
+                            last.status == "in_progress" -> "⚙️ Собирается: ${last.name}"
+                            last.conclusion == "success" -> "✅ Успешно: ${last.name}"
+                            last.conclusion == "failure" -> "❌ Ошибка: ${last.name}"
+                            else                         -> "🔄 Мониторинг воркфлоу..."
+                        }
+                        updateMonitorNotif(statusText)
+
+                        // Новый воркфлоу — сбрасываем память
+                        if (last.id != lastWorkflowId) {
+                            lastWorkflowId = last.id
+                            lastConclusion = null
+                        }
+
+                        // Воркфлоу активен — сбрасываем чтобы поймать завершение
+                        if (last.status == "in_progress" || last.status == "queued") {
+                            lastConclusion = null
+                        }
+
+                        // Воркфлоу только что завершился и мы ещё не уведомляли
+                        if (last.status == "completed" && last.conclusion != lastConclusion) {
+                            lastConclusion = last.conclusion
+                            val name = last.name ?: "Workflow #${last.id}"
+                            when (last.conclusion) {
+                                "success" -> {
+                                    val duration = calcDuration(
+                                        last.runStartedAt,
+                                        last.updatedAt
+                                    )
+                                    WorkflowNotificationManager.notifySuccess(
+                                        context      = applicationContext,
+                                        workflowName = name,
+                                        duration     = duration
+                                    )
+                                }
+                                "failure" -> {
+                                    WorkflowNotificationManager.notifyFailure(
+                                        context      = applicationContext,
+                                        workflowName = name
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                } catch (_: Exception) {
+                    // Сеть недоступна — ждём следующей итерации
+                }
+
+                delay(5_000)
+            }
+        }
+    }
+
+    private fun calcDuration(startTime: String?, endTime: String): String {
+        return try {
+            if (startTime == null) return ""
+            val sec = java.time.Duration.between(
+                java.time.Instant.parse(startTime),
+                java.time.Instant.parse(endTime)
+            ).seconds
+            if (sec > 60) "${sec / 60}m ${sec % 60}s" else "${sec}s"
+        } catch (_: Exception) { "" }
+    }
+
+    private fun buildMonitorNotif(text: String): Notification {
+        return NotificationCompat.Builder(this, WorkflowNotificationManager.CHANNEL_MONITOR_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("GitHub Actions Monitor")
+            .setContentText(text)
+            .setOngoing(true)
+            .setSilent(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+
+    private fun updateMonitorNotif(text: String) {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(
+            WorkflowNotificationManager.NOTIF_MONITOR_ID,
+            buildMonitorNotif(text)
+        )
     }
 }
