@@ -1,5 +1,9 @@
 package com.opuside.app.feature.creator.presentation
 
+import android.content.Context
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
@@ -81,6 +85,9 @@ class CreatorViewModel @Inject constructor(
 
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
+
+    private val _isUploading = MutableStateFlow(false)
+    val isUploading: StateFlow<Boolean> = _isUploading.asStateFlow()
 
     private val _conflictState = MutableStateFlow<ConflictResult?>(null)
     val conflictState: StateFlow<ConflictResult?> = _conflictState.asStateFlow()
@@ -519,6 +526,49 @@ class CreatorViewModel @Inject constructor(
         }
         
         return deletedCount
+    }
+
+    fun uploadFile(uri: Uri, context: Context) {
+        viewModelScope.launch {
+            _isUploading.value = true
+            _error.value = null
+            try {
+                val fileName = context.contentResolver.query(
+                    uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
+                )?.use { cursor ->
+                    if (cursor.moveToFirst())
+                        cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME))
+                    else null
+                } ?: uri.lastPathSegment ?: "uploaded_file"
+
+                val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    ?: throw Exception("Не удалось прочитать файл")
+
+                val repoPath = if (_currentPath.value.isEmpty()) fileName
+                               else "${_currentPath.value}/$fileName"
+
+                val base64Content = Base64.encodeToString(bytes, Base64.NO_WRAP)
+
+                android.util.Log.d("CreatorViewModel", "📤 Uploading: $fileName (${bytes.size} bytes) → $repoPath")
+
+                gitHubClient.createOrUpdateFileRaw(
+                    path    = repoPath,
+                    content = base64Content,
+                    message = "Upload $fileName",
+                    branch  = _currentBranch.value
+                ).onSuccess {
+                    android.util.Log.d("CreatorViewModel", "✅ Upload successful: $repoPath")
+                    refresh()
+                }.onFailure { e ->
+                    _error.value = "Upload failed: ${e.message}"
+                    android.util.Log.e("CreatorViewModel", "❌ Upload failed", e)
+                }
+            } catch (e: Exception) {
+                _error.value = "Upload error: ${e.message}"
+                android.util.Log.e("CreatorViewModel", "❌ Upload error", e)
+            }
+            _isUploading.value = false
+        }
     }
 
     fun renameFile(file: GitHubContent, newName: String) {
