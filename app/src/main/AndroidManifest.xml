@@ -85,7 +85,7 @@
             android:name=".MainActivity"
             android:exported="true"
             android:theme="@style/Theme.OpusIDE"
-            android:windowSoftInputMode="adjustResize"
+            android:windowSoftInputMode="adjustNothing"
             android:configChanges="colorMode|density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode">
             
             <intent-filter>
