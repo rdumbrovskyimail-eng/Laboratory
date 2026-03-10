@@ -85,10 +85,10 @@ sealed class Screen(
 
 // Список экранов для Bottom Navigation (Scratch идёт первым)
 val bottomNavItems = listOf(
-    Screen.Scratch,
     Screen.Creator,
     Screen.Analyzer,
     Screen.Workflows,
+    Screen.Scratch,
     Screen.Settings
 )
 
@@ -140,7 +140,7 @@ fun OpusIDENavigation(
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = Screen.Scratch.route,   // ← стартовый экран = Scratch
+            startDestination = Screen.Creator.route,   // ← стартовый экран = Creator
             modifier = Modifier.padding(innerPadding)
         ) {
             // ✅ Scratch
