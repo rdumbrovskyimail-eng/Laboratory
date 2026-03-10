@@ -1,7 +1,10 @@
 package com.opuside.app.feature.creator.presentation
 
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.border
@@ -64,6 +67,7 @@ fun CreatorScreen(
     val selectedCount by viewModel.selectedCount.collectAsState()
     val moveStatus by viewModel.moveStatus.collectAsState()
     val collectedTxt by viewModel.collectedTxt.collectAsState()
+    val isUploading by viewModel.isUploading.collectAsState()
 
     var showNewFileDialog by remember { mutableStateOf(false) }
     var showCommitDialog by remember { mutableStateOf(false) }
@@ -72,6 +76,12 @@ fun CreatorScreen(
 
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
+
+    val uploadFileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        uris.forEach { uri -> viewModel.uploadFile(uri, context) }
+    }
 
     // ★ BackHandler: AI Edit экран имеет приоритет
     BackHandler(enabled = showAIEditScreen) {
@@ -186,7 +196,9 @@ fun CreatorScreen(
                 onRefresh = viewModel::refresh,
                 onNewFile = { showNewFileDialog = true },
                 selectedFile = selectedFile,
-                onCloseFile = viewModel::closeFile
+                onCloseFile = viewModel::closeFile,
+                onUploadFile = { uploadFileLauncher.launch("*/*") },
+                isUploading = isUploading,
             )
 
             AnimatedVisibility(visible = selectionMode) {
@@ -288,7 +300,9 @@ private fun TopBar(
     onRefresh: () -> Unit,
     onNewFile: () -> Unit,
     selectedFile: GitHubContent?,
-    onCloseFile: () -> Unit
+    onCloseFile: () -> Unit,
+    onUploadFile: () -> Unit,
+    isUploading: Boolean,
 ) {
     Surface(tonalElevation = 2.dp) {
         Row(
@@ -337,6 +351,13 @@ private fun TopBar(
                 }
                 IconButton(onClick = onNewFile) {
                     Icon(Icons.Default.Add, "New file")
+                }
+                IconButton(onClick = onUploadFile, enabled = !isUploading) {
+                    if (isUploading) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Upload, "Upload file")
+                    }
                 }
             }
         }
