@@ -14,9 +14,16 @@ import com.opuside.app.R
 
 object WorkflowNotificationManager {
 
-    private const val CHANNEL_SUCCESS_ID = "wf_success"
-    private const val CHANNEL_FAILURE_ID = "wf_failure"
-    const val         CHANNEL_MONITOR_ID = "wf_monitor"
+    private const val CHANNEL_VERSION = 2
+
+    private const val CHANNEL_SUCCESS_ID = "wf_success_v$CHANNEL_VERSION"
+    private const val CHANNEL_FAILURE_ID = "wf_failure_v$CHANNEL_VERSION"
+    const val         CHANNEL_MONITOR_ID = "wf_monitor_v$CHANNEL_VERSION"
+
+    private val DEPRECATED_CHANNELS = listOf(
+        "wf_success", "wf_failure", "wf_monitor",
+        "wf_success_v1", "wf_failure_v1", "wf_monitor_v1",
+    )
 
     const val NOTIF_MONITOR_ID = 1000
     const val NOTIF_SUCCESS_ID = 1001
@@ -26,7 +33,10 @@ object WorkflowNotificationManager {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Тихий канал монитора — только иконка в шторке
+        DEPRECATED_CHANNELS.forEach { id ->
+            try { nm.deleteNotificationChannel(id) } catch (_: Exception) {}
+        }
+
         NotificationChannel(
             CHANNEL_MONITOR_ID,
             "Мониторинг воркфлоу",
@@ -36,7 +46,6 @@ object WorkflowNotificationManager {
             setShowBadge(false)
         }.also { nm.createNotificationChannel(it) }
 
-        // Канал успеха — звук + вибрация
         NotificationChannel(
             CHANNEL_SUCCESS_ID,
             "Билд успешен",
@@ -52,7 +61,6 @@ object WorkflowNotificationManager {
             )
         }.also { nm.createNotificationChannel(it) }
 
-        // Канал ошибки — звук + вибрация
         NotificationChannel(
             CHANNEL_FAILURE_ID,
             "Билд упал",
@@ -70,8 +78,6 @@ object WorkflowNotificationManager {
     }
 
     fun notifySuccess(context: Context, workflowName: String, duration: String) {
-        // Не вызываем playSound — канал уже настроен со звуком.
-        // Дополнительный MediaPlayer создавал двойное воспроизведение.
         send(
             context   = context,
             channelId = CHANNEL_SUCCESS_ID,
@@ -84,7 +90,6 @@ object WorkflowNotificationManager {
     }
 
     fun notifyFailure(context: Context, workflowName: String) {
-        // Аналогично — канал сам играет звук.
         send(
             context   = context,
             channelId = CHANNEL_FAILURE_ID,
