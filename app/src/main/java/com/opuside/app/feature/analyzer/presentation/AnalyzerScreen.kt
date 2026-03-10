@@ -131,23 +131,6 @@ fun AnalyzerScreen(
     val chatListState = rememberLazyListState()
     val opsListState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
-    val view = LocalView.current
-    var keyboardHeightPx by remember { mutableIntStateOf(0) }
-    
-    DisposableEffect(view) {
-        val listener = ViewTreeObserver.OnGlobalLayoutListener {
-            val rect = Rect()
-            view.getWindowVisibleDisplayFrame(rect)
-            val screenHeight = view.rootView.height
-            keyboardHeightPx = (screenHeight - rect.bottom).coerceAtLeast(0)
-        }
-        view.viewTreeObserver.addOnGlobalLayoutListener(listener)
-        onDispose {
-            view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
-        }
-    }
-    
-    val imeVisible = keyboardHeightPx > 0
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -200,14 +183,12 @@ fun AnalyzerScreen(
     LaunchedEffect(totalItems) { 
         if (totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) 
     }
-    LaunchedEffect(imeVisible) { 
-        if (imeVisible && totalItems > 0) chatListState.animateScrollToItem(totalItems - 1) 
-    }
     LaunchedEffect(operationsLog.size) { 
         if (operationsLog.isNotEmpty()) opsListState.animateScrollToItem(operationsLog.size - 1) 
     }
 
     Scaffold(
+        modifier = Modifier.imePadding(),
         topBar = {
             ProfessionalTopBar(
                 selectedModel = selectedModel,
@@ -264,7 +245,7 @@ fun AnalyzerScreen(
         },
         containerColor = bg
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding).imePadding()) {
+        Box(Modifier.fillMaxSize().padding(padding)) {
             Column(Modifier.fillMaxSize()) {
                 AnimatedVisibility(
                     visible = cacheModeEnabled,
