@@ -373,14 +373,7 @@ class WorkflowsViewModel @Inject constructor(
         viewModelScope.launch {
             while (true) {
                 delay(5_000)
-                
-                val hasActiveWorkflows = _state.value.workflows.any { workflow ->
-                    workflow.status == "in_progress" || workflow.status == "queued"
-                }
-                
-                if (hasActiveWorkflows) {
-                    loadWorkflows()
-                }
+                loadWorkflows() // всегда обновляем — UI всегда актуален
             }
         }
     }
