@@ -24,13 +24,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
-import androidx.compose.ui.platform.LocalView
-import android.graphics.Rect
-import android.view.ViewTreeObserver
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.font.FontFamily
@@ -141,25 +135,6 @@ fun AnalyzerScreen(
 
     val context = LocalContext.current
 
-    val view = LocalView.current
-    val density = LocalDensity.current
-    var keyboardHeightPx by remember { mutableIntStateOf(0) }
-
-    DisposableEffect(view) {
-        val listener = ViewTreeObserver.OnGlobalLayoutListener {
-            val rect = Rect()
-            view.getWindowVisibleDisplayFrame(rect)
-            val screenHeight = view.rootView.height
-            keyboardHeightPx = (screenHeight - rect.bottom).coerceAtLeast(0)
-        }
-        view.viewTreeObserver.addOnGlobalLayoutListener(listener)
-        onDispose {
-            view.viewTreeObserver.removeOnGlobalLayoutListener(listener)
-        }
-    }
-
-    val keyboardPadding = with(density) { keyboardHeightPx.toDp() }
-
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -265,9 +240,10 @@ fun AnalyzerScreen(
                 )
             }
         },
-        containerColor = bg
+        containerColor = bg,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize().padding(padding).imePadding()) {
             Column(Modifier.fillMaxSize()) {
                 AnimatedVisibility(
                     visible = cacheModeEnabled,
