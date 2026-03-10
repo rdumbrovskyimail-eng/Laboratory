@@ -99,7 +99,7 @@ val bottomNavItems = listOf(
 @Composable
 fun OpusIDENavigation(
     sensitiveFeatureDisabled: Boolean = false,
-    selectedTheme: AppTheme = AppTheme.MIDNIGHT,
+    selectedTheme: AppTheme = AppTheme.GRAPHITE,
     onThemeChange: (AppTheme) -> Unit = {}
 ) {
     val navController = rememberNavController()
