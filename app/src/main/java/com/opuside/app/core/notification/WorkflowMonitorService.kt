@@ -86,7 +86,7 @@ class WorkflowMonitorService : Service() {
                         // Новый воркфлоу — сбрасываем память
                         if (last.id != lastWorkflowId) {
                             lastWorkflowId = last.id
-                            lastConclusion = null
+                            lastConclusion = if (last.status == "completed") last.conclusion else null
                         }
 
                         // Воркфлоу активен — сбрасываем чтобы поймать завершение
