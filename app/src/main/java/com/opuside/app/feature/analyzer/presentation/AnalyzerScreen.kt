@@ -97,7 +97,7 @@ private val opsTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 @Composable
 fun AnalyzerScreen(
     viewModel: AnalyzerViewModel = hiltViewModel(),
-    selectedTheme: AppTheme = AppTheme.MIDNIGHT,
+    selectedTheme: AppTheme = AppTheme.GRAPHITE,
     onThemeChange: (AppTheme) -> Unit = {}
 ) {
     val messages by viewModel.messages.collectAsState(initial = emptyList())
