@@ -7,9 +7,11 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.opuside.app.R
 import com.opuside.app.core.network.github.GitHubApiClient
+import com.opuside.app.core.network.github.model.WorkflowRun
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import javax.inject.Inject
@@ -22,30 +24,25 @@ class WorkflowMonitorService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
-    // ── Персистентное состояние (переживает START_STICKY рестарт) ──────────
     private val prefs by lazy {
         getSharedPreferences("workflow_monitor_state", Context.MODE_PRIVATE)
     }
 
-    /**
-     * ID последнего workflow который мы видели.
-     * -1L = ещё не видели ни одного.
-     */
     private var lastSeenId: Long
         get() = prefs.getLong("last_seen_id", -1L)
         set(v) { prefs.edit().putLong("last_seen_id", v).apply() }
 
-    /**
-     * true  = workflow был активен (in_progress/queued) в предыдущей итерации
-     *         → ждём завершения, потом уведомим
-     * false = уже уведомили об этом workflow (или впервые увидели его уже completed)
-     *         → не уведомляем повторно
-     */
     private var wasActive: Boolean
         get() = prefs.getBoolean("was_active", false)
         set(v) { prefs.edit().putBoolean("was_active", v).apply() }
 
+    private var lastNotifiedId: Long
+        get() = prefs.getLong("last_notified_id", -1L)
+        set(v) { prefs.edit().putLong("last_notified_id", v).apply() }
+
     companion object {
+        private const val TAG = "WorkflowMonitor"
+
         fun start(context: Context) {
             val intent = Intent(context, WorkflowMonitorService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -62,7 +59,6 @@ class WorkflowMonitorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        // Гарантируем наличие каналов — на Android 8+ без них уведомления молча пропадают
         WorkflowNotificationManager.createChannels(this)
         startForeground(
             WorkflowNotificationManager.NOTIF_MONITOR_ID,
@@ -71,9 +67,7 @@ class WorkflowMonitorService : Service() {
         startScanning()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
-    }
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -91,13 +85,9 @@ class WorkflowMonitorService : Service() {
                         .getOrNull()
                         ?.workflowRuns
 
-                    // GitHub API отдаёт runs отсортированными DESC по created_at.
-                    // firstOrNull() = самый свежий запуск.
                     val latest = workflows?.firstOrNull()
 
                     if (latest != null) {
-
-                        // ── Обновляем foreground-уведомление монитора ──────
                         updateMonitorNotif(
                             when {
                                 latest.status == "queued"      -> "⏳ В очереди: ${latest.name}"
@@ -109,56 +99,66 @@ class WorkflowMonitorService : Service() {
                         )
 
                         val isNewWorkflow = latest.id != lastSeenId
-                        val isActive = latest.status == "in_progress" || latest.status == "queued"
+                        val isRunning = latest.status == "in_progress" || latest.status == "queued"
                         val isCompleted = latest.status == "completed"
+                        val alreadyNotified = latest.id == lastNotifiedId
 
                         when {
-                            // Новый workflow который мы раньше не видели
                             isNewWorkflow -> {
+                                val isFirstLaunch = lastSeenId == -1L
                                 lastSeenId = latest.id
-                                // Если он уже completed при первом обнаружении —
-                                // wasActive = false → уведомление НЕ отправляем.
-                                // Workflow завершился пока сервис не работал, слать его несвежо.
-                                // Если он ещё активен — wasActive = true, будем ждать завершения.
-                                wasActive = isActive
-                            }
 
-                            // Тот же workflow — всё ещё активен
-                            isActive -> {
-                                wasActive = true
-                            }
-
-                            // Тот же workflow — только что завершился,
-                            // и мы видели его активным (wasActive == true)
-                            isCompleted && wasActive -> {
-                                wasActive = false // сбрасываем, чтобы не уведомлять повторно
-                                val name = latest.name ?: "Workflow #${latest.id}"
-                                val duration = calcDuration(latest.runStartedAt, latest.updatedAt)
-                                when (latest.conclusion) {
-                                    "success" -> WorkflowNotificationManager.notifySuccess(
-                                        context      = applicationContext,
-                                        workflowName = name,
-                                        duration     = duration
-                                    )
-                                    "failure" -> WorkflowNotificationManager.notifyFailure(
-                                        context      = applicationContext,
-                                        workflowName = name
-                                    )
-                                    // "cancelled", "skipped" и т.д. — тихо игнорируем
+                                if (isFirstLaunch) {
+                                    wasActive = isRunning
+                                    Log.d(TAG, "First launch, seeding with: ${latest.name} (${latest.id}), active=$isRunning")
+                                } else if (isRunning) {
+                                    wasActive = true
+                                    Log.d(TAG, "New active workflow: ${latest.name} (${latest.id})")
+                                } else if (isCompleted && !alreadyNotified) {
+                                    wasActive = false
+                                    Log.d(TAG, "New workflow already completed: ${latest.name} (${latest.id})")
+                                    sendNotification(latest)
                                 }
                             }
 
-                            // Тот же workflow, уже completed, wasActive == false
-                            // (повторные итерации после уведомления) → ничего не делаем
+                            isRunning -> {
+                                wasActive = true
+                            }
+
+                            isCompleted && wasActive && !alreadyNotified -> {
+                                wasActive = false
+                                Log.d(TAG, "Workflow completed: ${latest.name} (${latest.id}), conclusion=${latest.conclusion}")
+                                sendNotification(latest)
+                            }
+
                             else -> { /* no-op */ }
                         }
                     }
-                } catch (_: Exception) {
-                    // Сеть недоступна или API ошибка — ждём следующей итерации
+                } catch (e: Exception) {
+                    Log.w(TAG, "Scan error: ${e.message}")
                 }
 
                 delay(5_000)
             }
+        }
+    }
+
+    private fun sendNotification(run: WorkflowRun) {
+        lastNotifiedId = run.id
+        val name = run.name ?: "Workflow #${run.id}"
+        val duration = calcDuration(run.runStartedAt, run.updatedAt)
+
+        when (run.conclusion) {
+            "success" -> WorkflowNotificationManager.notifySuccess(
+                context      = applicationContext,
+                workflowName = name,
+                duration     = duration
+            )
+            "failure" -> WorkflowNotificationManager.notifyFailure(
+                context      = applicationContext,
+                workflowName = name
+            )
+            else -> Log.d(TAG, "Ignoring conclusion: ${run.conclusion}")
         }
     }
 
