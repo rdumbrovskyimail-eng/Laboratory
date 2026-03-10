@@ -211,6 +211,35 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
+    suspend fun createOrUpdateFileRaw(
+        path: String,
+        content: String,
+        message: String,
+        sha: String? = null,
+        branch: String? = null
+    ): Result<CreateOrUpdateFileResponse> {
+        val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
+            ))
+
+        val request = CreateOrUpdateFileRequest(
+            message = message,
+            content = content,
+            sha = sha,
+            branch = branch ?: config.branch
+        )
+
+        return apiCall {
+            httpClient.put("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
+                setupHeaders(config.token)
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+        }
+    }
+
     suspend fun deleteFile(
         path: String,
         message: String,
