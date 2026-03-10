@@ -144,6 +144,26 @@ object ClaudeModelConfig {
             emoji = "⚡"
         ),
 
+        SONNET_4_6(
+            modelId = "claude-sonnet-4-6",
+            displayName = "Sonnet 4.6",
+            description = "Умная и быстрая, последняя версия",
+            contextWindow = 200_000,
+            maxOutputTokens = 64_000,
+            testInputTokenLimit = 1,
+            inputPricePerM = 3.0,
+            outputPricePerM = 15.0,
+            longInputPricePerM = 6.0,
+            longOutputPricePerM = 22.5,
+            cacheWritePricePerM = 3.75,
+            cacheReadPricePerM = 0.30,
+            minCacheableTokens = 1024,
+            longContextThreshold = 200_000,
+            supportsLongContext1M = true,
+            speedRating = 6,
+            emoji = "⚡"
+        ),
+
         SONNET_4(
             modelId = "claude-sonnet-4-20250514",
             displayName = "Sonnet 4",
