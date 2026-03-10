@@ -50,7 +50,7 @@ import kotlinx.coroutines.runBlocking
 fun SettingsScreen(
     viewModel: SettingsViewModel = hiltViewModel(),
     sensitiveFeatureDisabled: Boolean = false,
-    selectedTheme: AppTheme = AppTheme.MIDNIGHT,
+    selectedTheme: AppTheme = AppTheme.GRAPHITE,
     onThemeChange: (AppTheme) -> Unit = {}
 ) {
     val context = LocalContext.current
