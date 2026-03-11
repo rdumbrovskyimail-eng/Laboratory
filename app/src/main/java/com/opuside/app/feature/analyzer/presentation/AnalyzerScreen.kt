@@ -43,6 +43,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.text.selection.SelectionContainer
 import com.opuside.app.core.ui.theme.AppTheme
 
@@ -121,6 +122,8 @@ fun AnalyzerScreen(
     val attachedFileName by viewModel.attachedFileName.collectAsState()
     val attachedFileSize by viewModel.attachedFileSize.collectAsState()
     val conversationHistoryEnabled by viewModel.conversationHistoryEnabled.collectAsState()
+
+    val isKeyboardVisible = WindowInsets.isImeVisible
 
     var userInput by remember { mutableStateOf("") }
     var showModelDialog by remember { mutableStateOf(false) }
@@ -274,26 +277,33 @@ fun AnalyzerScreen(
                     )
                 }
 
-                OperationsPanel(
-                    operationsLog = operationsLog,
-                    opsListState = opsListState,
-                    ecoOutputMode = ecoOutputMode,
-                    cacheModeEnabled = cacheModeEnabled,
-                    onClearLog = { viewModel.clearOperationsLog() },
-                    cm = cm,
-                    sf = sf,
-                    sfVar = sfVar,
-                    t1 = t1,
-                    t2 = t2,
-                    t3 = t3,
-                    ac = ac,
-                    gr = gr,
-                    rd = rd,
-                    yl = yl,
-                    bd = bd
-                )
-
-                HorizontalDivider(color = bd, thickness = 1.dp)
+                AnimatedVisibility(
+                    visible = !isKeyboardVisible,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    Column {
+                        OperationsPanel(
+                            operationsLog = operationsLog,
+                            opsListState = opsListState,
+                            ecoOutputMode = ecoOutputMode,
+                            cacheModeEnabled = cacheModeEnabled,
+                            onClearLog = { viewModel.clearOperationsLog() },
+                            cm = cm,
+                            sf = sf,
+                            sfVar = sfVar,
+                            t1 = t1,
+                            t2 = t2,
+                            t3 = t3,
+                            ac = ac,
+                            gr = gr,
+                            rd = rd,
+                            yl = yl,
+                            bd = bd
+                        )
+                        HorizontalDivider(color = bd, thickness = 1.dp)
+                    }
+                }
 
                 Column(Modifier.fillMaxWidth().weight(1f)) {
                     AnimatedVisibility(
