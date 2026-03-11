@@ -104,10 +104,9 @@ jobs:
           -Dkotlin.incremental=true \
           -Dkotlin.compiler.execution.strategy=in-process \
           -Pkotlin.daemon.jvmargs="-Xmx2g"
-      continue-on-error: true
     
     - name: Extract critical errors
-      if: failure()
+      if: steps.build.outcome == 'failure'
       run: |
         echo "## ❌ Build Failed" > build_errors.txt
         ./gradlew assembleDebug --stacktrace 2>&1 | grep -A 5 "FAILURE\|error:" | head -50 >> build_errors.txt
