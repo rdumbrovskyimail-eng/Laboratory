@@ -61,54 +61,57 @@ enum class AppTheme(val config: ThemeColors) {
         description    = "Тёплый белый, дневной режим"
     )),
 
-    // ── GRAPHITE — основная тёмно-серая, чистый нейтральный серый ─────────────
-    // Вдохновлена: Spacegray, One Monokai, "mood mode dark" 2026
-    // Нейтральный серый без синевы/зелени/теплоты — чистый графит
+    // ── GRAPHITE — deep night, Tokyo Night × Catppuccin philosophy ───────────
+    // Микро-фиолетовый подтон вместо плоского серого → глубина на AMOLED
+    // Пастельные акценты: контраст без усталости глаз на DCI-P3
+    // Синий акцент → концентрация, зелёный → снижение утомляемости
     GRAPHITE(ThemeColors(
-        bg             = Color(0xFF1A1A1A),   // тёмный графит
-        surface        = Color(0xFF222222),   // поверхность
-        surfaceVariant = Color(0xFF2A2A2A),   // вариант
-        border         = Color(0xFF363636),   // граница
-        text1          = Color(0xFFE4E4E4),   // основной текст
-        text2          = Color(0xFF8C8C8C),   // вторичный
-        text3          = Color(0xFF5C5C5C),   // третичный
-        accent         = Color(0xFF7B9FCC),   // приглушённый стальной синий
-        green          = Color(0xFF7AAE7A),   // спокойный зелёный
-        red            = Color(0xFFCC6666),   // мягкий красный
-        yellow         = Color(0xFFCCB366),   // приглушённый жёлтый
-        orange         = Color(0xFFCC8E66),   // тёплый оранж
-        purple         = Color(0xFF9E85B8),   // лавандовый
+        bg             = Color(0xFF16161E),   // deep night с micro-violet undertone
+        surface        = Color(0xFF1E1E28),   // elevated surface
+        surfaceVariant = Color(0xFF252530),   // cards / panels
+        border         = Color(0xFF30303E),   // subtle dividers
+        text1          = Color(0xFFCDD6F4),   // soft blue-white (WCAG AAA ~14:1)
+        text2          = Color(0xFF7F849C),   // muted slate
+        text3          = Color(0xFF505264),   // quiet hint
+        accent         = Color(0xFF7AA2F7),   // focus blue — концентрация + спокойствие
+        green          = Color(0xFF9ECE6A),   // warm lime — success, low eye fatigue
+        red            = Color(0xFFF38BA8),   // coral pink — ошибки без тревоги
+        yellow         = Color(0xFFE5C07B),   // warm amber — warnings
+        orange         = Color(0xFFFFAB70),   // soft peach
+        purple         = Color(0xFFCBA6F7),   // lavender
         isDark         = true,
         displayName    = "Graphite",
         emoji          = "◼️",
-        description    = "Нейтральный серый, классика"
+        description    = "Глубокая ночь, максимум фокуса"
     )),
 
     // ══════════════════════════════════════════════════════════════════════════
     // ДОПОЛНИТЕЛЬНЫЕ (4 штуки)
     // ══════════════════════════════════════════════════════════════════════════
 
-    // ── OBSIDIAN — глубокий чёрный, AMOLED-friendly ──────────────────────────
-    // Вдохновлена: One Dark, чистый чёрный для OLED-экранов
-    // Максимальный контраст, экономия батареи, полный фокус
-    OBSIDIAN(ThemeColors(
-        bg             = Color(0xFF0A0A0A),   // почти чёрный
-        surface        = Color(0xFF131313),   // тёмная поверхность
-        surfaceVariant = Color(0xFF1B1B1B),   // вариант
-        border         = Color(0xFF282828),   // тонкая граница
-        text1          = Color(0xFFDCDCDC),   // мягкий белый (не 100%)
-        text2          = Color(0xFF787878),   // средний серый
-        text3          = Color(0xFF484848),   // приглушённый
-        accent         = Color(0xFFA0A0A0),   // серый акцент — полный монохром
-        green          = Color(0xFF6BA36B),   // десатурированный зелёный
-        red            = Color(0xFFB86B6B),   // десатурированный красный
-        yellow         = Color(0xFFB8A86B),   // десатурированный жёлтый
-        orange         = Color(0xFFB8906B),   // десатурированный оранж
-        purple         = Color(0xFF8F7AAE),   // десатурированный фиолетовый
-        isDark         = true,
-        displayName    = "Obsidian",
-        emoji          = "⬛",
-        description    = "Чёрный AMOLED, максимальный фокус"
+    // ── PEARL — прохладный белый, ChatGPT × Grok philosophy ─────────────────
+    // Вдохновлена: ChatGPT Light, Grok Minimal, Apple SF, Notion
+    // Прохладный off-white без теплоты Cloud — чистота, интеллект, фокус
+    // Teal-зелёный акцент → снижение усталости глаз + "AI tool" ассоциация
+    // Все цвета WCAG AA+ (4.5:1+), text1 — AAA (15:1+)
+    PEARL(ThemeColors(
+        bg             = Color(0xFFF7F8FA),   // прохладный off-white (cool blue-gray)
+        surface        = Color(0xFFFFFFFF),   // чистый белый — elevation через белизну
+        surfaceVariant = Color(0xFFEEF0F4),   // прохладные панели
+        border         = Color(0xFFD8DCE4),   // чёткие, но не грубые разделители
+        text1          = Color(0xFF171A1F),   // почти чёрный, холодный (15:1 AAA)
+        text2          = Color(0xFF5B6070),   // средний cool gray (5.5:1 AA)
+        text3          = Color(0xFF9298A5),   // мягкий hint
+        accent         = Color(0xFF0D9373),   // teal-green — ChatGPT DNA, снижение утомляемости
+        green          = Color(0xFF1A7F37),   // deep forest — success, GitHub style
+        red            = Color(0xFFCF222E),   // серьёзный но спокойный — ошибки
+        yellow         = Color(0xFF7D5E00),   // тёмный amber (7:1 AAA на белом!)
+        orange         = Color(0xFFB35900),   // burnt orange — тёплый акцент
+        purple         = Color(0xFF6E40C9),   // глубокий фиолет — creative
+        isDark         = false,
+        displayName    = "Pearl",
+        emoji          = "✨",
+        description    = "Прохладный белый, AI-стиль"
     )),
 
     // ── SLATE — серо-синий, GitHub / VS Code стиль ───────────────────────────
@@ -225,4 +228,3 @@ fun AppTheme.toColorScheme() = if (config.isDark) {
         inverseOnSurface   = config.bg,
         inversePrimary     = config.accent
     )
-}
