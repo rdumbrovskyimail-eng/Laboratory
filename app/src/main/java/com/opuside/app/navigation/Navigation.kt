@@ -1,6 +1,7 @@
 package com.opuside.app.navigation
 
 import com.opuside.app.core.ui.theme.AppTheme
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
@@ -107,6 +108,7 @@ fun OpusIDENavigation(
     val currentDestination = navBackStackEntry?.destination
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             NavigationBar {
                 bottomNavItems.forEach { screen ->
