@@ -104,6 +104,7 @@ jobs:
           -Dkotlin.incremental=true \
           -Dkotlin.compiler.execution.strategy=in-process \
           -Pkotlin.daemon.jvmargs="-Xmx2g"
+      continue-on-error: false
     
     - name: Extract critical errors
       if: steps.build.outcome == 'failure'
@@ -115,7 +116,7 @@ jobs:
     - name: Unit Tests (Optional)
       if: success() && github.event_name == 'pull_request'
       run: ./gradlew testDebugUnitTest --parallel --build-cache --configuration-cache
-      continue-on-error: true
+      continue-on-error: false
     
     - name: Upload logs on failure
       if: failure()
