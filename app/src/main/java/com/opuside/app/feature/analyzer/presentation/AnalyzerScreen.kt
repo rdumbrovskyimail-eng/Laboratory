@@ -43,6 +43,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.text.selection.SelectionContainer
 import com.opuside.app.core.ui.theme.AppTheme
@@ -94,7 +95,7 @@ private object ProColors {
 
 private val opsTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun AnalyzerScreen(
     viewModel: AnalyzerViewModel = hiltViewModel(),
