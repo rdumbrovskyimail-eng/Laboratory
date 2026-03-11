@@ -94,7 +94,6 @@ class MainActivity : FragmentActivity() {
         // ✅ ИСПРАВЛЕНО: Только валидация, БЕЗ автоинициализации
         performStartupValidation()
         
-        WindowCompat.setDecorFitsSystemWindows(window, false)
         enableEdgeToEdge()
 
         setContent {
