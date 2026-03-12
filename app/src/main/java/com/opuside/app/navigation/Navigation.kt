@@ -1,6 +1,7 @@
 package com.opuside.app.navigation
 
 import com.opuside.app.core.ui.theme.AppTheme
+import androidx.compose.foundation.gestures.detectTapGestures   // ← правильный API для long press
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -28,9 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.awaitFirstDown          // ← БЫЛ MISSING
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.waitForUpOrCancellation // ← БЫЛ MISSING
 import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -45,8 +44,6 @@ import com.opuside.app.feature.creator.presentation.CreatorViewModel
 import com.opuside.app.feature.scratch.presentation.ScratchScreen
 import com.opuside.app.feature.settings.presentation.SettingsScreen
 import com.opuside.app.feature.workflows.presentation.WorkflowsScreen
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NAVIGATION ROUTES
@@ -147,20 +144,15 @@ fun OpusIDENavigation(
                         }
 
                         if (screen == Screen.Creator) {
-                            // ── Creator: тап → экран, зажатие 600мс → QuickNav ──
+                            // ── Creator: тап → экран, зажатие → QuickNav ────
+                            // detectTapGestures корректно работает внутри pointerInput,
+                            // НЕ использует restricted awaitPointerEventScope + launch
                             NavigationBarItem(
                                 modifier = Modifier.pointerInput(Unit) {
-                                    while (true) {
-                                        awaitPointerEventScope {
-                                            awaitFirstDown(requireUnconsumed = false)
-                                            val job = launch {
-                                                delay(600L)
-                                                showQuickNav = true
-                                            }
-                                            waitForUpOrCancellation()
-                                            job.cancel()
-                                        }
-                                    }
+                                    detectTapGestures(
+                                        onTap = { navigateToScreen() },
+                                        onLongPress = { showQuickNav = true }
+                                    )
                                 },
                                 icon = {
                                     Icon(
@@ -171,7 +163,7 @@ fun OpusIDENavigation(
                                 },
                                 label = { Text(screen.title) },
                                 selected = selected,
-                                onClick = navigateToScreen
+                                onClick = {}   // onClick пустой — обрабатывается через pointerInput
                             )
                         } else {
                             NavigationBarItem(
@@ -200,7 +192,6 @@ fun OpusIDENavigation(
                     ScratchScreen()
                 }
 
-                // ── Передаём существующий ViewModel, не создаём новый ────────
                 composable(Screen.Creator.route) {
                     CreatorScreen(viewModel = creatorViewModel)
                 }
@@ -238,7 +229,6 @@ fun OpusIDENavigation(
                     saveQuickNavButtons(context, quickNavButtons.value)
                 },
                 onButtonClick = { button ->
-                    // 1. Переключаемся на вкладку Creator (если не там)
                     navController.navigate(Screen.Creator.route) {
                         popUpTo(navController.graph.findStartDestination().id) {
                             saveState = true
@@ -246,7 +236,6 @@ fun OpusIDENavigation(
                         launchSingleTop = true
                         restoreState = true
                     }
-                    // 2. Переходим в нужную папку репозитория
                     creatorViewModel.navigateToFolder(button.path)
                 }
             )
