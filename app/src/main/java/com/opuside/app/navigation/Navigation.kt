@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -46,7 +47,9 @@ import com.opuside.app.feature.creator.presentation.CreatorViewModel
 import com.opuside.app.feature.scratch.presentation.ScratchScreen
 import com.opuside.app.feature.settings.presentation.SettingsScreen
 import com.opuside.app.feature.workflows.presentation.WorkflowsScreen
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NAVIGATION ROUTES
@@ -118,6 +121,7 @@ fun OpusIDENavigation(
     val currentDestination = navBackStackEntry?.destination
 
     val creatorViewModel: CreatorViewModel = hiltViewModel()
+    val scope = rememberCoroutineScope()
 
     var showQuickNav by remember { mutableStateOf(false) }
     val quickNavButtons = remember { mutableStateOf(loadQuickNavButtons(context)) }
@@ -146,23 +150,28 @@ fun OpusIDENavigation(
                         if (screen == Screen.Creator) {
                             NavigationBarItem(
                                 modifier = Modifier.pointerInput(Unit) {
-                                    // awaitEachGesture — правильный scope: внутри него
-                                    // работает withTimeoutOrNull, и события НЕ потребляются
-                                    // (requireUnconsumed = false), поэтому тап доходит
-                                    // до NavigationBarItem через onClick как обычно.
                                     awaitEachGesture {
+                                        // Ждём finger down, не потребляем — onClick работает
                                         awaitFirstDown(requireUnconsumed = false)
-                                        val upOrCancel = withTimeoutOrNull(
-                                            timeMillis = viewConfiguration.longPressTimeoutMillis
-                                        ) {
-                                            waitForUpOrCancellation()
-                                        }
-                                        if (upOrCancel == null) {
-                                            // Палец держали дольше longPressTimeout → QuickNav
+
+                                        // Запускаем Job в обычном scope (не restricted)
+                                        // Через longPressTimeout он откроет QuickNav
+                                        var longPressTriggered = false
+                                        val job: Job = scope.launch {
+                                            delay(viewConfiguration.longPressTimeoutMillis)
+                                            longPressTriggered = true
                                             showQuickNav = true
                                         }
-                                        // upOrCancel != null → обычный тап,
-                                        // событие не потреблено, onClick сработает сам
+
+                                        // waitForUpOrCancellation возвращает:
+                                        //   - UP event → обычный тап
+                                        //   - null → жест потреблён NavigationBarItem
+                                        // В ОБОИХ случаях это означает "палец поднят раньше таймаута"
+                                        // → отменяем Job, QuickNav не открывается
+                                        waitForUpOrCancellation()
+                                        if (!longPressTriggered) {
+                                            job.cancel()
+                                        }
                                     }
                                 },
                                 icon = {
@@ -174,7 +183,7 @@ fun OpusIDENavigation(
                                 },
                                 label = { Text(screen.title) },
                                 selected = selected,
-                                onClick = navigateToScreen
+                                onClick = navigateToScreen   // тап работает как обычно
                             )
                         } else {
                             NavigationBarItem(
