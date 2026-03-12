@@ -1,7 +1,9 @@
 package com.opuside.app.navigation
 
 import com.opuside.app.core.ui.theme.AppTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
@@ -21,8 +23,15 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.awaitFirstDown          // ← БЫЛ MISSING
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.waitForUpOrCancellation // ← БЫЛ MISSING
+import androidx.compose.ui.platform.LocalContext
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -32,10 +41,12 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.opuside.app.feature.analyzer.presentation.AnalyzerScreen
 import com.opuside.app.feature.creator.presentation.CreatorScreen
+import com.opuside.app.feature.creator.presentation.CreatorViewModel
 import com.opuside.app.feature.scratch.presentation.ScratchScreen
 import com.opuside.app.feature.settings.presentation.SettingsScreen
 import com.opuside.app.feature.workflows.presentation.WorkflowsScreen
-import com.opuside.app.core.security.SecureSettingsDataStore
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NAVIGATION ROUTES
@@ -47,7 +58,6 @@ sealed class Screen(
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
 ) {
-    // ✅ НОВЫЙ ЭКРАН: Scratch — перед Creator
     data object Scratch : Screen(
         route = "scratch",
         title = "Scratch",
@@ -84,7 +94,6 @@ sealed class Screen(
     )
 }
 
-// Список экранов для Bottom Navigation (Scratch идёт первым)
 val bottomNavItems = listOf(
     Screen.Creator,
     Screen.Analyzer,
@@ -103,30 +112,31 @@ fun OpusIDENavigation(
     selectedTheme: AppTheme = AppTheme.GRAPHITE,
     onThemeChange: (AppTheme) -> Unit = {}
 ) {
+    val context = LocalContext.current
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    Scaffold(
-        contentWindowInsets = WindowInsets(0, 0, 0, 0),
-        bottomBar = {
-            NavigationBar {
-                bottomNavItems.forEach { screen ->
-                    val selected = currentDestination?.hierarchy?.any {
-                        it.route == screen.route
-                    } == true
+    // ── CreatorViewModel поднят на уровень навигации ─────────────────────────
+    val creatorViewModel: CreatorViewModel = hiltViewModel()
 
-                    NavigationBarItem(
-                        icon = {
-                            Icon(
-                                imageVector = if (selected) screen.selectedIcon
-                                             else screen.unselectedIcon,
-                                contentDescription = screen.title
-                            )
-                        },
-                        label = { Text(screen.title) },
-                        selected = selected,
-                        onClick = {
+    // ── Quick Nav state ──────────────────────────────────────────────────────
+    var showQuickNav by remember { mutableStateOf(false) }
+    val quickNavButtons = remember { mutableStateOf(loadQuickNavButtons(context)) }
+    // ────────────────────────────────────────────────────────────────────────
+
+    Box(modifier = Modifier.fillMaxSize()) {
+
+        Scaffold(
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
+            bottomBar = {
+                NavigationBar {
+                    bottomNavItems.forEach { screen ->
+                        val selected = currentDestination?.hierarchy?.any {
+                            it.route == screen.route
+                        } == true
+
+                        val navigateToScreen = {
                             navController.navigate(screen.route) {
                                 popUpTo(navController.graph.findStartDestination().id) {
                                     saveState = true
@@ -135,43 +145,113 @@ fun OpusIDENavigation(
                                 restoreState = true
                             }
                         }
+
+                        if (screen == Screen.Creator) {
+                            // ── Creator: тап → экран, зажатие 600мс → QuickNav ──
+                            NavigationBarItem(
+                                modifier = Modifier.pointerInput(Unit) {
+                                    while (true) {
+                                        awaitPointerEventScope {
+                                            awaitFirstDown(requireUnconsumed = false)
+                                            val job = launch {
+                                                delay(600L)
+                                                showQuickNav = true
+                                            }
+                                            waitForUpOrCancellation()
+                                            job.cancel()
+                                        }
+                                    }
+                                },
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) screen.selectedIcon
+                                                      else screen.unselectedIcon,
+                                        contentDescription = screen.title
+                                    )
+                                },
+                                label = { Text(screen.title) },
+                                selected = selected,
+                                onClick = navigateToScreen
+                            )
+                        } else {
+                            NavigationBarItem(
+                                icon = {
+                                    Icon(
+                                        imageVector = if (selected) screen.selectedIcon
+                                                      else screen.unselectedIcon,
+                                        contentDescription = screen.title
+                                    )
+                                },
+                                label = { Text(screen.title) },
+                                selected = selected,
+                                onClick = navigateToScreen
+                            )
+                        }
+                    }
+                }
+            }
+        ) { innerPadding ->
+            NavHost(
+                navController = navController,
+                startDestination = Screen.Creator.route,
+                modifier = Modifier.padding(innerPadding)
+            ) {
+                composable(Screen.Scratch.route) {
+                    ScratchScreen()
+                }
+
+                // ── Передаём существующий ViewModel, не создаём новый ────────
+                composable(Screen.Creator.route) {
+                    CreatorScreen(viewModel = creatorViewModel)
+                }
+
+                composable(Screen.Analyzer.route) {
+                    AnalyzerScreen(
+                        selectedTheme = selectedTheme,
+                        onThemeChange = onThemeChange
+                    )
+                }
+
+                composable(Screen.Workflows.route) {
+                    WorkflowsScreen()
+                }
+
+                composable(Screen.Settings.route) {
+                    SettingsScreen(
+                        sensitiveFeatureDisabled = sensitiveFeatureDisabled,
+                        selectedTheme = selectedTheme,
+                        onThemeChange = onThemeChange
                     )
                 }
             }
         }
-    ) { innerPadding ->
-        NavHost(
-            navController = navController,
-            startDestination = Screen.Creator.route,   // ← стартовый экран = Creator
-            modifier = Modifier.padding(innerPadding)
-        ) {
-            // ✅ Scratch
-            composable(Screen.Scratch.route) {
-                ScratchScreen()
-            }
 
-            composable(Screen.Creator.route) {
-                CreatorScreen()
-            }
-
-            composable(Screen.Analyzer.route) {
-                AnalyzerScreen(
-                    selectedTheme = selectedTheme,
-                    onThemeChange = onThemeChange
-                )
-            }
-
-            composable(Screen.Workflows.route) {
-                WorkflowsScreen()
-            }
-
-            composable(Screen.Settings.route) {
-                SettingsScreen(
-                    sensitiveFeatureDisabled = sensitiveFeatureDisabled,
-                    selectedTheme = selectedTheme,
-                    onThemeChange = onThemeChange
-                )
-            }
+        // ── Quick Nav Overlay (поверх Scaffold) ──────────────────────────────
+        if (showQuickNav) {
+            QuickNavOverlay(
+                buttons = quickNavButtons.value,
+                onDismiss = { showQuickNav = false },
+                onButtonUpdate = { updated ->
+                    quickNavButtons.value = quickNavButtons.value.map {
+                        if (it.id == updated.id) updated else it
+                    }
+                    saveQuickNavButtons(context, quickNavButtons.value)
+                },
+                onButtonClick = { button ->
+                    // 1. Переключаемся на вкладку Creator (если не там)
+                    navController.navigate(Screen.Creator.route) {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
+                        }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                    // 2. Переходим в нужную папку репозитория
+                    creatorViewModel.navigateToFolder(button.path)
+                }
+            )
         }
-    }
+        // ────────────────────────────────────────────────────────────────────
+
+    } // end Box
 }
