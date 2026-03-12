@@ -1,7 +1,9 @@
 package com.opuside.app.navigation
 
 import com.opuside.app.core.ui.theme.AppTheme
-import androidx.compose.foundation.gestures.detectTapGestures   // ← правильный API для long press
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -44,6 +46,7 @@ import com.opuside.app.feature.creator.presentation.CreatorViewModel
 import com.opuside.app.feature.scratch.presentation.ScratchScreen
 import com.opuside.app.feature.settings.presentation.SettingsScreen
 import com.opuside.app.feature.workflows.presentation.WorkflowsScreen
+import kotlinx.coroutines.withTimeoutOrNull
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NAVIGATION ROUTES
@@ -114,13 +117,10 @@ fun OpusIDENavigation(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
 
-    // ── CreatorViewModel поднят на уровень навигации ─────────────────────────
     val creatorViewModel: CreatorViewModel = hiltViewModel()
 
-    // ── Quick Nav state ──────────────────────────────────────────────────────
     var showQuickNav by remember { mutableStateOf(false) }
     val quickNavButtons = remember { mutableStateOf(loadQuickNavButtons(context)) }
-    // ────────────────────────────────────────────────────────────────────────
 
     Box(modifier = Modifier.fillMaxSize()) {
 
@@ -144,15 +144,26 @@ fun OpusIDENavigation(
                         }
 
                         if (screen == Screen.Creator) {
-                            // ── Creator: тап → экран, зажатие → QuickNav ────
-                            // detectTapGestures корректно работает внутри pointerInput,
-                            // НЕ использует restricted awaitPointerEventScope + launch
                             NavigationBarItem(
                                 modifier = Modifier.pointerInput(Unit) {
-                                    detectTapGestures(
-                                        onTap = { navigateToScreen() },
-                                        onLongPress = { showQuickNav = true }
-                                    )
+                                    // awaitEachGesture — правильный scope: внутри него
+                                    // работает withTimeoutOrNull, и события НЕ потребляются
+                                    // (requireUnconsumed = false), поэтому тап доходит
+                                    // до NavigationBarItem через onClick как обычно.
+                                    awaitEachGesture {
+                                        awaitFirstDown(requireUnconsumed = false)
+                                        val upOrCancel = withTimeoutOrNull(
+                                            timeMillis = viewConfiguration.longPressTimeoutMillis
+                                        ) {
+                                            waitForUpOrCancellation()
+                                        }
+                                        if (upOrCancel == null) {
+                                            // Палец держали дольше longPressTimeout → QuickNav
+                                            showQuickNav = true
+                                        }
+                                        // upOrCancel != null → обычный тап,
+                                        // событие не потреблено, onClick сработает сам
+                                    }
                                 },
                                 icon = {
                                     Icon(
@@ -163,7 +174,7 @@ fun OpusIDENavigation(
                                 },
                                 label = { Text(screen.title) },
                                 selected = selected,
-                                onClick = {}   // onClick пустой — обрабатывается через pointerInput
+                                onClick = navigateToScreen
                             )
                         } else {
                             NavigationBarItem(
@@ -188,25 +199,12 @@ fun OpusIDENavigation(
                 startDestination = Screen.Creator.route,
                 modifier = Modifier.padding(innerPadding)
             ) {
-                composable(Screen.Scratch.route) {
-                    ScratchScreen()
-                }
-
-                composable(Screen.Creator.route) {
-                    CreatorScreen(viewModel = creatorViewModel)
-                }
-
+                composable(Screen.Scratch.route) { ScratchScreen() }
+                composable(Screen.Creator.route) { CreatorScreen(viewModel = creatorViewModel) }
                 composable(Screen.Analyzer.route) {
-                    AnalyzerScreen(
-                        selectedTheme = selectedTheme,
-                        onThemeChange = onThemeChange
-                    )
+                    AnalyzerScreen(selectedTheme = selectedTheme, onThemeChange = onThemeChange)
                 }
-
-                composable(Screen.Workflows.route) {
-                    WorkflowsScreen()
-                }
-
+                composable(Screen.Workflows.route) { WorkflowsScreen() }
                 composable(Screen.Settings.route) {
                     SettingsScreen(
                         sensitiveFeatureDisabled = sensitiveFeatureDisabled,
@@ -217,7 +215,6 @@ fun OpusIDENavigation(
             }
         }
 
-        // ── Quick Nav Overlay (поверх Scaffold) ──────────────────────────────
         if (showQuickNav) {
             QuickNavOverlay(
                 buttons = quickNavButtons.value,
@@ -240,7 +237,6 @@ fun OpusIDENavigation(
                 }
             )
         }
-        // ────────────────────────────────────────────────────────────────────
 
-    } // end Box
+    }
 }
