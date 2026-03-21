@@ -15,25 +15,6 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * CreatorAIEditService v2.0
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Отдельный легковесный обработчик Claude Haiku 4.5 для Creator.
- * НЕ зависит от RepositoryAnalyzer, AnalyzerViewModel или ChatDao.
- *
- * v2.0 изменения:
- * - Нумерация строк для файлов > 300 строк (точная навигация AI)
- * - Максимально строгий system prompt (zero-error editing)
- * - Улучшенный 4-уровневый матчинг блоков
- * - Валидация результатов перед применением
- * - Детальные ошибки при неудачном матчинге
- *
- * Модель: claude-haiku-4-5-20251001
- * Отправляется: ТОЛЬКО один открытый файл + инструкции
- * Получается: ТОЛЬКО блоки search/replace в XML
- */
 @Singleton
 class CreatorAIEditService @Inject constructor(
     private val appSettings: AppSettings,
@@ -41,14 +22,50 @@ class CreatorAIEditService @Inject constructor(
 ) {
     companion object {
         private const val TAG = "CreatorAIEdit"
-        private const val API_URL = "https://api.anthropic.com/v1/messages"
-        private const val MODEL = "claude-sonnet-4-6"
+        private const val CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
+        private const val DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+        private const val CLAUDE_API_VERSION = "2023-06-01"
         private const val MAX_OUTPUT_TOKENS = 8192
-        private const val API_VERSION = "2023-06-01"
         private const val LINE_NUMBER_THRESHOLD = 300
 
         // ═══════════════════════════════════════════════════════════════
-        // SYSTEM PROMPT v2.0 — МАКСИМАЛЬНО СТРОГИЙ
+        // MODELS
+        // ═══════════════════════════════════════════════════════════════
+
+        enum class AiModel(
+            val displayName: String,
+            val apiId: String,
+            val badge: String,
+            /** USD per 1M input tokens */
+            val costPerMInputUsd: Double,
+            /** USD per 1M output tokens */
+            val costPerMOutputUsd: Double
+        ) {
+            CLAUDE_SONNET(
+                displayName = "Claude Sonnet 4.6",
+                apiId = "claude-sonnet-4-6",
+                badge = "⚡ Sonnet 4.6",
+                costPerMInputUsd = 3.0,
+                costPerMOutputUsd = 15.0
+            ),
+            DEEPSEEK_CHAT(
+                displayName = "DeepSeek Chat",
+                apiId = "deepseek-chat",
+                badge = "🐋 DS Chat",
+                costPerMInputUsd = 0.14,
+                costPerMOutputUsd = 0.28
+            ),
+            DEEPSEEK_REASONER(
+                displayName = "DeepSeek Reasoner",
+                apiId = "deepseek-reasoner",
+                badge = "🧠 DS R1",
+                costPerMInputUsd = 0.55,
+                costPerMOutputUsd = 2.19
+            )
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // SYSTEM PROMPT
         // ═══════════════════════════════════════════════════════════════
 
         private val SYSTEM_PROMPT = """
@@ -86,7 +103,6 @@ Each <search> block MUST match EXACTLY ONE location in the file.
 RULE 3 — MINIMAL CHANGES:
 - Change ONLY what the user asked for. Do NOT refactor, optimize, rename, or "improve" anything else.
 - Do NOT touch imports, comments, formatting, or code outside the requested scope.
-- If the user says "change X to Y", change ONLY X to Y — nothing more.
 
 RULE 4 — MULTIPLE BLOCKS:
 - Use SEPARATE <block> tags for changes in DIFFERENT parts of the file.
@@ -107,18 +123,14 @@ RULE 6 — OUTPUT DISCIPLINE:
 
 RULE 7 — INDENTATION PRESERVATION:
 - Match the EXACT indentation style of the surrounding code.
-- If the file uses 4 spaces, use 4 spaces. If tabs, use tabs.
-- In <replace>, the new code MUST follow the same indent level as the code it replaces.
 
 RULE 8 — LANGUAGE AWARENESS:
 - Respect language syntax: matching brackets, semicolons, commas in lists.
-- When adding/removing items from a list or parameters, handle trailing commas correctly.
 - When removing a function, remove the ENTIRE function including annotations and docs above it.
 
 ═══ EXAMPLES ═══
 
 Example 1 — Simple rename:
-User: "rename variable oldName to newName"
 <edits>
 <block>
 <search>
@@ -131,10 +143,9 @@ User: "rename variable oldName to newName"
 </replace>
 </block>
 </edits>
-<summary>Renamed variable oldName to newName (2 occurrences)</summary>
+<summary>Renamed variable oldName to newName</summary>
 
 Example 2 — Delete a function:
-User: "delete function processLegacy"
 <edits>
 <block>
 <search>
@@ -147,27 +158,7 @@ User: "delete function processLegacy"
 </replace>
 </block>
 </edits>
-<summary>Deleted function processLegacy and its doc comment</summary>
-
-Example 3 — Add null check:
-User: "add null check before calling api.fetch()"
-<edits>
-<block>
-<search>
-        val result = api.fetch(query)
-        handleResult(result)
-</search>
-<replace>
-        val api = api ?: run {
-            Log.e(TAG, "API client is null")
-            return
-        }
-        val result = api.fetch(query)
-        handleResult(result)
-</replace>
-</block>
-</edits>
-<summary>Added null check for api before fetch() call</summary>
+<summary>Deleted function processLegacy</summary>
 """.trimIndent()
     }
 
@@ -181,12 +172,7 @@ User: "add null check before calling api.fetch()"
         val matchStatus: MatchStatus = MatchStatus.PENDING
     ) {
         enum class MatchStatus {
-            PENDING,        // ещё не проверялся
-            EXACT,          // точное совпадение
-            NORMALIZED,     // совпал после нормализации пробелов
-            FUZZY,          // совпал по граничным строкам
-            LINE_RANGE,     // совпал по диапазону строк
-            NOT_FOUND       // не найден
+            PENDING, EXACT, NORMALIZED, FUZZY, LINE_RANGE, NOT_FOUND
         }
     }
 
@@ -195,7 +181,8 @@ User: "add null check before calling api.fetch()"
         val summary: String,
         val inputTokens: Int,
         val outputTokens: Int,
-        val costEUR: Double
+        val costEUR: Double,
+        val model: AiModel
     )
 
     sealed class EditStatus {
@@ -226,65 +213,167 @@ User: "add null check before calling api.fetch()"
     // MAIN API CALL
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Отправляет ОДИН файл + инструкции в Haiku 4.5.
-     * Получает ТОЛЬКО блоки замен. Репозиторий НЕ отправляется.
-     *
-     * @param fileContent полное содержимое ОДНОГО файла
-     * @param fileName имя файла (для контекста языка)
-     * @param instructions инструкции пользователя
-     * @return EditResult с блоками замен
-     */
     suspend fun processEdit(
         fileContent: String,
         fileName: String,
-        instructions: String
+        instructions: String,
+        model: AiModel = AiModel.CLAUDE_SONNET
     ): Result<EditResult> = withContext(Dispatchers.IO) {
         try {
-            val apiKey = try {
-                secureSettings.getAnthropicApiKey().first()
-            } catch (e: Exception) {
-                ""
-            }
-            if (apiKey.isBlank()) {
-                return@withContext Result.failure(
-                    Exception("Claude API key не настроен. Укажите ключ в Settings.")
-                )
-            }
-
             val lineCount = fileContent.lines().size
             val useLineNumbers = lineCount > LINE_NUMBER_THRESHOLD
+            Log.d(TAG, "📤 Edit request: $fileName ($lineCount lines, model=${model.apiId})")
 
-            Log.d(TAG, "📤 Edit request: $fileName ($lineCount lines, lineNumbers=$useLineNumbers)")
-            Log.d(TAG, "📤 Instructions: ${instructions.take(100)}...")
-
+            val systemPrompt = buildSystemPrompt(useLineNumbers)
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
-            val requestBody = JSONObject().apply {
-                put("model", MODEL)
-                put("max_tokens", MAX_OUTPUT_TOKENS)
-                put("system", buildSystemPrompt(useLineNumbers))
-                put("messages", JSONArray().apply {
-                    put(JSONObject().apply {
-                        put("role", "user")
-                        put("content", userMessage)
-                    })
-                })
-            }
+            val rawResponse = when (model) {
+                AiModel.CLAUDE_SONNET -> callClaudeApi(systemPrompt, userMessage, model)
+                AiModel.DEEPSEEK_CHAT,
+                AiModel.DEEPSEEK_REASONER -> callDeepSeekApi(systemPrompt, userMessage, model)
+            }.getOrElse { return@withContext Result.failure(it) }
 
-            val connection = (URL(API_URL).openConnection() as HttpURLConnection).apply {
+            val content = rawResponse.first
+            val inputTokens = rawResponse.second
+            val outputTokens = rawResponse.third
+
+            val costUSD = (inputTokens * model.costPerMInputUsd + outputTokens * model.costPerMOutputUsd) / 1_000_000.0
+            val costEUR = costUSD * 0.92
+
+            Log.d(TAG, "✅ ${model.displayName}: ${inputTokens}in + ${outputTokens}out = €${String.format("%.5f", costEUR)}")
+            Log.d(TAG, "📝 Raw (first 500): ${content.take(500)}")
+
+            val result = parseEditResponse(content, inputTokens, outputTokens, costEUR, model)
+            if (result.blocks.isEmpty()) Log.w(TAG, "⚠️ No blocks parsed. Summary: ${result.summary}")
+
+            Result.success(result)
+
+        } catch (e: java.net.SocketTimeoutException) {
+            Result.failure(Exception("Таймаут. Попробуйте ещё раз."))
+        } catch (e: java.net.UnknownHostException) {
+            Result.failure(Exception("Нет подключения к интернету."))
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ processEdit failed", e)
+            Result.failure(e)
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // CLAUDE API
+    // ═══════════════════════════════════════════════════════════════════
+
+    private suspend fun callClaudeApi(
+        systemPrompt: String,
+        userMessage: String,
+        model: AiModel
+    ): Result<Triple<String, Int, Int>> {
+        val apiKey = try {
+            secureSettings.getAnthropicApiKey().first()
+        } catch (e: Exception) { "" }
+        if (apiKey.isBlank()) return Result.failure(Exception("Claude API key не настроен."))
+
+        val requestBody = JSONObject().apply {
+            put("model", model.apiId)
+            put("max_tokens", MAX_OUTPUT_TOKENS)
+            put("system", systemPrompt)
+            put("messages", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", userMessage)
+                })
+            })
+        }
+
+        return executeRequest(
+            url = CLAUDE_API_URL,
+            body = requestBody,
+            headers = mapOf(
+                "Content-Type" to "application/json",
+                "x-api-key" to apiKey,
+                "anthropic-version" to CLAUDE_API_VERSION
+            ),
+            parseResponse = { json ->
+                val content = json.getJSONArray("content").let { arr ->
+                    (0 until arr.length())
+                        .map { arr.getJSONObject(it) }
+                        .filter { it.getString("type") == "text" }
+                        .joinToString("") { it.getString("text") }
+                }
+                val usage = json.getJSONObject("usage")
+                Triple(content, usage.getInt("input_tokens"), usage.getInt("output_tokens"))
+            }
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // DEEPSEEK API  (OpenAI-compatible)
+    // ═══════════════════════════════════════════════════════════════════
+
+    private suspend fun callDeepSeekApi(
+        systemPrompt: String,
+        userMessage: String,
+        model: AiModel
+    ): Result<Triple<String, Int, Int>> {
+        val apiKey = try {
+            secureSettings.getDeepSeekApiKey().first()
+        } catch (e: Exception) { "" }
+        if (apiKey.isBlank()) return Result.failure(Exception("DeepSeek API key не настроен. Укажите ключ в Settings."))
+
+        val requestBody = JSONObject().apply {
+            put("model", model.apiId)
+            put("max_tokens", MAX_OUTPUT_TOKENS)
+            put("messages", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "system")
+                    put("content", systemPrompt)
+                })
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", userMessage)
+                })
+            })
+        }
+
+        return executeRequest(
+            url = DEEPSEEK_API_URL,
+            body = requestBody,
+            headers = mapOf(
+                "Content-Type" to "application/json",
+                "Authorization" to "Bearer $apiKey"
+            ),
+            parseResponse = { json ->
+                val choice = json.getJSONArray("choices").getJSONObject(0)
+                val content = choice.getJSONObject("message").getString("content")
+                val usage = json.getJSONObject("usage")
+                Triple(
+                    content,
+                    usage.getInt("prompt_tokens"),
+                    usage.getInt("completion_tokens")
+                )
+            }
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SHARED HTTP EXECUTOR
+    // ═══════════════════════════════════════════════════════════════════
+
+    private fun executeRequest(
+        url: String,
+        body: JSONObject,
+        headers: Map<String, String>,
+        parseResponse: (JSONObject) -> Triple<String, Int, Int>
+    ): Result<Triple<String, Int, Int>> {
+        return try {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("x-api-key", apiKey)
-                setRequestProperty("anthropic-version", API_VERSION)
+                headers.forEach { (k, v) -> setRequestProperty(k, v) }
                 connectTimeout = 30_000
-                readTimeout = 120_000  // 2 мин для больших файлов
+                readTimeout = 120_000
                 doOutput = true
             }
 
-            connection.outputStream.use { os ->
-                os.write(requestBody.toString().toByteArray(Charsets.UTF_8))
-            }
+            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
 
             val responseCode = connection.responseCode
             val responseBody = if (responseCode in 200..299) {
@@ -294,55 +383,17 @@ User: "add null check before calling api.fetch()"
                     BufferedReader(InputStreamReader(it)).use { r -> r.readText() }
                 } ?: "Unknown error"
                 Log.e(TAG, "❌ API error $responseCode: $errorBody")
-                return@withContext Result.failure(
-                    Exception(formatApiError(responseCode, errorBody))
-                )
+                return Result.failure(Exception(formatApiError(responseCode, errorBody)))
             }
 
-            val json = JSONObject(responseBody)
-
-            // Извлекаем текст из content[]
-            val content = json.getJSONArray("content").let { arr ->
-                (0 until arr.length())
-                    .map { arr.getJSONObject(it) }
-                    .filter { it.getString("type") == "text" }
-                    .joinToString("") { it.getString("text") }
-            }
-
-            // Токены и стоимость
-            val usage = json.getJSONObject("usage")
-            val inputTokens = usage.getInt("input_tokens")
-            val outputTokens = usage.getInt("output_tokens")
-
-            // Haiku 4.5: $0.80/1M input, $4.00/1M output
-            val costUSD = (inputTokens * 0.80 + outputTokens * 4.00) / 1_000_000.0
-            val costEUR = costUSD * 0.92
-
-            Log.d(TAG, "✅ Response: ${inputTokens}in + ${outputTokens}out = €${String.format("%.5f", costEUR)}")
-            Log.d(TAG, "📝 Raw response (first 500 chars): ${content.take(500)}")
-
-            val result = parseEditResponse(content, inputTokens, outputTokens, costEUR)
-
-            if (result.blocks.isEmpty()) {
-                Log.w(TAG, "⚠️ No edit blocks parsed. Summary: ${result.summary}")
-            }
-
-            Result.success(result)
-
-        } catch (e: java.net.SocketTimeoutException) {
-            Log.e(TAG, "❌ Timeout", e)
-            Result.failure(Exception("Таймаут: файл слишком большой или сеть медленная. Попробуйте ещё раз."))
-        } catch (e: java.net.UnknownHostException) {
-            Log.e(TAG, "❌ No network", e)
-            Result.failure(Exception("Нет подключения к интернету."))
+            Result.success(parseResponse(JSONObject(responseBody)))
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Edit request failed", e)
             Result.failure(e)
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // BUILD USER MESSAGE
+    // BUILD MESSAGES
     // ═══════════════════════════════════════════════════════════════════
 
     private fun buildUserMessage(
@@ -353,27 +404,19 @@ User: "add null check before calling api.fetch()"
     ): String = buildString {
         appendLine("File: `$fileName`")
         appendLine()
-
+        appendLine("```")
         if (useLineNumbers) {
-            appendLine("```")
             fileContent.lines().forEachIndexed { index, line ->
                 appendLine("${index + 1}| $line")
             }
-            appendLine("```")
         } else {
-            appendLine("```")
             appendLine(fileContent)
-            appendLine("```")
         }
-
+        appendLine("```")
         appendLine()
         appendLine("═══ INSTRUCTIONS ═══")
         appendLine(instructions)
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // BUILD SYSTEM PROMPT (с дополнением для нумерации)
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun buildSystemPrompt(useLineNumbers: Boolean): String {
         return if (useLineNumbers) {
@@ -381,44 +424,15 @@ User: "add null check before calling api.fetch()"
 
 ═══ LINE NUMBERS ═══
 The file is provided with line number prefixes in format "N| " (e.g., "42| val x = 1").
-These prefixes are for YOUR REFERENCE ONLY to navigate the file precisely.
-
-CRITICAL: NEVER include line number prefixes in <search> or <replace> blocks.
-Write only the raw source code without "N| " prefixes.
-
-CORRECT:
-<search>
-    val x = 1
-    val y = 2
-</search>
-
-WRONG (includes line numbers — this will FAIL):
-<search>
-42| val x = 1
-43| val y = 2
-</search>
-
-You may reference line numbers in <summary> for clarity, e.g.:
-<summary>Changed variable name at lines 42-43</summary>
+These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <replace> blocks.
 """
-        } else {
-            SYSTEM_PROMPT
-        }
+        } else SYSTEM_PROMPT
     }
 
     // ═══════════════════════════════════════════════════════════════════
     // APPLY EDITS — 4-уровневый матчинг
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Применяет блоки замен к содержимому файла.
-     *
-     * 4 уровня матчинга (от точного к нечёткому):
-     * 1. EXACT — побайтовое совпадение
-     * 2. NORMALIZED — совпадение после trim trailing whitespace
-     * 3. FUZZY — совпадение по первым+последним значимым строкам
-     * 4. LINE_RANGE — поиск по нескольким ключевым фрагментам
-     */
     fun applyEdits(content: String, blocks: List<EditBlock>): Result<ApplyResult> {
         var result = content
         val appliedBlocks = mutableListOf<EditBlock>()
@@ -426,72 +440,59 @@ You may reference line numbers in <summary> for clarity, e.g.:
 
         blocks.forEachIndexed { index, block ->
             val blockNum = index + 1
-
-            // Очищаем search от случайных номеров строк
             val cleanSearch = stripLineNumbers(block.search)
             val cleanReplace = stripLineNumbers(block.replace)
 
             if (cleanSearch.isBlank()) {
-                // Пустой search = добавить в конец файла
                 result = result.trimEnd() + "\n\n" + cleanReplace + "\n"
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.EXACT))
-                Log.d(TAG, "  ✓ Block $blockNum: appended to end of file")
+                Log.d(TAG, "  ✓ Block $blockNum: appended to end")
                 return@forEachIndexed
             }
 
-            // === УРОВЕНЬ 1: EXACT MATCH ===
             if (cleanSearch in result) {
                 result = result.replaceFirst(cleanSearch, cleanReplace)
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.EXACT))
-                Log.d(TAG, "  ✓ Block $blockNum: EXACT match")
+                Log.d(TAG, "  ✓ Block $blockNum: EXACT")
                 return@forEachIndexed
             }
 
-            // === УРОВЕНЬ 2: NORMALIZED WHITESPACE ===
             val normalizedSearch = normalizeWhitespace(cleanSearch)
             val normalizedContent = normalizeWhitespace(result)
             val normIdx = normalizedContent.indexOf(normalizedSearch)
-
             if (normIdx >= 0) {
                 val originalRange = findOriginalRange(result, normalizedContent, normIdx, normalizedSearch.length)
                 if (originalRange != null) {
-                    result = result.substring(0, originalRange.first) +
-                            cleanReplace +
-                            result.substring(originalRange.second)
+                    result = result.substring(0, originalRange.first) + cleanReplace + result.substring(originalRange.second)
                     appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.NORMALIZED))
-                    Log.d(TAG, "  ✓ Block $blockNum: NORMALIZED match")
+                    Log.d(TAG, "  ✓ Block $blockNum: NORMALIZED")
                     return@forEachIndexed
                 }
             }
 
-            // === УРОВЕНЬ 3: FUZZY — по граничным строкам ===
             val fuzzyResult = fuzzyMatch(result, cleanSearch, cleanReplace)
             if (fuzzyResult != null) {
                 result = fuzzyResult
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.FUZZY))
-                Log.d(TAG, "  ✓ Block $blockNum: FUZZY match")
+                Log.d(TAG, "  ✓ Block $blockNum: FUZZY")
                 return@forEachIndexed
             }
 
-            // === УРОВЕНЬ 4: LINE_RANGE — по ключевым фрагментам ===
             val lineRangeResult = lineRangeMatch(result, cleanSearch, cleanReplace)
             if (lineRangeResult != null) {
                 result = lineRangeResult
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.LINE_RANGE))
-                Log.d(TAG, "  ✓ Block $blockNum: LINE_RANGE match")
+                Log.d(TAG, "  ✓ Block $blockNum: LINE_RANGE")
                 return@forEachIndexed
             }
 
-            // === НЕ НАЙДЕНО ===
             failedBlocks.add(blockNum to block)
             appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.NOT_FOUND))
-            Log.w(TAG, "  ✗ Block $blockNum: NOT FOUND")
-            Log.w(TAG, "    Search (first 120): ${cleanSearch.take(120)}")
+            Log.w(TAG, "  ✗ Block $blockNum: NOT FOUND — search: ${cleanSearch.take(120)}")
         }
 
         val totalApplied = appliedBlocks.count { it.matchStatus != EditBlock.MatchStatus.NOT_FOUND }
-        val totalFailed = failedBlocks.size
-        Log.d(TAG, "📊 Applied: $totalApplied/${blocks.size}, Failed: $totalFailed")
+        Log.d(TAG, "📊 Applied: $totalApplied/${blocks.size}")
 
         return Result.success(
             ApplyResult(
@@ -499,7 +500,7 @@ You may reference line numbers in <summary> for clarity, e.g.:
                 appliedBlocks = appliedBlocks,
                 failedBlockNumbers = failedBlocks.map { it.first },
                 totalApplied = totalApplied,
-                totalFailed = totalFailed
+                totalFailed = failedBlocks.size
             )
         )
     }
@@ -508,9 +509,8 @@ You may reference line numbers in <summary> for clarity, e.g.:
     // MATCHING HELPERS
     // ═══════════════════════════════════════════════════════════════════
 
-    private fun normalizeWhitespace(text: String): String {
-        return text.lines().joinToString("\n") { it.trimEnd() }
-    }
+    private fun normalizeWhitespace(text: String): String =
+        text.lines().joinToString("\n") { it.trimEnd() }
 
     private fun findOriginalRange(
         original: String,
@@ -518,50 +518,37 @@ You may reference line numbers in <summary> for clarity, e.g.:
         normStart: Int,
         normLength: Int
     ): Pair<Int, Int>? {
-        try {
+        return try {
             val origLines = original.lines()
             val normLines = normalized.lines()
-
             var normCharPos = 0
             var startLineIdx = -1
             var endLineIdx = -1
 
             for (i in normLines.indices) {
-                val lineStart = normCharPos
                 val lineEnd = normCharPos + normLines[i].length
-
-                if (startLineIdx == -1 && lineEnd >= normStart) {
-                    startLineIdx = i
-                }
-                if (lineStart >= normStart + normLength && endLineIdx == -1) {
-                    endLineIdx = i
-                    break
-                }
-                normCharPos = lineEnd + 1 // +1 for \n
+                if (startLineIdx == -1 && lineEnd >= normStart) startLineIdx = i
+                if (normCharPos >= normStart + normLength && endLineIdx == -1) { endLineIdx = i; break }
+                normCharPos = lineEnd + 1
             }
             if (endLineIdx == -1) endLineIdx = origLines.lastIndex + 1
-
             if (startLineIdx < 0 || startLineIdx >= origLines.size) return null
 
             val origStart = origLines.take(startLineIdx).sumOf { it.length + 1 }
             val origEnd = origLines.take(endLineIdx).sumOf { it.length + 1 }.coerceAtMost(original.length)
-
-            return origStart to origEnd
+            origStart to origEnd
         } catch (e: Exception) {
-            Log.w(TAG, "findOriginalRange error: ${e.message}")
-            return null
+            null
         }
     }
 
     private fun fuzzyMatch(content: String, search: String, replace: String): String? {
         val searchLines = search.lines().filter { it.isNotBlank() }
         if (searchLines.size < 2) {
-            // Однострочный поиск
             val singleLine = searchLines.firstOrNull()?.trim() ?: return null
             val contentLines = content.lines()
             val idx = contentLines.indexOfFirst { it.trim() == singleLine }
             if (idx < 0) return null
-
             val mutableLines = contentLines.toMutableList()
             mutableLines.removeAt(idx)
             mutableLines.addAll(idx, replace.lines())
@@ -571,25 +558,15 @@ You may reference line numbers in <summary> for clarity, e.g.:
         val firstLine = searchLines.first().trim()
         val lastLine = searchLines.last().trim()
         val contentLines = content.lines()
-
         val startIdx = contentLines.indexOfFirst { it.trim() == firstLine }
         if (startIdx < 0) return null
-
-        val endIdx = (startIdx until contentLines.size).lastOrNull { idx ->
-            contentLines[idx].trim() == lastLine
-        } ?: return null
-
+        val endIdx = (startIdx until contentLines.size).lastOrNull { contentLines[it].trim() == lastLine } ?: return null
         if (endIdx < startIdx) return null
 
-        // Проверяем разумность диапазона
         val matchedSignificant = (startIdx..endIdx).count { contentLines[it].isNotBlank() }
-        if (matchedSignificant < searchLines.size - 1 || matchedSignificant > searchLines.size + 3) {
-            return null
-        }
+        if (matchedSignificant < searchLines.size - 1 || matchedSignificant > searchLines.size + 3) return null
 
-        val before = contentLines.take(startIdx)
-        val after = contentLines.drop(endIdx + 1)
-        return (before + replace.lines() + after).joinToString("\n")
+        return (contentLines.take(startIdx) + replace.lines() + contentLines.drop(endIdx + 1)).joinToString("\n")
     }
 
     private fun lineRangeMatch(content: String, search: String, replace: String): String? {
@@ -597,8 +574,6 @@ You may reference line numbers in <summary> for clarity, e.g.:
         if (searchLines.size < 3) return null
 
         val contentLines = content.lines()
-
-        // Берём первую, среднюю и последнюю значимые строки
         val keyLines = listOf(
             searchLines.first().trim(),
             searchLines[searchLines.size / 2].trim(),
@@ -607,44 +582,26 @@ You may reference line numbers in <summary> for clarity, e.g.:
 
         var searchFrom = 0
         val foundIndices = mutableListOf<Int>()
-
         for (key in keyLines) {
-            val idx = (searchFrom until contentLines.size).firstOrNull { i ->
-                contentLines[i].trim() == key
-            } ?: return null
+            val idx = (searchFrom until contentLines.size).firstOrNull { contentLines[it].trim() == key } ?: return null
             foundIndices.add(idx)
             searchFrom = idx + 1
         }
 
         val startIdx = foundIndices.first()
         val endIdx = foundIndices.last()
-        val rangeSize = endIdx - startIdx + 1
+        if (endIdx - startIdx + 1 > searchLines.size * 2) return null
 
-        if (rangeSize > searchLines.size * 2) return null
-
-        val before = contentLines.take(startIdx)
-        val after = contentLines.drop(endIdx + 1)
-        return (before + replace.lines() + after).joinToString("\n")
+        return (contentLines.take(startIdx) + replace.lines() + contentLines.drop(endIdx + 1)).joinToString("\n")
     }
 
-    /**
-     * Убирает номера строк из текста, если AI случайно их включил.
-     * Формат: "42| код" → "код"
-     */
     private fun stripLineNumbers(text: String): String {
         if (text.isBlank()) return text
-
         val lines = text.lines()
-        val lineNumberPattern = Regex("""^\d{1,5}\|\s""")
-        val matchCount = lines.count { lineNumberPattern.containsMatchIn(it) }
-
-        return if (matchCount > lines.size / 2) {
-            lines.joinToString("\n") { line ->
-                lineNumberPattern.replaceFirst(line, "")
-            }
-        } else {
-            text
-        }
+        val pattern = Regex("""^\d{1,5}\|\s""")
+        return if (lines.count { pattern.containsMatchIn(it) } > lines.size / 2) {
+            lines.joinToString("\n") { pattern.replaceFirst(it, "") }
+        } else text
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -655,43 +612,32 @@ You may reference line numbers in <summary> for clarity, e.g.:
         response: String,
         inputTokens: Int,
         outputTokens: Int,
-        costEUR: Double
+        costEUR: Double,
+        model: AiModel
     ): EditResult {
         val blocks = mutableListOf<EditBlock>()
-
         val blockRegex = Regex(
             """<block>\s*<search>(.*?)</search>\s*<replace>(.*?)</replace>\s*</block>""",
             setOf(RegexOption.DOT_MATCHES_ALL)
         )
 
         blockRegex.findAll(response).forEach { match ->
-            val searchRaw = match.groupValues[1]
-            val replaceRaw = match.groupValues[2]
-
-            val search = trimXmlNewlines(searchRaw)
-            val replace = trimXmlNewlines(replaceRaw)
-
-            blocks.add(EditBlock(search = search, replace = replace))
+            blocks.add(
+                EditBlock(
+                    search = trimXmlNewlines(match.groupValues[1]),
+                    replace = trimXmlNewlines(match.groupValues[2])
+                )
+            )
         }
 
-        val summaryRegex = Regex("""<summary>\s*(.*?)\s*</summary>""", RegexOption.DOT_MATCHES_ALL)
-        val summary = summaryRegex.find(response)?.groupValues?.get(1)?.trim()
+        val summary = Regex("""<summary>\s*(.*?)\s*</summary>""", RegexOption.DOT_MATCHES_ALL)
+            .find(response)?.groupValues?.get(1)?.trim()
             ?: if (blocks.isEmpty()) "AI не вернул блоков замен" else "${blocks.size} блок(ов) замен"
 
-        Log.d(TAG, "📝 Parsed: ${blocks.size} blocks, summary: $summary")
-
-        return EditResult(
-            blocks = blocks,
-            summary = summary,
-            inputTokens = inputTokens,
-            outputTokens = outputTokens,
-            costEUR = costEUR
-        )
+        Log.d(TAG, "📝 Parsed: ${blocks.size} blocks — $summary")
+        return EditResult(blocks, summary, inputTokens, outputTokens, costEUR, model)
     }
 
-    /**
-     * Убирает ведущий и завершающий \n (артефакт XML)
-     */
     private fun trimXmlNewlines(text: String): String {
         var result = text
         if (result.startsWith("\n")) result = result.removePrefix("\n")
@@ -706,16 +652,14 @@ You may reference line numbers in <summary> for clarity, e.g.:
     private fun formatApiError(code: Int, body: String): String {
         val msg = try {
             JSONObject(body).optJSONObject("error")?.optString("message") ?: body.take(200)
-        } catch (_: Exception) {
-            body.take(200)
-        }
+        } catch (_: Exception) { body.take(200) }
 
         return when (code) {
             400 -> "Ошибка запроса: $msg"
             401 -> "Неверный API ключ. Проверьте настройки."
-            403 -> "Доступ запрещён. Проверьте API ключ."
+            403 -> "Доступ запрещён."
             429 -> "Превышен лимит запросов. Подождите минуту."
-            500, 502, 503 -> "Сервер Anthropic временно недоступен. Попробуйте позже."
+            500, 502, 503 -> "Сервер временно недоступен. Попробуйте позже."
             529 -> "API перегружен. Попробуйте через 30 секунд."
             else -> "Ошибка $code: $msg"
         }
