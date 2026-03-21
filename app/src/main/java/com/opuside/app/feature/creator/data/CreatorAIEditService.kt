@@ -20,6 +20,41 @@ class CreatorAIEditService @Inject constructor(
     private val appSettings: AppSettings,
     private val secureSettings: SecureSettingsDataStore
 ) {
+
+    // ═══════════════════════════════════════════════════════════════
+    // MODELS — вынесен из companion object для поддержки extensions
+    // ═══════════════════════════════════════════════════════════════
+
+    enum class AiModel(
+        val displayName: String,
+        val apiId: String,
+        val badge: String,
+        val costPerMInputUsd: Double,
+        val costPerMOutputUsd: Double
+    ) {
+        CLAUDE_SONNET(
+            displayName = "Claude Sonnet 4.6",
+            apiId = "claude-sonnet-4-6",
+            badge = "⚡ Sonnet 4.6",
+            costPerMInputUsd = 3.0,
+            costPerMOutputUsd = 15.0
+        ),
+        DEEPSEEK_CHAT(
+            displayName = "DeepSeek Chat",
+            apiId = "deepseek-chat",
+            badge = "🐋 DS Chat",
+            costPerMInputUsd = 0.14,
+            costPerMOutputUsd = 0.28
+        ),
+        DEEPSEEK_REASONER(
+            displayName = "DeepSeek Reasoner",
+            apiId = "deepseek-reasoner",
+            badge = "🧠 DS R1",
+            costPerMInputUsd = 0.55,
+            costPerMOutputUsd = 2.19
+        )
+    }
+
     companion object {
         private const val TAG = "CreatorAIEdit"
         private const val CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
@@ -27,46 +62,6 @@ class CreatorAIEditService @Inject constructor(
         private const val CLAUDE_API_VERSION = "2023-06-01"
         private const val MAX_OUTPUT_TOKENS = 8192
         private const val LINE_NUMBER_THRESHOLD = 300
-
-        // ═══════════════════════════════════════════════════════════════
-        // MODELS
-        // ═══════════════════════════════════════════════════════════════
-
-        enum class AiModel(
-            val displayName: String,
-            val apiId: String,
-            val badge: String,
-            /** USD per 1M input tokens */
-            val costPerMInputUsd: Double,
-            /** USD per 1M output tokens */
-            val costPerMOutputUsd: Double
-        ) {
-            CLAUDE_SONNET(
-                displayName = "Claude Sonnet 4.6",
-                apiId = "claude-sonnet-4-6",
-                badge = "⚡ Sonnet 4.6",
-                costPerMInputUsd = 3.0,
-                costPerMOutputUsd = 15.0
-            ),
-            DEEPSEEK_CHAT(
-                displayName = "DeepSeek Chat",
-                apiId = "deepseek-chat",
-                badge = "🐋 DS Chat",
-                costPerMInputUsd = 0.14,
-                costPerMOutputUsd = 0.28
-            ),
-            DEEPSEEK_REASONER(
-                displayName = "DeepSeek Reasoner",
-                apiId = "deepseek-reasoner",
-                badge = "🧠 DS R1",
-                costPerMInputUsd = 0.55,
-                costPerMOutputUsd = 2.19
-            )
-        }
-
-        // ═══════════════════════════════════════════════════════════════
-        // SYSTEM PROMPT
-        // ═══════════════════════════════════════════════════════════════
 
         private val SYSTEM_PROMPT = """
 You are a PRECISION CODE EDITOR. Your ONLY job is to produce exact search/replace blocks for a given source file.
@@ -241,7 +236,6 @@ Example 2 — Delete a function:
             val costEUR = costUSD * 0.92
 
             Log.d(TAG, "✅ ${model.displayName}: ${inputTokens}in + ${outputTokens}out = €${String.format("%.5f", costEUR)}")
-            Log.d(TAG, "📝 Raw (first 500): ${content.take(500)}")
 
             val result = parseEditResponse(content, inputTokens, outputTokens, costEUR, model)
             if (result.blocks.isEmpty()) Log.w(TAG, "⚠️ No blocks parsed. Summary: ${result.summary}")
@@ -306,7 +300,7 @@ Example 2 — Delete a function:
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // DEEPSEEK API  (OpenAI-compatible)
+    // DEEPSEEK API
     // ═══════════════════════════════════════════════════════════════════
 
     private suspend fun callDeepSeekApi(
@@ -430,7 +424,7 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // APPLY EDITS — 4-уровневый матчинг
+    // APPLY EDITS
     // ═══════════════════════════════════════════════════════════════════
 
     fun applyEdits(content: String, blocks: List<EditBlock>): Result<ApplyResult> {
