@@ -16,11 +16,6 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 typealias GitHubConfig = SecureSettingsDataStore.GitHubConfig
 
-/**
- * AppSettings - центральное хранилище настроек приложения.
- * 
- * Работает напрямую с GitHub репозиторием через Cloud API.
- */
 @Singleton
 class AppSettings @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -35,20 +30,21 @@ class AppSettings @Inject constructor(
         val LAST_OPENED_PATH = stringPreferencesKey("last_opened_path")
         val LAST_SESSION_ID = stringPreferencesKey("last_session_id")
         val CLAUDE_MODEL = stringPreferencesKey("claude_model")
+        val GEMINI_MODEL = stringPreferencesKey("gemini_model")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // API KEYS (Delegated to SecureSettingsDataStore)
     // ═══════════════════════════════════════════════════════════════════════════
-    
+
     val anthropicApiKey: Flow<String> = secureSettings.getAnthropicApiKey()
-    
+
     suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) {
         secureSettings.setAnthropicApiKey(key, useBiometric)
     }
 
     val gitHubToken: Flow<String> = secureSettings.getGitHubToken()
-    
+
     suspend fun setGitHubToken(token: String, useBiometric: Boolean = false) {
         secureSettings.setGitHubToken(token, useBiometric)
     }
@@ -57,14 +53,6 @@ class AppSettings @Inject constructor(
     // GITHUB CONFIG
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Холодный Flow с конфигурацией GitHub.
-     * 
-     * CreatorViewModel использует:
-     * - debounce(500) для фильтрации быстрых изменений
-     * - distinctUntilChanged() для игнорирования дубликатов
-     * - collectLatest {} для отмены предыдущих запросов
-     */
     val gitHubConfig: Flow<GitHubConfig> = secureSettings.gitHubConfig
 
     suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") {
@@ -77,10 +65,22 @@ class AppSettings @Inject constructor(
 
     val claudeModel: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
-        .map { it[Keys.CLAUDE_MODEL] ?: "claude-opus-4-6" } // ✅ ИЗМЕНЕНО: было "claude-opus-4-5-20250514"
+        .map { it[Keys.CLAUDE_MODEL] ?: "claude-opus-4-6" }
 
     suspend fun setClaudeModel(model: String) {
         dataStore.edit { it[Keys.CLAUDE_MODEL] = model }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GEMINI MODEL
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    val geminiModel: Flow<String> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.GEMINI_MODEL] ?: "gemini-flash-latest" }
+
+    suspend fun setGeminiModel(model: String) {
+        dataStore.edit { it[Keys.GEMINI_MODEL] = model }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -121,7 +121,7 @@ class AppSettings @Inject constructor(
     suspend fun clearGitHubConfig() {
         secureSettings.setGitHubConfig("", "", "main")
     }
-    
+
     suspend fun verifySecurityIntegrity(): Boolean {
         return secureSettings.verifyDataIntegrity()
     }
