@@ -22,7 +22,7 @@ class CreatorAIEditService @Inject constructor(
 ) {
 
     // ═══════════════════════════════════════════════════════════════
-    // MODELS — вынесен из companion object для поддержки extensions
+    // MODELS
     // ═══════════════════════════════════════════════════════════════
 
     enum class AiModel(
@@ -35,7 +35,7 @@ class CreatorAIEditService @Inject constructor(
         CLAUDE_SONNET(
             displayName = "Claude Sonnet 4.6",
             apiId = "claude-sonnet-4-6",
-            badge = "⚡ Sonnet 4.6",
+            badge = "⚡ Sonnet",
             costPerMInputUsd = 3.0,
             costPerMOutputUsd = 15.0
         ),
@@ -52,6 +52,34 @@ class CreatorAIEditService @Inject constructor(
             badge = "🧠 DS R1",
             costPerMInputUsd = 0.55,
             costPerMOutputUsd = 2.19
+        ),
+        GEMINI_PRO_PREVIEW(
+            displayName = "Gemini 3.1 Pro Preview",
+            apiId = "gemini-3.1-pro-preview",
+            badge = "✨ G Pro",
+            costPerMInputUsd = 1.25,
+            costPerMOutputUsd = 5.0
+        ),
+        GEMINI_FLASH_LITE_PREVIEW(
+            displayName = "Gemini 3.1 Flash Lite Preview",
+            apiId = "gemini-3.1-flash-lite-preview",
+            badge = "⚡ G FLite",
+            costPerMInputUsd = 0.075,
+            costPerMOutputUsd = 0.30
+        ),
+        GEMINI_FLASH_LATEST(
+            displayName = "Gemini Flash Latest",
+            apiId = "gemini-flash-latest",
+            badge = "🔥 G Flash",
+            costPerMInputUsd = 0.075,
+            costPerMOutputUsd = 0.30
+        ),
+        GEMINI_FLASH_LITE_LATEST(
+            displayName = "Gemini Flash Lite Latest",
+            apiId = "gemini-flash-lite-latest",
+            badge = "💨 G FLite2",
+            costPerMInputUsd = 0.0375,
+            costPerMOutputUsd = 0.15
         )
     }
 
@@ -59,6 +87,7 @@ class CreatorAIEditService @Inject constructor(
         private const val TAG = "CreatorAIEdit"
         private const val CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
         private const val DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
+        private const val GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
         private const val CLAUDE_API_VERSION = "2023-06-01"
         private const val MAX_OUTPUT_TOKENS = 8192
         private const val LINE_NUMBER_THRESHOLD = 300
@@ -223,9 +252,16 @@ Example 2 — Delete a function:
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
             val rawResponse = when (model) {
-                AiModel.CLAUDE_SONNET -> callClaudeApi(systemPrompt, userMessage, model)
+                AiModel.CLAUDE_SONNET ->
+                    callClaudeApi(systemPrompt, userMessage, model)
                 AiModel.DEEPSEEK_CHAT,
-                AiModel.DEEPSEEK_REASONER -> callDeepSeekApi(systemPrompt, userMessage, model)
+                AiModel.DEEPSEEK_REASONER ->
+                    callDeepSeekApi(systemPrompt, userMessage, model)
+                AiModel.GEMINI_PRO_PREVIEW,
+                AiModel.GEMINI_FLASH_LITE_PREVIEW,
+                AiModel.GEMINI_FLASH_LATEST,
+                AiModel.GEMINI_FLASH_LITE_LATEST ->
+                    callGeminiApi(systemPrompt, userMessage, model)
             }.getOrElse { return@withContext Result.failure(it) }
 
             val content = rawResponse.first
@@ -264,7 +300,7 @@ Example 2 — Delete a function:
         val apiKey = try {
             secureSettings.getAnthropicApiKey().first()
         } catch (e: Exception) { "" }
-        if (apiKey.isBlank()) return Result.failure(Exception("Claude API key не настроен."))
+        if (apiKey.isBlank()) return Result.failure(Exception("Claude API key не настроен. Укажите ключ в Settings."))
 
         val requestBody = JSONObject().apply {
             put("model", model.apiId)
@@ -344,6 +380,64 @@ Example 2 — Delete a function:
                     usage.getInt("prompt_tokens"),
                     usage.getInt("completion_tokens")
                 )
+            }
+        )
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // GEMINI API
+    // ═══════════════════════════════════════════════════════════════════
+
+    private suspend fun callGeminiApi(
+        systemPrompt: String,
+        userMessage: String,
+        model: AiModel
+    ): Result<Triple<String, Int, Int>> {
+        val apiKey = try {
+            secureSettings.getGeminiApiKey().first()
+        } catch (e: Exception) { "" }
+        if (apiKey.isBlank()) return Result.failure(Exception("Gemini API key не настроен. Укажите ключ в Settings."))
+
+        val url = "$GEMINI_API_BASE_URL/${model.apiId}:generateContent?key=$apiKey"
+
+        val requestBody = JSONObject().apply {
+            put("system_instruction", JSONObject().apply {
+                put("parts", JSONArray().apply {
+                    put(JSONObject().apply { put("text", systemPrompt) })
+                })
+            })
+            put("contents", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("parts", JSONArray().apply {
+                        put(JSONObject().apply { put("text", userMessage) })
+                    })
+                })
+            })
+            put("generationConfig", JSONObject().apply {
+                put("maxOutputTokens", MAX_OUTPUT_TOKENS)
+                put("temperature", 0.1)
+            })
+        }
+
+        return executeRequest(
+            url = url,
+            body = requestBody,
+            headers = mapOf("Content-Type" to "application/json"),
+            parseResponse = { json ->
+                val candidates = json.getJSONArray("candidates")
+                val content = candidates.getJSONObject(0)
+                    .getJSONObject("content")
+                    .getJSONArray("parts")
+                    .let { parts ->
+                        (0 until parts.length()).joinToString("") { i ->
+                            parts.getJSONObject(i).optString("text", "")
+                        }
+                    }
+                val usage = json.optJSONObject("usageMetadata")
+                val inputTokens = usage?.optInt("promptTokenCount", 0) ?: 0
+                val outputTokens = usage?.optInt("candidatesTokenCount", 0) ?: 0
+                Triple(content, inputTokens, outputTokens)
             }
         )
     }
@@ -645,13 +739,17 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
 
     private fun formatApiError(code: Int, body: String): String {
         val msg = try {
-            JSONObject(body).optJSONObject("error")?.optString("message") ?: body.take(200)
+            // Gemini error format
+            val json = JSONObject(body)
+            json.optJSONObject("error")?.optString("message")
+                ?: json.optString("message", "")
+                    .ifBlank { body.take(200) }
         } catch (_: Exception) { body.take(200) }
 
         return when (code) {
             400 -> "Ошибка запроса: $msg"
             401 -> "Неверный API ключ. Проверьте настройки."
-            403 -> "Доступ запрещён."
+            403 -> "Доступ запрещён: $msg"
             429 -> "Превышен лимит запросов. Подождите минуту."
             500, 502, 503 -> "Сервер временно недоступен. Попробуйте позже."
             529 -> "API перегружен. Попробуйте через 30 секунд."
