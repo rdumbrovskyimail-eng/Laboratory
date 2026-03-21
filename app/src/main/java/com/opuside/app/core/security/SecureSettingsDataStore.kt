@@ -45,9 +45,12 @@ class SecureSettingsDataStore @Inject constructor(
         private val KEY_GITHUB_TOKEN = stringPreferencesKey("github_token_encrypted_v2")
         private val KEY_GITHUB_IV = stringPreferencesKey("github_token_iv_v2")
 
-        // ✅ DeepSeek
         private val KEY_DEEPSEEK_API = stringPreferencesKey("deepseek_api_encrypted_v1")
         private val KEY_DEEPSEEK_IV = stringPreferencesKey("deepseek_api_iv_v1")
+
+        // ✅ Gemini
+        private val KEY_GEMINI_API = stringPreferencesKey("gemini_api_encrypted_v1")
+        private val KEY_GEMINI_IV = stringPreferencesKey("gemini_api_iv_v1")
 
         private val KEY_BIOMETRIC_ENABLED = booleanPreferencesKey("biometric_enabled")
 
@@ -246,43 +249,62 @@ class SecureSettingsDataStore @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - ANTHROPIC
+    // INTERNAL SAVE HELPER — устраняет дублирование кода
     // ═══════════════════════════════════════════════════════════════════════════
 
-    suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) = withContext(Dispatchers.IO) {
-        android.util.Log.d(TAG, "━".repeat(80))
-        android.util.Log.d(TAG, "💾 SAVING ANTHROPIC API KEY (length: ${key.length})")
-        android.util.Log.d(TAG, "━".repeat(80))
+    private suspend fun saveEncryptedKey(
+        label: String,
+        value: String,
+        ciphertextPref: Preferences.Key<String>,
+        ivPref: Preferences.Key<String>
+    ) = withContext(Dispatchers.IO) {
+        android.util.Log.d(TAG, "━".repeat(60))
+        android.util.Log.d(TAG, "💾 SAVING $label (length: ${value.length})")
 
-        val encrypted = encryptData(key)
+        val encrypted = encryptData(value)
 
         dataStore.edit { prefs ->
-            prefs[KEY_ANTHROPIC_API] = encrypted.ciphertext
-            prefs[KEY_ANTHROPIC_IV] = encrypted.iv
-            prefs[KEY_BIOMETRIC_ENABLED] = useBiometric
+            prefs[ciphertextPref] = encrypted.ciphertext
+            prefs[ivPref] = encrypted.iv
         }
 
         val verification = dataStore.data.first()
-        if (verification[KEY_ANTHROPIC_API] == encrypted.ciphertext) {
-            android.util.Log.d(TAG, "  └─ ✅ SAVED AND VERIFIED")
+        if (verification[ciphertextPref] == encrypted.ciphertext) {
+            android.util.Log.d(TAG, "  └─ ✅ $label SAVED AND VERIFIED")
         } else {
-            android.util.Log.e(TAG, "  └─ ❌ VERIFICATION FAILED!")
-            throw SecurityException("Failed to save API key")
+            android.util.Log.e(TAG, "  └─ ❌ $label VERIFICATION FAILED!")
+            throw SecurityException("Failed to save $label")
         }
     }
 
-    fun getAnthropicApiKey(): Flow<String> = dataStore.data
+    private fun getDecryptedKeyFlow(
+        label: String,
+        ciphertextPref: Preferences.Key<String>,
+        ivPref: Preferences.Key<String>
+    ): Flow<String> = dataStore.data
         .map { prefs ->
-            val ciphertext = prefs[KEY_ANTHROPIC_API]
-            val iv = prefs[KEY_ANTHROPIC_IV]
-            android.util.Log.d(TAG, "🔍 Loading Anthropic key... has=${ciphertext != null}")
+            val ciphertext = prefs[ciphertextPref]
+            val iv = prefs[ivPref]
+            android.util.Log.d(TAG, "🔍 Loading $label... has=${ciphertext != null}")
             if (ciphertext == null || iv == null) return@map ""
             decryptData(EncryptedData(ciphertext, iv)) ?: ""
         }
         .catch {
-            android.util.Log.e(TAG, "Flow error in getAnthropicApiKey", it)
+            android.util.Log.e(TAG, "Flow error in get$label", it)
             emit("")
         }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PUBLIC API — ANTHROPIC
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) {
+        saveEncryptedKey("ANTHROPIC API KEY", key, KEY_ANTHROPIC_API, KEY_ANTHROPIC_IV)
+        dataStore.edit { prefs -> prefs[KEY_BIOMETRIC_ENABLED] = useBiometric }
+    }
+
+    fun getAnthropicApiKey(): Flow<String> =
+        getDecryptedKeyFlow("AnthropicApiKey", KEY_ANTHROPIC_API, KEY_ANTHROPIC_IV)
 
     fun getAnthropicApiKeyWithBiometric(
         activity: FragmentActivity,
@@ -328,93 +350,48 @@ class SecureSettingsDataStore @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - DEEPSEEK
+    // PUBLIC API — DEEPSEEK
     // ═══════════════════════════════════════════════════════════════════════════
 
-    suspend fun setDeepSeekApiKey(key: String) = withContext(Dispatchers.IO) {
-        android.util.Log.d(TAG, "━".repeat(80))
-        android.util.Log.d(TAG, "💾 SAVING DEEPSEEK API KEY (length: ${key.length})")
-        android.util.Log.d(TAG, "━".repeat(80))
+    suspend fun setDeepSeekApiKey(key: String) =
+        saveEncryptedKey("DEEPSEEK API KEY", key, KEY_DEEPSEEK_API, KEY_DEEPSEEK_IV)
 
-        val encrypted = encryptData(key)
-
-        dataStore.edit { prefs ->
-            prefs[KEY_DEEPSEEK_API] = encrypted.ciphertext
-            prefs[KEY_DEEPSEEK_IV] = encrypted.iv
-        }
-
-        val verification = dataStore.data.first()
-        if (verification[KEY_DEEPSEEK_API] == encrypted.ciphertext) {
-            android.util.Log.d(TAG, "  └─ ✅ SAVED AND VERIFIED")
-        } else {
-            android.util.Log.e(TAG, "  └─ ❌ VERIFICATION FAILED!")
-            throw SecurityException("Failed to save DeepSeek key")
-        }
-    }
-
-    fun getDeepSeekApiKey(): Flow<String> = dataStore.data
-        .map { prefs ->
-            val ciphertext = prefs[KEY_DEEPSEEK_API]
-            val iv = prefs[KEY_DEEPSEEK_IV]
-            android.util.Log.d(TAG, "🔍 Loading DeepSeek key... has=${ciphertext != null}")
-            if (ciphertext == null || iv == null) return@map ""
-            decryptData(EncryptedData(ciphertext, iv)) ?: ""
-        }
-        .catch {
-            android.util.Log.e(TAG, "Flow error in getDeepSeekApiKey", it)
-            emit("")
-        }
+    fun getDeepSeekApiKey(): Flow<String> =
+        getDecryptedKeyFlow("DeepSeekApiKey", KEY_DEEPSEEK_API, KEY_DEEPSEEK_IV)
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - GITHUB
+    // PUBLIC API — GEMINI
     // ═══════════════════════════════════════════════════════════════════════════
 
-    suspend fun setGitHubToken(token: String, useBiometric: Boolean = false) = withContext(Dispatchers.IO) {
-        android.util.Log.d(TAG, "━".repeat(80))
-        android.util.Log.d(TAG, "💾 SAVING GITHUB TOKEN (length: ${token.length})")
-        android.util.Log.d(TAG, "━".repeat(80))
+    suspend fun setGeminiApiKey(key: String) =
+        saveEncryptedKey("GEMINI API KEY", key, KEY_GEMINI_API, KEY_GEMINI_IV)
 
-        val encrypted = encryptData(token)
-
-        dataStore.edit { prefs ->
-            prefs[KEY_GITHUB_TOKEN] = encrypted.ciphertext
-            prefs[KEY_GITHUB_IV] = encrypted.iv
-        }
-
-        val verification = dataStore.data.first()
-        if (verification[KEY_GITHUB_TOKEN] == encrypted.ciphertext) {
-            android.util.Log.d(TAG, "  └─ ✅ SAVED AND VERIFIED")
-        } else {
-            android.util.Log.e(TAG, "  └─ ❌ VERIFICATION FAILED!")
-            throw SecurityException("Failed to save GitHub token")
-        }
-    }
-
-    fun getGitHubToken(): Flow<String> = dataStore.data
-        .map { prefs ->
-            val ciphertext = prefs[KEY_GITHUB_TOKEN]
-            val iv = prefs[KEY_GITHUB_IV]
-            android.util.Log.d(TAG, "🔍 Loading GitHub token... has=${ciphertext != null}")
-            if (ciphertext == null || iv == null) return@map ""
-            decryptData(EncryptedData(ciphertext, iv)) ?: ""
-        }
-        .catch {
-            android.util.Log.e(TAG, "Flow error in getGitHubToken", it)
-            emit("")
-        }
+    fun getGeminiApiKey(): Flow<String> =
+        getDecryptedKeyFlow("GeminiApiKey", KEY_GEMINI_API, KEY_GEMINI_IV)
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC API - GITHUB CONFIG
+    // PUBLIC API — GITHUB TOKEN
     // ═══════════════════════════════════════════════════════════════════════════
 
-    suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") = withContext(Dispatchers.IO) {
-        android.util.Log.d(TAG, "💾 Saving GitHub config: $owner/$repo ($branch)")
-        dataStore.edit { prefs ->
-            prefs[KEY_GITHUB_OWNER] = owner
-            prefs[KEY_GITHUB_REPO] = repo
-            prefs[KEY_GITHUB_BRANCH] = branch
+    suspend fun setGitHubToken(token: String, useBiometric: Boolean = false) =
+        saveEncryptedKey("GITHUB TOKEN", token, KEY_GITHUB_TOKEN, KEY_GITHUB_IV)
+
+    fun getGitHubToken(): Flow<String> =
+        getDecryptedKeyFlow("GitHubToken", KEY_GITHUB_TOKEN, KEY_GITHUB_IV)
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PUBLIC API — GITHUB CONFIG
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") =
+        withContext(Dispatchers.IO) {
+            android.util.Log.d(TAG, "💾 Saving GitHub config: $owner/$repo ($branch)")
+            dataStore.edit { prefs ->
+                prefs[KEY_GITHUB_OWNER] = owner
+                prefs[KEY_GITHUB_REPO] = repo
+                prefs[KEY_GITHUB_BRANCH] = branch
+            }
         }
-    }
 
     data class GitHubConfig(
         val owner: String,
@@ -463,6 +440,7 @@ class SecureSettingsDataStore @Inject constructor(
             getAnthropicApiKey().first()
             getGitHubToken().first()
             getDeepSeekApiKey().first()
+            getGeminiApiKey().first()
             true
         } catch (e: Exception) {
             android.util.Log.e(TAG, "❌ Data integrity check failed", e)
