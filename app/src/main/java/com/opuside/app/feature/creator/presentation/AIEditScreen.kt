@@ -52,11 +52,33 @@ private object EditColors {
 
     val orange = Color(0xFFF0883E)
     val orangeBg = Color(0xFF2D1A00)
+
+    // DeepSeek brand color
+    val deepseek = Color(0xFF4E9BCD)
+    val deepseekBg = Color(0xFF0A2030)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODEL METADATA
+// ═══════════════════════════════════════════════════════════════════════════
+
+private val CreatorAIEditService.AiModel.accentColor: Color
+    get() = when (this) {
+        CreatorAIEditService.AiModel.CLAUDE_SONNET -> EditColors.blue
+        CreatorAIEditService.AiModel.DEEPSEEK_CHAT -> EditColors.deepseek
+        CreatorAIEditService.AiModel.DEEPSEEK_REASONER -> EditColors.orange
+    }
+
+private val CreatorAIEditService.AiModel.accentBg: Color
+    get() = when (this) {
+        CreatorAIEditService.AiModel.CLAUDE_SONNET -> EditColors.blueBg
+        CreatorAIEditService.AiModel.DEEPSEEK_CHAT -> EditColors.deepseekBg
+        CreatorAIEditService.AiModel.DEEPSEEK_REASONER -> EditColors.orangeBg
+    }
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * AIEditScreen v2.1 — Полноэкранный AI-редактор с diff-превью
+ * AIEditScreen v2.2 — с переключателем модели
  * ═══════════════════════════════════════════════════════════════════════════
  */
 @Composable
@@ -64,6 +86,8 @@ fun AIEditScreen(
     fileName: String,
     fileContent: String,
     editStatus: CreatorAIEditService.EditStatus,
+    selectedModel: CreatorAIEditService.AiModel,
+    onModelChange: (CreatorAIEditService.AiModel) -> Unit,
     onProcess: (instructions: String) -> Unit,
     onApply: () -> Unit,
     onDiscard: () -> Unit,
@@ -72,6 +96,7 @@ fun AIEditScreen(
     var instructions by remember { mutableStateOf("") }
     val clipboardManager = LocalClipboardManager.current
     val scrollState = rememberScrollState()
+    val isProcessing = editStatus is CreatorAIEditService.EditStatus.Processing
 
     Column(
         modifier = Modifier
@@ -114,20 +139,47 @@ fun AIEditScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = EditColors.blueBg,
-                    border = BorderStroke(1.dp, EditColors.blue.copy(alpha = 0.4f))
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════
+        // MODEL SWITCHER BAR
+        // ═══════════════════════════════════════════════════════
+
+        Surface(
+            color = EditColors.surfaceElevated,
+            modifier = Modifier.fillMaxWidth(),
+            border = BorderStroke(
+                width = 0.dp,
+                color = Color.Transparent
+            )
+        ) {
+            Column {
+                HorizontalDivider(color = EditColors.border, thickness = 1.dp)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        "⚡ Sonnet 4.6",
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        "Модель:",
                         fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = EditColors.blue,
-                        fontFamily = FontFamily.Monospace
+                        color = EditColors.text3,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.SemiBold
                     )
+                    CreatorAIEditService.AiModel.entries.forEach { model ->
+                        ModelChip(
+                            model = model,
+                            isSelected = selectedModel == model,
+                            enabled = !isProcessing,
+                            onClick = { onModelChange(model) }
+                        )
+                    }
                 }
+                HorizontalDivider(color = EditColors.border, thickness = 1.dp)
             }
         }
 
@@ -151,20 +203,24 @@ fun AIEditScreen(
                     }
                 },
                 onClear = { instructions = "" },
-                enabled = editStatus !is CreatorAIEditService.EditStatus.Processing
+                enabled = !isProcessing
             )
 
             FileInfoChip(fileName = fileName, contentLength = fileContent.length)
 
             when (editStatus) {
-                is CreatorAIEditService.EditStatus.Processing -> ProcessingIndicator()
-                is CreatorAIEditService.EditStatus.Success -> EditResultSection(
-                    result = editStatus.result,
-                    newContent = editStatus.newContent,
-                    originalContent = fileContent
-                )
-                is CreatorAIEditService.EditStatus.Error -> ErrorSection(message = editStatus.message)
-                is CreatorAIEditService.EditStatus.Idle -> HintSection()
+                is CreatorAIEditService.EditStatus.Processing ->
+                    ProcessingIndicator(model = selectedModel)
+                is CreatorAIEditService.EditStatus.Success ->
+                    EditResultSection(
+                        result = editStatus.result,
+                        newContent = editStatus.newContent,
+                        originalContent = fileContent
+                    )
+                is CreatorAIEditService.EditStatus.Error ->
+                    ErrorSection(message = editStatus.message)
+                is CreatorAIEditService.EditStatus.Idle ->
+                    HintSection()
             }
         }
 
@@ -174,11 +230,60 @@ fun AIEditScreen(
 
         BottomBar(
             editStatus = editStatus,
+            selectedModel = selectedModel,
             instructionsNotEmpty = instructions.isNotBlank(),
             onProcess = { onProcess(instructions) },
             onApply = onApply,
             onDiscard = onDiscard
         )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MODEL CHIP
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ModelChip(
+    model: CreatorAIEditService.AiModel,
+    isSelected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val accentColor = model.accentColor
+    val bgColor = if (isSelected) model.accentBg else EditColors.surface
+
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(20.dp),
+        color = bgColor,
+        border = BorderStroke(
+            width = if (isSelected) 1.5.dp else 1.dp,
+            color = if (isSelected) accentColor else EditColors.border
+        )
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (isSelected) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(accentColor)
+                )
+            }
+            Text(
+                model.badge,
+                fontSize = 11.sp,
+                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                color = if (isSelected) accentColor else EditColors.text3,
+                fontFamily = FontFamily.Monospace
+            )
+        }
     }
 }
 
@@ -229,7 +334,9 @@ private fun InstructionsSection(
             OutlinedTextField(
                 value = instructions,
                 onValueChange = onInstructionsChange,
-                modifier = Modifier.fillMaxWidth().heightIn(min = 160.dp, max = 400.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 160.dp, max = 400.dp),
                 enabled = enabled,
                 placeholder = {
                     Text(
@@ -237,7 +344,6 @@ private fun InstructionsSection(
                                 "• Замени className на newClassName\n" +
                                 "• Удали функцию processData()\n" +
                                 "• Добавь проверку null перед вызовом api\n" +
-                                "• Перепиши блок try/catch\n" +
                                 "• Измени параметр timeout с 30 на 60",
                         color = EditColors.text3,
                         fontSize = 13.sp,
@@ -261,7 +367,9 @@ private fun InstructionsSection(
             )
 
             Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp),
                 horizontalArrangement = Arrangement.End
             ) {
                 Text(
@@ -314,7 +422,7 @@ private fun FileInfoChip(fileName: String, contentLength: Int) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun ProcessingIndicator() {
+private fun ProcessingIndicator(model: CreatorAIEditService.AiModel) {
     val infiniteTransition = rememberInfiniteTransition(label = "processing")
     val alpha by infiniteTransition.animateFloat(
         initialValue = 0.4f, targetValue = 1f,
@@ -323,9 +431,9 @@ private fun ProcessingIndicator() {
     )
 
     Surface(
-        color = EditColors.blueBg,
+        color = model.accentBg,
         shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, EditColors.blue.copy(alpha = 0.3f)),
+        border = BorderStroke(1.dp, model.accentColor.copy(alpha = 0.3f)),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -335,11 +443,16 @@ private fun ProcessingIndicator() {
         ) {
             CircularProgressIndicator(
                 modifier = Modifier.size(28.dp),
-                color = EditColors.blue.copy(alpha = alpha),
+                color = model.accentColor.copy(alpha = alpha),
                 strokeWidth = 3.dp
             )
             Column {
-                Text("Haiku 4.5 обрабатывает...", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = EditColors.blue)
+                Text(
+                    "${model.displayName} обрабатывает...",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = model.accentColor
+                )
                 Text("Анализ кода и генерация блоков замен", fontSize = 12.sp, color = EditColors.text3)
             }
         }
@@ -347,7 +460,7 @@ private fun ProcessingIndicator() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// EDIT RESULT (Diff Preview + Match Status)
+// EDIT RESULT
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -361,7 +474,6 @@ private fun EditResultSection(
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        // Summary
         Surface(
             color = if (hasFailedBlocks) EditColors.yellowBg else EditColors.greenBg,
             shape = RoundedCornerShape(10.dp),
@@ -386,17 +498,37 @@ private fun EditResultSection(
                         color = if (hasFailedBlocks) EditColors.yellow else EditColors.green
                     )
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        "${result.blocks.size} блок(ов) замен",
-                        fontSize = 10.sp,
-                        color = EditColors.text3,
-                        fontFamily = FontFamily.Monospace
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "${result.blocks.size} блок(ов)",
+                            fontSize = 10.sp,
+                            color = EditColors.text3,
+                            fontFamily = FontFamily.Monospace
+                        )
+                        Text("•", fontSize = 10.sp, color = EditColors.text3)
+                        // Model used badge
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = result.model.accentBg,
+                            border = BorderStroke(1.dp, result.model.accentColor.copy(alpha = 0.3f))
+                        ) {
+                            Text(
+                                result.model.badge,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = result.model.accentColor,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // Diff blocks
         result.blocks.forEachIndexed { index, block ->
             DiffBlockCard(index = index + 1, block = block)
         }
@@ -420,7 +552,6 @@ private fun DiffBlockCard(index: Int, block: CreatorAIEditService.EditBlock) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column {
-            // Block header with match status
             Surface(color = EditColors.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -530,8 +661,19 @@ private fun DiffCodeBlock(
                 Column {
                     displayLines.forEach { line ->
                         Row {
-                            Text("$linePrefix ", fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = prefixColor.copy(alpha = 0.6f))
-                            Text(line, fontSize = 11.sp, fontFamily = FontFamily.Monospace, color = labelColor.copy(alpha = 0.9f), lineHeight = 16.sp)
+                            Text(
+                                "$linePrefix ",
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = prefixColor.copy(alpha = 0.6f)
+                            )
+                            Text(
+                                line,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = labelColor.copy(alpha = 0.9f),
+                                lineHeight = 16.sp
+                            )
                         }
                     }
                 }
@@ -578,8 +720,10 @@ private fun HintSection() {
             listOf(
                 "📝" to "Опишите изменения на любом языке",
                 "📋" to "Скопируйте инструкции из чата AI и вставьте",
-                "🔄" to "Несколько замен за раз — AI создаст отдельные блоки",
-                "⚡" to "Sonnet 4.6 — умнее, точнее, быстрее",
+                "🔄" to "Несколько замен — AI создаст отдельные блоки",
+                "🐋" to "DeepSeek Chat — дешевле, быстрее для простых правок",
+                "🧠" to "DeepSeek R1 — мыслит дольше, точнее для сложных задач",
+                "⚡" to "Claude Sonnet 4.6 — максимум качества",
                 "👁️" to "Превью diff перед применением + статус матчинга"
             ).forEach { (emoji, text) ->
                 Row(
@@ -595,12 +739,13 @@ private fun HintSection() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// BOTTOM BAR (с итоговыми токенами и ценой)
+// BOTTOM BAR
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun BottomBar(
     editStatus: CreatorAIEditService.EditStatus,
+    selectedModel: CreatorAIEditService.AiModel,
     instructionsNotEmpty: Boolean,
     onProcess: () -> Unit,
     onApply: () -> Unit,
@@ -611,6 +756,7 @@ private fun BottomBar(
     val isError = editStatus is CreatorAIEditService.EditStatus.Error
 
     val successResult = (editStatus as? CreatorAIEditService.EditStatus.Success)?.result
+    val usedModel = successResult?.model ?: selectedModel
 
     val hasFailedBlocks = successResult?.blocks?.any {
         it.matchStatus == CreatorAIEditService.EditBlock.MatchStatus.NOT_FOUND
@@ -619,22 +765,20 @@ private fun BottomBar(
     val statusColor = when {
         isSuccess && !hasFailedBlocks -> EditColors.green
         isSuccess && hasFailedBlocks -> EditColors.yellow
-        isProcessing -> EditColors.blue
+        isProcessing -> usedModel.accentColor
         isError -> EditColors.red
         else -> EditColors.text3
     }
 
     Surface(color = EditColors.surface, shadowElevation = 8.dp, modifier = Modifier.fillMaxWidth()) {
         Column {
-            // Цветная полоска статуса
-            Box(modifier = Modifier.fillMaxWidth().height(3.dp).background(statusColor))
+            Box(modifier = Modifier
+                .fillMaxWidth()
+                .height(3.dp)
+                .background(statusColor))
 
-            // ═══ Итоговые токены + цена (показывается после обработки) ═══
             if (isSuccess && successResult != null) {
-                Surface(
-                    color = EditColors.surfaceElevated,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                Surface(color = EditColors.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -642,47 +786,22 @@ private fun BottomBar(
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Input tokens
-                        TokenChip(
-                            label = "INPUT",
-                            value = "%,d".format(successResult.inputTokens),
-                            color = EditColors.blue
-                        )
-
+                        TokenChip("INPUT", "%,d".format(successResult.inputTokens), EditColors.blue)
                         Text("＋", fontSize = 12.sp, color = EditColors.text3)
-
-                        // Output tokens
-                        TokenChip(
-                            label = "OUTPUT",
-                            value = "%,d".format(successResult.outputTokens),
-                            color = EditColors.orange
-                        )
-
+                        TokenChip("OUTPUT", "%,d".format(successResult.outputTokens), EditColors.orange)
                         Text("＝", fontSize = 12.sp, color = EditColors.text3)
-
-                        // Total tokens
                         TokenChip(
-                            label = "TOTAL",
-                            value = "%,d".format(successResult.inputTokens + successResult.outputTokens),
-                            color = EditColors.text1
+                            "TOTAL",
+                            "%,d".format(successResult.inputTokens + successResult.outputTokens),
+                            EditColors.text1
                         )
-
-                        // Divider dot
                         Text("•", fontSize = 14.sp, color = EditColors.text3)
-
-                        // Cost
-                        TokenChip(
-                            label = "COST",
-                            value = "€${String.format("%.4f", successResult.costEUR)}",
-                            color = EditColors.green
-                        )
+                        TokenChip("COST", "€${String.format("%.4f", successResult.costEUR)}", EditColors.green)
                     }
                 }
-
                 HorizontalDivider(color = EditColors.border, thickness = 1.dp)
             }
 
-            // ═══ Статус + кнопки действий ═══
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -690,7 +809,6 @@ private fun BottomBar(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Status indicator
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -710,7 +828,6 @@ private fun BottomBar(
                     )
                 }
 
-                // Action buttons
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (isSuccess) {
                         OutlinedButton(
@@ -739,7 +856,7 @@ private fun BottomBar(
                             onClick = onProcess,
                             enabled = instructionsNotEmpty && !isProcessing,
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = EditColors.blue,
+                                containerColor = selectedModel.accentColor,
                                 contentColor = Color.White,
                                 disabledContainerColor = EditColors.border,
                                 disabledContentColor = EditColors.text3
@@ -766,26 +883,10 @@ private fun BottomBar(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// TOKEN CHIP (для bottom bar)
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun TokenChip(label: String, value: String, color: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            label,
-            fontSize = 8.sp,
-            fontWeight = FontWeight.Bold,
-            color = color.copy(alpha = 0.6f),
-            letterSpacing = 0.5.sp
-        )
-        Text(
-            value,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.ExtraBold,
-            color = color,
-            fontFamily = FontFamily.Monospace
-        )
+        Text(label, fontSize = 8.sp, fontWeight = FontWeight.Bold, color = color.copy(alpha = 0.6f), letterSpacing = 0.5.sp)
+        Text(value, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = color, fontFamily = FontFamily.Monospace)
     }
 }
