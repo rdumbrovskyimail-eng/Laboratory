@@ -13,10 +13,18 @@ import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.util.ConfigImporter
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
 
 sealed class ConnectionStatus {
@@ -36,7 +44,7 @@ class SettingsViewModel @Inject constructor(
 ) : ViewModel() {
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE - GitHub Settings
+    // STATE — GitHub
     // ═════════════════════════════════════════════════════════════════════════
 
     private val _githubOwnerInput = MutableStateFlow("")
@@ -58,7 +66,7 @@ class SettingsViewModel @Inject constructor(
     val repoInfo: StateFlow<GitHubRepository?> = _repoInfo.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE - Anthropic Settings
+    // STATE — Anthropic / Claude
     // ═════════════════════════════════════════════════════════════════════════
 
     private val _anthropicKeyInput = MutableStateFlow("")
@@ -71,14 +79,30 @@ class SettingsViewModel @Inject constructor(
     val claudeStatus: StateFlow<ConnectionStatus> = _claudeStatus.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE - DeepSeek Settings
+    // STATE — DeepSeek
     // ═════════════════════════════════════════════════════════════════════════
 
     private val _deepSeekKeyInput = MutableStateFlow("")
     val deepSeekKeyInput: StateFlow<String> = _deepSeekKeyInput.asStateFlow()
 
+    private val _deepSeekStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
+    val deepSeekStatus: StateFlow<ConnectionStatus> = _deepSeekStatus.asStateFlow()
+
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE - UI
+    // STATE — Gemini
+    // ═════════════════════════════════════════════════════════════════════════
+
+    private val _geminiKeyInput = MutableStateFlow("")
+    val geminiKeyInput: StateFlow<String> = _geminiKeyInput.asStateFlow()
+
+    private val _geminiModelInput = MutableStateFlow("gemini-flash-latest")
+    val geminiModelInput: StateFlow<String> = _geminiModelInput.asStateFlow()
+
+    private val _geminiStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
+    val geminiStatus: StateFlow<ConnectionStatus> = _geminiStatus.asStateFlow()
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // STATE — UI
     // ═════════════════════════════════════════════════════════════════════════
 
     private val _isSaving = MutableStateFlow(false)
@@ -91,7 +115,7 @@ class SettingsViewModel @Inject constructor(
     val biometricAuthRequest: StateFlow<Boolean> = _biometricAuthRequest.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE - Biometric Lock
+    // STATE — Biometric Lock
     // ═════════════════════════════════════════════════════════════════════════
 
     private val _isUnlocked = MutableStateFlow(false)
@@ -130,59 +154,84 @@ class SettingsViewModel @Inject constructor(
             android.util.Log.d(TAG, "📥 Loading settings from DataStore...")
 
             try {
+                // GitHub config
                 val githubConfig = try {
                     appSettings.gitHubConfig.first()
                 } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  │  ❌ Failed to load GitHub config", e)
+                    android.util.Log.e(TAG, "  ❌ Failed to load GitHub config", e)
                     SecureSettingsDataStore.GitHubConfig("", "", "main", "")
                 }
 
-                android.util.Log.d(TAG, "  │  ├─ Owner: ${githubConfig.owner.ifEmpty { "[EMPTY]" }}")
-                android.util.Log.d(TAG, "  │  ├─ Repo: ${githubConfig.repo.ifEmpty { "[EMPTY]" }}")
-                android.util.Log.d(TAG, "  │  └─ Branch: ${githubConfig.branch}")
+                android.util.Log.d(TAG, "  ├─ Owner: ${githubConfig.owner.ifEmpty { "[EMPTY]" }}")
+                android.util.Log.d(TAG, "  ├─ Repo: ${githubConfig.repo.ifEmpty { "[EMPTY]" }}")
+                android.util.Log.d(TAG, "  └─ Branch: ${githubConfig.branch}")
 
+                // GitHub token
                 val githubToken = try {
-                    val token = secureSettings.getGitHubToken().first()
-                    android.util.Log.d(TAG, "  │  └─ Token: ${if (token.isNotEmpty()) "[${token.take(8)}***]" else "[EMPTY]"}")
-                    token
+                    secureSettings.getGitHubToken().first().also { token ->
+                        android.util.Log.d(TAG, "  ├─ Token: ${if (token.isNotEmpty()) "[${token.take(8)}***]" else "[EMPTY]"}")
+                    }
                 } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to decrypt GitHub token", e)
+                    android.util.Log.e(TAG, "  ❌ Failed to decrypt GitHub token", e)
                     ""
                 }
 
+                // Anthropic key
                 val anthropicKey = try {
-                    val key = secureSettings.getAnthropicApiKey().first()
-                    android.util.Log.d(TAG, "  │  └─ Anthropic: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
-                    key
+                    secureSettings.getAnthropicApiKey().first().also { key ->
+                        android.util.Log.d(TAG, "  ├─ Anthropic: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
+                    }
                 } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to decrypt Anthropic key", e)
+                    android.util.Log.e(TAG, "  ❌ Failed to decrypt Anthropic key", e)
                     ""
                 }
 
-                // ✅ DeepSeek
+                // DeepSeek key
                 val deepSeekKey = try {
-                    val key = secureSettings.getDeepSeekApiKey().first()
-                    android.util.Log.d(TAG, "  │  └─ DeepSeek: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
-                    key
+                    secureSettings.getDeepSeekApiKey().first().also { key ->
+                        android.util.Log.d(TAG, "  ├─ DeepSeek: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
+                    }
                 } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  │  └─ ❌ Failed to decrypt DeepSeek key", e)
+                    android.util.Log.e(TAG, "  ❌ Failed to decrypt DeepSeek key", e)
                     ""
                 }
 
+                // Gemini key
+                val geminiKey = try {
+                    secureSettings.getGeminiApiKey().first().also { key ->
+                        android.util.Log.d(TAG, "  ├─ Gemini: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  ❌ Failed to decrypt Gemini key", e)
+                    ""
+                }
+
+                // Claude model
                 val claudeModel = try {
                     appSettings.claudeModel.first()
                 } catch (e: Exception) {
-                    android.util.Log.e(TAG, "     └─ ❌ Failed to load Claude model", e)
+                    android.util.Log.e(TAG, "  ❌ Failed to load Claude model", e)
                     "claude-opus-4-6"
                 }
 
+                // Gemini model
+                val geminiModel = try {
+                    appSettings.geminiModel.first()
+                } catch (e: Exception) {
+                    android.util.Log.e(TAG, "  ❌ Failed to load Gemini model", e)
+                    "gemini-flash-latest"
+                }
+
+                // Apply to state — всё в одном месте, никаких промежуточных присваиваний
                 _githubOwnerInput.value = githubConfig.owner
                 _githubRepoInput.value = githubConfig.repo
                 _githubBranchInput.value = githubConfig.branch
                 _githubTokenInput.value = githubToken
                 _anthropicKeyInput.value = anthropicKey
                 _deepSeekKeyInput.value = deepSeekKey
+                _geminiKeyInput.value = geminiKey
                 _claudeModelInput.value = claudeModel
+                _geminiModelInput.value = geminiModel
 
                 android.util.Log.d(TAG, "✅ Settings loaded successfully")
 
@@ -251,7 +300,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // CONFIG IMPORT/EXPORT
+    // CONFIG IMPORT
     // ═════════════════════════════════════════════════════════════════════════
 
     fun importConfigFromFile(fileUri: Uri) {
@@ -307,40 +356,59 @@ class SettingsViewModel @Inject constructor(
     // UPDATE FUNCTIONS
     // ═════════════════════════════════════════════════════════════════════════
 
+    private fun checkUnlocked(): Boolean {
+        if (!_isUnlocked.value) {
+            _message.value = "🔒 Unlock Settings to edit"
+            return false
+        }
+        return true
+    }
+
     fun updateGitHubOwner(owner: String) {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to edit"; return }
+        if (!checkUnlocked()) return
         _githubOwnerInput.value = owner
     }
 
     fun updateGitHubRepo(repo: String) {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to edit"; return }
+        if (!checkUnlocked()) return
         _githubRepoInput.value = repo
     }
 
     fun updateGitHubToken(token: String) {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to edit"; return }
+        if (!checkUnlocked()) return
         _githubTokenInput.value = token
     }
 
     fun updateGitHubBranch(branch: String) {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to edit"; return }
+        if (!checkUnlocked()) return
         _githubBranchInput.value = branch
     }
 
     fun updateAnthropicKey(key: String) {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to edit"; return }
+        if (!checkUnlocked()) return
         _anthropicKeyInput.value = key
+        android.util.Log.d(TAG, "🔄 Anthropic Key updated: ${key.take(8)}***")
     }
 
     fun updateClaudeModel(model: String) {
         _claudeModelInput.value = model
     }
 
-    // ✅ DeepSeek
     fun updateDeepSeekKey(key: String) {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to edit"; return }
+        if (!checkUnlocked()) return
         _deepSeekKeyInput.value = key
         android.util.Log.d(TAG, "🔄 DeepSeek Key updated: ${key.take(8)}***")
+    }
+
+    fun updateGeminiKey(key: String) {
+        if (!checkUnlocked()) return
+        _geminiKeyInput.value = key
+        android.util.Log.d(TAG, "🔄 Gemini Key updated: ${key.take(8)}***")
+    }
+
+    fun updateGeminiModel(model: String) {
+        _geminiModelInput.value = model
+        android.util.Log.d(TAG, "🔄 Gemini model updated: $model")
     }
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -348,7 +416,7 @@ class SettingsViewModel @Inject constructor(
     // ═════════════════════════════════════════════════════════════════════════
 
     fun saveGitHubSettings() {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to save"; return }
+        if (!checkUnlocked()) return
 
         viewModelScope.launch {
             _isSaving.value = true
@@ -356,13 +424,16 @@ class SettingsViewModel @Inject constructor(
 
             try {
                 if (_githubOwnerInput.value.isBlank()) {
-                    _message.value = "❌ Owner cannot be empty"; _isSaving.value = false; return@launch
+                    _message.value = "❌ Owner cannot be empty"
+                    return@launch
                 }
                 if (_githubRepoInput.value.isBlank()) {
-                    _message.value = "❌ Repository cannot be empty"; _isSaving.value = false; return@launch
+                    _message.value = "❌ Repository cannot be empty"
+                    return@launch
                 }
                 if (_githubTokenInput.value.isBlank()) {
-                    _message.value = "❌ Token cannot be empty"; _isSaving.value = false; return@launch
+                    _message.value = "❌ Token cannot be empty"
+                    return@launch
                 }
 
                 secureSettings.setGitHubToken(_githubTokenInput.value)
@@ -385,7 +456,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun saveAnthropicSettings() {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to save"; return }
+        if (!checkUnlocked()) return
 
         viewModelScope.launch {
             _isSaving.value = true
@@ -393,7 +464,8 @@ class SettingsViewModel @Inject constructor(
 
             try {
                 if (_anthropicKeyInput.value.isBlank()) {
-                    _message.value = "❌ API Key cannot be empty"; _isSaving.value = false; return@launch
+                    _message.value = "❌ API Key cannot be empty"
+                    return@launch
                 }
 
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
@@ -411,9 +483,8 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    // ✅ DeepSeek
     fun saveDeepSeekSettings() {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to save"; return }
+        if (!checkUnlocked()) return
 
         viewModelScope.launch {
             _isSaving.value = true
@@ -422,7 +493,6 @@ class SettingsViewModel @Inject constructor(
             try {
                 if (_deepSeekKeyInput.value.isBlank()) {
                     _message.value = "❌ DeepSeek API Key cannot be empty"
-                    _isSaving.value = false
                     return@launch
                 }
 
@@ -440,18 +510,46 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun saveAllSettings() {
-        if (!_isUnlocked.value) { _message.value = "🔒 Unlock Settings to save"; return }
+    fun saveGeminiSettings() {
+        if (!checkUnlocked()) return
 
         viewModelScope.launch {
             _isSaving.value = true
+            android.util.Log.d(TAG, "💾 SAVING GEMINI SETTINGS")
+
+            try {
+                if (_geminiKeyInput.value.isBlank()) {
+                    _message.value = "❌ Gemini API Key cannot be empty"
+                    return@launch
+                }
+
+                secureSettings.setGeminiApiKey(_geminiKeyInput.value)
+                appSettings.setGeminiModel(_geminiModelInput.value)
+
+                _message.value = "✅ Gemini settings saved successfully"
+                android.util.Log.d(TAG, "✅ GEMINI SETTINGS SAVED")
+
+            } catch (e: Exception) {
+                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
+                _message.value = "❌ Failed to save: ${e.message}"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    fun saveAllSettings() {
+        if (!checkUnlocked()) return
+
+        viewModelScope.launch {
+            _isSaving.value = true
+            android.util.Log.d(TAG, "💾 SAVING ALL SETTINGS")
 
             try {
                 if (_githubOwnerInput.value.isBlank() || _githubRepoInput.value.isBlank() ||
                     _githubTokenInput.value.isBlank() || _anthropicKeyInput.value.isBlank()
                 ) {
                     _message.value = "❌ GitHub and Claude fields are required"
-                    _isSaving.value = false
                     return@launch
                 }
 
@@ -464,14 +562,20 @@ class SettingsViewModel @Inject constructor(
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
                 appSettings.setClaudeModel(_claudeModelInput.value)
 
-                // DeepSeek — сохраняем только если введён
                 if (_deepSeekKeyInput.value.isNotBlank()) {
                     secureSettings.setDeepSeekApiKey(_deepSeekKeyInput.value)
                 }
 
+                if (_geminiKeyInput.value.isNotBlank()) {
+                    secureSettings.setGeminiApiKey(_geminiKeyInput.value)
+                    appSettings.setGeminiModel(_geminiModelInput.value)
+                }
+
                 _message.value = "✅ All settings saved successfully"
+                android.util.Log.d(TAG, "✅ ALL SETTINGS SAVED")
 
             } catch (e: Exception) {
+                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
                 _message.value = "❌ Failed to save: ${e.message}"
             } finally {
                 _isSaving.value = false
@@ -487,15 +591,16 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _githubStatus.value = ConnectionStatus.Testing
             try {
-                val result = gitHubClient.getRepository()
-                result.onSuccess { repo ->
-                    _repoInfo.value = repo
-                    _githubStatus.value = ConnectionStatus.Connected
-                    _message.value = "✅ GitHub connected: ${repo.fullName}"
-                }.onFailure { e ->
-                    _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                    _message.value = "❌ GitHub test failed: ${e.message}"
-                }
+                gitHubClient.getRepository()
+                    .onSuccess { repo ->
+                        _repoInfo.value = repo
+                        _githubStatus.value = ConnectionStatus.Connected
+                        _message.value = "✅ GitHub connected: ${repo.fullName}"
+                    }
+                    .onFailure { e ->
+                        _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
+                        _message.value = "❌ GitHub test failed: ${e.message}"
+                    }
             } catch (e: Exception) {
                 _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
                 _message.value = "❌ GitHub test error: ${e.message}"
@@ -507,18 +612,180 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _claudeStatus.value = ConnectionStatus.Testing
             try {
-                val result = claudeClient.testConnection()
-                result.onSuccess { message ->
-                    _claudeStatus.value = ConnectionStatus.Connected
-                    _message.value = "✅ $message"
-                }.onFailure { e ->
-                    _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                    _message.value = "❌ ${e.message}"
-                }
+                claudeClient.testConnection()
+                    .onSuccess { message ->
+                        _claudeStatus.value = ConnectionStatus.Connected
+                        _message.value = "✅ $message"
+                    }
+                    .onFailure { e ->
+                        _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
+                        _message.value = "❌ ${e.message}"
+                    }
             } catch (e: Exception) {
                 _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
                 _message.value = "❌ Connection error: ${e.message}"
             }
+        }
+    }
+
+    fun testDeepSeekConnection() {
+        val key = _deepSeekKeyInput.value.trim()
+        if (key.isBlank()) {
+            _message.value = "❌ Введите DeepSeek API key перед тестом"
+            return
+        }
+
+        viewModelScope.launch {
+            _deepSeekStatus.value = ConnectionStatus.Testing
+            android.util.Log.d(TAG, "🧪 Testing DeepSeek connection...")
+
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    testDeepSeekApi(key)
+                }
+                if (result) {
+                    _deepSeekStatus.value = ConnectionStatus.Connected
+                    _message.value = "✅ DeepSeek connected successfully"
+                    android.util.Log.d(TAG, "✅ DeepSeek test passed")
+                } else {
+                    _deepSeekStatus.value = ConnectionStatus.Error("Неверный ответ от API")
+                    _message.value = "❌ DeepSeek: неверный ответ от API"
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: "Unknown error"
+                _deepSeekStatus.value = ConnectionStatus.Error(msg)
+                _message.value = "❌ DeepSeek test failed: $msg"
+                android.util.Log.e(TAG, "❌ DeepSeek test failed", e)
+            }
+        }
+    }
+
+    fun testGeminiConnection() {
+        val key = _geminiKeyInput.value.trim()
+        if (key.isBlank()) {
+            _message.value = "❌ Введите Gemini API key перед тестом"
+            return
+        }
+
+        viewModelScope.launch {
+            _geminiStatus.value = ConnectionStatus.Testing
+            android.util.Log.d(TAG, "🧪 Testing Gemini connection with model: ${_geminiModelInput.value}")
+
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    testGeminiApi(key, _geminiModelInput.value)
+                }
+                if (result) {
+                    _geminiStatus.value = ConnectionStatus.Connected
+                    _message.value = "✅ Gemini connected successfully"
+                    android.util.Log.d(TAG, "✅ Gemini test passed")
+                } else {
+                    _geminiStatus.value = ConnectionStatus.Error("Неверный ответ от API")
+                    _message.value = "❌ Gemini: неверный ответ от API"
+                }
+            } catch (e: Exception) {
+                val msg = e.message ?: "Unknown error"
+                _geminiStatus.value = ConnectionStatus.Error(msg)
+                _message.value = "❌ Gemini test failed: $msg"
+                android.util.Log.e(TAG, "❌ Gemini test failed", e)
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // INTERNAL API TEST HELPERS
+    // ═════════════════════════════════════════════════════════════════════════
+
+    private fun testDeepSeekApi(apiKey: String): Boolean {
+        val url = "https://api.deepseek.com/v1/chat/completions"
+        val body = JSONObject().apply {
+            put("model", "deepseek-chat")
+            put("max_tokens", 8)
+            put("messages", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("content", "Hi")
+                })
+            })
+        }
+
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Authorization", "Bearer $apiKey")
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            doOutput = true
+        }
+
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            val err = connection.errorStream?.let {
+                BufferedReader(InputStreamReader(it)).use { r -> r.readText() }
+            } ?: "HTTP $code"
+            throw Exception(parseApiErrorMessage(code, err))
+        }
+
+        val response = BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
+        val json = JSONObject(response)
+        return json.has("choices")
+    }
+
+    private fun testGeminiApi(apiKey: String, modelId: String): Boolean {
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelId:generateContent?key=$apiKey"
+        val body = JSONObject().apply {
+            put("contents", JSONArray().apply {
+                put(JSONObject().apply {
+                    put("role", "user")
+                    put("parts", JSONArray().apply {
+                        put(JSONObject().apply { put("text", "Hi") })
+                    })
+                })
+            })
+            put("generationConfig", JSONObject().apply {
+                put("maxOutputTokens", 8)
+            })
+        }
+
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("Content-Type", "application/json")
+            connectTimeout = 20_000
+            readTimeout = 30_000
+            doOutput = true
+        }
+
+        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+
+        val code = connection.responseCode
+        if (code !in 200..299) {
+            val err = connection.errorStream?.let {
+                BufferedReader(InputStreamReader(it)).use { r -> r.readText() }
+            } ?: "HTTP $code"
+            throw Exception(parseApiErrorMessage(code, err))
+        }
+
+        val response = BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
+        val json = JSONObject(response)
+        return json.has("candidates")
+    }
+
+    private fun parseApiErrorMessage(code: Int, body: String): String {
+        val msg = try {
+            val json = JSONObject(body)
+            json.optJSONObject("error")?.optString("message")
+                ?: json.optString("message", "").ifBlank { body.take(200) }
+        } catch (_: Exception) { body.take(200) }
+
+        return when (code) {
+            400 -> "Неверный запрос: $msg"
+            401 -> "Неверный API ключ"
+            403 -> "Доступ запрещён: $msg"
+            429 -> "Превышен лимит запросов"
+            500, 502, 503 -> "Сервер недоступен, попробуйте позже"
+            else -> "Ошибка $code: $msg"
         }
     }
 
@@ -532,6 +799,7 @@ class SettingsViewModel @Inject constructor(
 
     fun resetToDefaults() {
         _claudeModelInput.value = "claude-opus-4-6"
+        _geminiModelInput.value = "gemini-flash-latest"
         _message.value = "⚠️ Settings reset to defaults (not saved)"
     }
 
