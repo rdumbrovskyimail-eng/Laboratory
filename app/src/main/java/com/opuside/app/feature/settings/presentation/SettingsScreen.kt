@@ -61,6 +61,8 @@ fun SettingsScreen(
     val githubStatus by viewModel.githubStatus.collectAsState()
     val repoInfo by viewModel.repoInfo.collectAsState()
     val claudeStatus by viewModel.claudeStatus.collectAsState()
+    val deepSeekStatus by viewModel.deepSeekStatus.collectAsState()
+    val geminiStatus by viewModel.geminiStatus.collectAsState()
 
     val githubOwnerInput by viewModel.githubOwnerInput.collectAsState()
     val githubRepoInput by viewModel.githubRepoInput.collectAsState()
@@ -68,8 +70,9 @@ fun SettingsScreen(
     val githubBranchInput by viewModel.githubBranchInput.collectAsState()
     val anthropicKeyInput by viewModel.anthropicKeyInput.collectAsState()
     val claudeModelInput by viewModel.claudeModelInput.collectAsState()
-    // ✅ DeepSeek
     val deepSeekKeyInput by viewModel.deepSeekKeyInput.collectAsState()
+    val geminiKeyInput by viewModel.geminiKeyInput.collectAsState()
+    val geminiModelInput by viewModel.geminiModelInput.collectAsState()
 
     val isSaving by viewModel.isSaving.collectAsState()
     val message by viewModel.message.collectAsState()
@@ -127,6 +130,7 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+
             // ═══════════════════════════════════════════════════════════════════════════
             // HEADER
             // ═══════════════════════════════════════════════════════════════════════════
@@ -335,7 +339,7 @@ fun SettingsScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════════════════
-            // ANTHROPIC SETTINGS
+            // ANTHROPIC / CLAUDE SETTINGS
             // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Claude API", icon = Icons.Default.Psychology) {
                 var showApiKey by remember { mutableStateOf(false) }
@@ -387,7 +391,7 @@ fun SettingsScreen(
 
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
-                    Row {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         TextButton(
                             onClick = viewModel::testClaudeConnection,
                             enabled = !sensitiveFeatureDisabled && claudeStatus !is ConnectionStatus.Testing
@@ -399,7 +403,7 @@ fun SettingsScreen(
                             Text("Test")
                         }
                         Button(
-                            onClick = { viewModel.saveAnthropicSettings() },
+                            onClick = viewModel::saveAnthropicSettings,
                             enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
                         ) { Text("Save") }
                     }
@@ -495,7 +499,7 @@ fun SettingsScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════════════════
-            // ✅ DEEPSEEK SETTINGS
+            // DEEPSEEK SETTINGS
             // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "DeepSeek API", icon = Icons.Default.AutoAwesome) {
                 var showDeepSeekKey by remember { mutableStateOf(false) }
@@ -542,7 +546,7 @@ fun SettingsScreen(
                                 color = Color(0xFF4E9BCD)
                             )
                             Text(
-                                "Бесплатно 5M токенов. Получить ключ: platform.deepseek.com",
+                                "Получить ключ: platform.deepseek.com",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFF4E9BCD).copy(alpha = 0.7f)
                             )
@@ -552,20 +556,237 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(12.dp))
 
-                Row(Modifier.fillMaxWidth(), Arrangement.End) {
-                    Button(
-                        onClick = viewModel::saveDeepSeekSettings,
-                        enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4E9BCD))
-                    ) {
-                        if (isSaving) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
-                        } else {
-                            Icon(Icons.Default.Save, null, modifier = Modifier.size(18.dp))
+                Row(
+                    Modifier.fillMaxWidth(),
+                    Arrangement.SpaceBetween,
+                    Alignment.CenterVertically
+                ) {
+                    ConnectionStatusBadge(status = deepSeekStatus)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = viewModel::testDeepSeekConnection,
+                            enabled = !sensitiveFeatureDisabled && deepSeekStatus !is ConnectionStatus.Testing
+                        ) {
+                            if (deepSeekStatus is ConnectionStatus.Testing) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text("Test")
                         }
-                        Spacer(Modifier.width(4.dp))
-                        Text("Save")
+                        Button(
+                            onClick = viewModel::saveDeepSeekSettings,
+                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4E9BCD))
+                        ) {
+                            if (isSaving) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                            } else {
+                                Icon(Icons.Default.Save, null, modifier = Modifier.size(18.dp))
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            Text("Save")
+                        }
                     }
+                }
+
+                when (val status = deepSeekStatus) {
+                    is ConnectionStatus.Connected -> {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF0A2030))
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF4E9BCD))
+                                Spacer(Modifier.width(8.dp))
+                                Text("DeepSeek connected!", style = MaterialTheme.typography.bodySmall, color = Color(0xFF4E9BCD))
+                            }
+                        }
+                    }
+                    is ConnectionStatus.Error -> {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Error, null, tint = MaterialTheme.colorScheme.error)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Test Failed", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+                        }
+                    }
+                    else -> {}
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════════════════
+            // GEMINI SETTINGS
+            // ═══════════════════════════════════════════════════════════════════════════
+            SettingsSection(title = "Gemini API", icon = Icons.Default.AutoAwesomeMotion) {
+                var showGeminiKey by remember { mutableStateOf(false) }
+
+                OutlinedTextField(
+                    value = geminiKeyInput,
+                    onValueChange = viewModel::updateGeminiKey,
+                    label = {
+                        Text(
+                            if (sensitiveFeatureDisabled) "API Key (Disabled - Root Access)"
+                            else if (!isUnlocked) "API Key (Locked)"
+                            else "API Key"
+                        )
+                    },
+                    placeholder = { Text("AIzaSy-xxxxxxxxxxxx") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = if (showGeminiKey && isUnlocked) VisualTransformation.None else PasswordVisualTransformation(),
+                    leadingIcon = { Icon(Icons.Default.Key, null) },
+                    trailingIcon = {
+                        IconButton(onClick = { showGeminiKey = !showGeminiKey }, enabled = isUnlocked) {
+                            Icon(if (showGeminiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
+                        }
+                    },
+                    enabled = !sensitiveFeatureDisabled && isUnlocked
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                // Выбор модели Gemini
+                var geminiModelExpanded by remember { mutableStateOf(false) }
+                val geminiModels = listOf(
+                    "gemini-3.1-pro-preview" to "Gemini 3.1 Pro Preview",
+                    "gemini-3.1-flash-lite-preview" to "Gemini 3.1 Flash Lite Preview",
+                    "gemini-flash-latest" to "Gemini Flash Latest",
+                    "gemini-flash-lite-latest" to "Gemini Flash Lite Latest"
+                )
+                ExposedDropdownMenuBox(
+                    expanded = geminiModelExpanded,
+                    onExpandedChange = { geminiModelExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = geminiModels.firstOrNull { it.first == geminiModelInput }?.second ?: geminiModelInput,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Default Model") },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(geminiModelExpanded) },
+                        leadingIcon = { Text("✨", style = MaterialTheme.typography.bodyMedium) },
+                        enabled = !sensitiveFeatureDisabled && isUnlocked
+                    )
+                    ExposedDropdownMenu(
+                        expanded = geminiModelExpanded,
+                        onDismissRequest = { geminiModelExpanded = false }
+                    ) {
+                        geminiModels.forEach { (modelId, displayName) ->
+                            DropdownMenuItem(
+                                text = { Text(displayName) },
+                                onClick = {
+                                    viewModel.updateGeminiModel(modelId)
+                                    geminiModelExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1F3A))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text("✨", style = MaterialTheme.typography.titleMedium)
+                        Column {
+                            Text(
+                                "Google Gemini — 4 версии моделей",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Color(0xFF8AB4F8)
+                            )
+                            Text(
+                                "Получить ключ: aistudio.google.com/apikey",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF8AB4F8).copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    Arrangement.SpaceBetween,
+                    Alignment.CenterVertically
+                ) {
+                    ConnectionStatusBadge(status = geminiStatus)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = viewModel::testGeminiConnection,
+                            enabled = !sensitiveFeatureDisabled && geminiStatus !is ConnectionStatus.Testing
+                        ) {
+                            if (geminiStatus is ConnectionStatus.Testing) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text("Test")
+                        }
+                        Button(
+                            onClick = viewModel::saveGeminiSettings,
+                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8AB4F8))
+                        ) {
+                            if (isSaving) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                            } else {
+                                Icon(Icons.Default.Save, null, modifier = Modifier.size(18.dp))
+                            }
+                            Spacer(Modifier.width(4.dp))
+                            Text("Save", color = Color(0xFF0D1117))
+                        }
+                    }
+                }
+
+                when (val status = geminiStatus) {
+                    is ConnectionStatus.Connected -> {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1F3A))
+                        ) {
+                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF8AB4F8))
+                                Spacer(Modifier.width(8.dp))
+                                Text("Gemini connected!", style = MaterialTheme.typography.bodySmall, color = Color(0xFF8AB4F8))
+                            }
+                        }
+                    }
+                    is ConnectionStatus.Error -> {
+                        Spacer(Modifier.height(8.dp))
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Error, null, tint = MaterialTheme.colorScheme.error)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Test Failed", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
+                                }
+                                Spacer(Modifier.height(4.dp))
+                                Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+                        }
+                    }
+                    else -> {}
                 }
             }
 
@@ -814,7 +1035,7 @@ fun SettingsScreen(
                 SettingsRow("Target SDK", "36 (Android 16)")
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "OpusIDE — AI-powered mobile development environment.\nUses Claude Opus 4.5 for intelligent code analysis.",
+                    "OpusIDE — AI-powered mobile development environment.\nSupports Claude, DeepSeek and Gemini models.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -858,12 +1079,13 @@ fun SettingsScreen(
                         "• Auto-locks after 5 minutes of inactivity\n" +
                         "• Biometric protection is ALWAYS ENABLED for API keys\n\n" +
                         "📥 QUICK SETUP:\n" +
-                        "• Click \"Import Config\" button to load settings from .txt file\n" +
-                        "• File format: [GitHub] and [Claude] sections with key=value pairs\n\n" +
+                        "• Click \"Import Config\" button to load settings from .txt file\n\n" +
                         "🐋 DEEPSEEK:\n" +
                         "• Зарегистрируйтесь на platform.deepseek.com\n" +
-                        "• Получите 5M бесплатных токенов\n" +
-                        "• Вставьте ключ в секцию DeepSeek API выше\n" +
+                        "• Вставьте ключ в секцию DeepSeek API выше\n\n" +
+                        "✨ GEMINI:\n" +
+                        "• Получите ключ на aistudio.google.com/apikey\n" +
+                        "• Выберите одну из 4 версий модели\n" +
                         "• Переключайте модель в Creator → AI Edit\n\n" +
                         "📱 USAGE:\n" +
                         "1. Set your GitHub repo and API keys above\n" +
