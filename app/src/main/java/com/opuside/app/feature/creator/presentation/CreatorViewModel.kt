@@ -53,7 +53,7 @@ class CreatorViewModel @Inject constructor(
     val currentPath: StateFlow<String> = _currentPath.asStateFlow()
 
     private val _pathHistory = MutableStateFlow<List<String>>(listOf(""))
-    
+
     val canGoBack: StateFlow<Boolean> = _pathHistory
         .map { it.size > 1 }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -78,7 +78,7 @@ class CreatorViewModel @Inject constructor(
     val fileContent: StateFlow<String> = _fileContent.asStateFlow()
 
     private val _originalContent = MutableStateFlow("")
-    
+
     val hasChanges: StateFlow<Boolean> = combine(_fileContent, _originalContent) { current, original ->
         current != original
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -96,10 +96,10 @@ class CreatorViewModel @Inject constructor(
     // ★ SELECTION & BATCH OPERATIONS STATE
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private val _selectionMode  = MutableStateFlow(false)
+    private val _selectionMode = MutableStateFlow(false)
     val selectionMode: StateFlow<Boolean> = _selectionMode.asStateFlow()
 
-    private val _selectedPaths  = MutableStateFlow<Set<String>>(emptySet())
+    private val _selectedPaths = MutableStateFlow<Set<String>>(emptySet())
     val selectedPaths: StateFlow<Set<String>> = _selectedPaths.asStateFlow()
 
     val selectedCount: StateFlow<Int> = _selectedPaths
@@ -109,7 +109,6 @@ class CreatorViewModel @Inject constructor(
     private val _moveStatus = MutableStateFlow<MoveStatus>(MoveStatus.Idle)
     val moveStatus: StateFlow<MoveStatus> = _moveStatus.asStateFlow()
 
-    // null = нет данных; непустая строка = готово к показу
     private val _collectedTxt = MutableStateFlow<String?>(null)
     val collectedTxt: StateFlow<String?> = _collectedTxt.asStateFlow()
 
@@ -125,8 +124,11 @@ class CreatorViewModel @Inject constructor(
     private val _showAIEditScreen = MutableStateFlow(false)
     val showAIEditScreen: StateFlow<Boolean> = _showAIEditScreen.asStateFlow()
 
-    /** Контент после применения AI-изменений (превью перед apply) */
     private var _aiEditNewContent: String = ""
+
+    // ✅ Выбранная модель для AI Edit
+    private val _selectedAiModel = MutableStateFlow(CreatorAIEditService.AiModel.CLAUDE_SONNET)
+    val selectedAiModel: StateFlow<CreatorAIEditService.AiModel> = _selectedAiModel.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
     // INITIALIZATION
@@ -134,31 +136,31 @@ class CreatorViewModel @Inject constructor(
 
     init {
         android.util.Log.d("CreatorViewModel", "🚀 Initializing CreatorViewModel...")
-        
+
         viewModelScope.launch {
             appSettings.gitHubConfig
                 .debounce(500)
                 .distinctUntilChanged()
                 .collectLatest { config ->
-                    
+
                     android.util.Log.d("CreatorViewModel", "📡 Config received:")
                     android.util.Log.d("CreatorViewModel", "   Owner: ${config.owner}")
                     android.util.Log.d("CreatorViewModel", "   Repo: ${config.repo}")
                     android.util.Log.d("CreatorViewModel", "   Branch: ${config.branch}")
                     android.util.Log.d("CreatorViewModel", "   Token: ${if (config.token.isNotEmpty()) "[SET]" else "[EMPTY]"}")
-                    
+
                     if (config.owner.isNotBlank() && config.repo.isNotBlank() && config.token.isNotBlank()) {
                         val ownerChanged = _currentOwner.value != config.owner
                         val repoChanged = _currentRepo.value != config.repo
                         val branchChanged = _currentBranch.value != config.branch
-                        
+
                         if (ownerChanged || repoChanged || branchChanged) {
                             android.util.Log.d("CreatorViewModel", "🔄 Config changed, reloading repository...")
-                            
+
                             _currentOwner.value = config.owner
                             _currentRepo.value = config.repo
                             _currentBranch.value = config.branch
-                            
+
                             try {
                                 loadContents("")
                                 loadBranches()
@@ -171,7 +173,7 @@ class CreatorViewModel @Inject constructor(
                         }
                     } else {
                         android.util.Log.d("CreatorViewModel", "⚠️ Config incomplete, clearing state")
-                        
+
                         _currentOwner.value = ""
                         _currentRepo.value = ""
                         _currentBranch.value = "main"
@@ -190,7 +192,6 @@ class CreatorViewModel @Inject constructor(
     fun setRepository(owner: String, repo: String, branch: String = "main") {
         viewModelScope.launch {
             android.util.Log.d("CreatorViewModel", "📝 Setting repository: $owner/$repo@$branch")
-            
             appSettings.setGitHubConfig(owner, repo, branch)
             _currentOwner.value = owner
             _currentRepo.value = repo
@@ -205,7 +206,6 @@ class CreatorViewModel @Inject constructor(
     fun switchBranch(branch: String) {
         viewModelScope.launch {
             android.util.Log.d("CreatorViewModel", "🌿 Switching to branch: $branch")
-            
             _currentBranch.value = branch
             appSettings.setGitHubConfig(_currentOwner.value, _currentRepo.value, branch)
             _currentPath.value = ""
@@ -216,8 +216,6 @@ class CreatorViewModel @Inject constructor(
 
     private fun loadBranches() {
         viewModelScope.launch {
-            android.util.Log.d("CreatorViewModel", "🌿 Loading branches...")
-            
             gitHubClient.getBranches()
                 .onSuccess { branches ->
                     _branches.value = branches
@@ -237,7 +235,7 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
-            
+
             android.util.Log.d("CreatorViewModel", "📂 Loading contents: ${if (path.isEmpty()) "/" else path}")
 
             gitHubClient.getContent(path, _currentBranch.value)
@@ -294,7 +292,7 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _selectedFile.value = file
-            
+
             android.util.Log.d("CreatorViewModel", "📄 Opening file: ${file.path}")
 
             gitHubClient.getFileContentDecoded(file.path, _currentBranch.value)
@@ -335,9 +333,8 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             _error.value = null
-            
+
             android.util.Log.d("CreatorViewModel", "💾 Saving file: ${file.path}")
-            android.util.Log.d("CreatorViewModel", "   Commit message: $commitMessage")
 
             val result = conflictResolver.saveFileWithConflictHandling(
                 path = file.path,
@@ -352,15 +349,12 @@ class CreatorViewModel @Inject constructor(
                     _selectedFile.value = file.copy(sha = result.newSha)
                     _originalContent.value = _fileContent.value
                     result.message?.let { _error.value = it }
-                    
                     android.util.Log.d("CreatorViewModel", "✅ File saved successfully")
                 }
-                
                 is ConflictResult.Conflict -> {
                     _conflictState.value = result
                     android.util.Log.w("CreatorViewModel", "⚠️ Conflict detected")
                 }
-                
                 is ConflictResult.Error -> {
                     _error.value = result.message
                     android.util.Log.e("CreatorViewModel", "❌ Save failed: ${result.message}")
@@ -376,27 +370,22 @@ class CreatorViewModel @Inject constructor(
 
         viewModelScope.launch {
             _isSaving.value = true
-            
+
             android.util.Log.d("CreatorViewModel", "🔧 Resolving conflict with strategy: $strategy")
 
             val result = when (strategy) {
-                ConflictStrategy.KEEP_MINE -> 
+                ConflictStrategy.KEEP_MINE ->
                     conflictResolver.resolveKeepMine(conflict, _currentBranch.value)
-                
-                ConflictStrategy.KEEP_THEIRS -> 
+                ConflictStrategy.KEEP_THEIRS ->
                     conflictResolver.resolveKeepTheirs(conflict)
-                
                 ConflictStrategy.MANUAL_MERGE -> {
                     if (mergedContent != null) {
-                        conflictResolver.resolveManualMerge(
-                            conflict, mergedContent, _currentBranch.value
-                        )
+                        conflictResolver.resolveManualMerge(conflict, mergedContent, _currentBranch.value)
                     } else {
                         ConflictResult.Error("No merged content provided")
                     }
                 }
-                
-                ConflictStrategy.SAVE_AS_COPY -> 
+                ConflictStrategy.SAVE_AS_COPY ->
                     conflictResolver.resolveSaveAsCopy(conflict, _currentBranch.value)
             }
 
@@ -404,11 +393,9 @@ class CreatorViewModel @Inject constructor(
                 is ConflictResult.Success -> {
                     _conflictState.value = null
                     _error.value = result.message ?: "Conflict resolved successfully"
-                    
                     _selectedFile.value?.let { file ->
                         _selectedFile.value = file.copy(sha = result.newSha)
                     }
-                    
                     android.util.Log.d("CreatorViewModel", "✅ Conflict resolved")
                 }
                 is ConflictResult.Error -> {
@@ -428,11 +415,11 @@ class CreatorViewModel @Inject constructor(
 
     fun createNewFile(fileName: String, initialContent: String = "") {
         val path = if (_currentPath.value.isEmpty()) fileName else "${_currentPath.value}/$fileName"
-        
+
         viewModelScope.launch {
             _isSaving.value = true
             _error.value = null
-            
+
             android.util.Log.d("CreatorViewModel", "➕ Creating new file: $path")
 
             gitHubClient.createOrUpdateFile(
@@ -458,7 +445,7 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
-            
+
             android.util.Log.d("CreatorViewModel", "🗑️ Deleting file: ${file.path}")
 
             gitHubClient.deleteFile(
@@ -468,9 +455,7 @@ class CreatorViewModel @Inject constructor(
                 branch = _currentBranch.value
             )
                 .onSuccess {
-                    if (_selectedFile.value?.path == file.path) {
-                        closeFile()
-                    }
+                    if (_selectedFile.value?.path == file.path) closeFile()
                     android.util.Log.d("CreatorViewModel", "✅ File deleted successfully")
                     refresh()
                 }
@@ -487,28 +472,26 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _isLoading.value = true
             _error.value = null
-            
+
             android.util.Log.d("CreatorViewModel", "🗑️ Deleting folder recursively: ${folder.path}")
-            
+
             try {
                 val deleted = deleteFolderRecursive(folder.path)
-                android.util.Log.d("CreatorViewModel", "✅ Folder deleted: $deleted files/folders")
+                android.util.Log.d("CreatorViewModel", "✅ Folder deleted: $deleted files")
                 refresh()
             } catch (e: Exception) {
                 _error.value = "Failed to delete folder: ${e.message}"
                 android.util.Log.e("CreatorViewModel", "❌ Failed to delete folder", e)
             }
-            
+
             _isLoading.value = false
         }
     }
 
     private suspend fun deleteFolderRecursive(path: String): Int {
         var deletedCount = 0
-        
-        val contents = gitHubClient.getContent(path, _currentBranch.value)
-            .getOrNull() ?: return 0
-        
+        val contents = gitHubClient.getContent(path, _currentBranch.value).getOrNull() ?: return 0
+
         contents.forEach { item ->
             if (item.type == "dir") {
                 deletedCount += deleteFolderRecursive(item.path)
@@ -524,7 +507,7 @@ class CreatorViewModel @Inject constructor(
                 }
             }
         }
-        
+
         return deletedCount
     }
 
@@ -549,7 +532,7 @@ class CreatorViewModel @Inject constructor(
 
                 val base64Content = Base64.encodeToString(bytes, Base64.NO_WRAP)
 
-                android.util.Log.d("CreatorViewModel", "📤 Uploading: $fileName (${bytes.size} bytes) → $repoPath")
+                android.util.Log.d("CreatorViewModel", "📤 Uploading: $fileName → $repoPath")
 
                 gitHubClient.createOrUpdateFileRaw(
                     path    = repoPath,
@@ -557,7 +540,7 @@ class CreatorViewModel @Inject constructor(
                     message = "Upload $fileName",
                     branch  = _currentBranch.value
                 ).onSuccess {
-                    android.util.Log.d("CreatorViewModel", "✅ Upload successful: $repoPath")
+                    android.util.Log.d("CreatorViewModel", "✅ Upload successful")
                     refresh()
                 }.onFailure { e ->
                     _error.value = "Upload failed: ${e.message}"
@@ -574,16 +557,14 @@ class CreatorViewModel @Inject constructor(
     fun renameFile(file: GitHubContent, newName: String) {
         viewModelScope.launch {
             _isLoading.value = true
-            
-            android.util.Log.d("CreatorViewModel", "✏️ Renaming file: ${file.name} → $newName")
-            
-            val contentResult = gitHubClient.getFileContentDecoded(file.path)
-            
-            contentResult.onSuccess { content ->
+
+            android.util.Log.d("CreatorViewModel", "✏️ Renaming: ${file.name} → $newName")
+
+            gitHubClient.getFileContentDecoded(file.path).onSuccess { content ->
                 val newPath = file.path.substringBeforeLast("/").let {
                     if (it.isEmpty()) newName else "$it/$newName"
                 }
-                
+
                 gitHubClient.createOrUpdateFile(
                     path = newPath,
                     content = content,
@@ -603,7 +584,7 @@ class CreatorViewModel @Inject constructor(
                 _error.value = "Failed to rename: ${e.message}"
                 android.util.Log.e("CreatorViewModel", "❌ Failed to rename file", e)
             }
-            
+
             _isLoading.value = false
         }
     }
@@ -612,9 +593,6 @@ class CreatorViewModel @Inject constructor(
     // ★ AI EDIT OPERATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Открывает полноэкранный AI Edit
-     */
     fun openAIEdit() {
         if (_selectedFile.value == null) return
         _showAIEditScreen.value = true
@@ -623,9 +601,6 @@ class CreatorViewModel @Inject constructor(
         android.util.Log.d("CreatorViewModel", "🤖 AI Edit opened for: ${_selectedFile.value?.name}")
     }
 
-    /**
-     * Закрывает AI Edit экран
-     */
     fun closeAIEdit() {
         _showAIEditScreen.value = false
         _aiEditStatus.value = CreatorAIEditService.EditStatus.Idle
@@ -633,13 +608,23 @@ class CreatorViewModel @Inject constructor(
         android.util.Log.d("CreatorViewModel", "🤖 AI Edit closed")
     }
 
-    /**
-     * Отправляет файл + инструкции в Haiku 4.5 для обработки.
-     * Отправляется ТОЛЬКО текущий открытый файл — НЕ весь репозиторий.
-     */
+    // ✅ Переключение модели
+    fun onAiModelChange(model: CreatorAIEditService.AiModel) {
+        _selectedAiModel.value = model
+        // Сбрасываем результат при смене модели
+        if (_aiEditStatus.value is CreatorAIEditService.EditStatus.Success ||
+            _aiEditStatus.value is CreatorAIEditService.EditStatus.Error) {
+            _aiEditStatus.value = CreatorAIEditService.EditStatus.Idle
+            _aiEditNewContent = ""
+        }
+        android.util.Log.d("CreatorViewModel", "🤖 AI model switched to: ${model.displayName}")
+    }
+
+    // ✅ processAIEdit передаёт выбранную модель
     fun processAIEdit(instructions: String) {
         val file = _selectedFile.value ?: return
         val currentContent = _fileContent.value
+        val model = _selectedAiModel.value
 
         if (instructions.isBlank()) {
             _aiEditStatus.value = CreatorAIEditService.EditStatus.Error("Введите инструкции")
@@ -649,12 +634,14 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _aiEditStatus.value = CreatorAIEditService.EditStatus.Processing
 
-            android.util.Log.d("CreatorViewModel", "🤖 Processing AI edit: ${instructions.take(80)}...")
+            android.util.Log.d("CreatorViewModel",
+                "🤖 Processing AI edit [${model.displayName}]: ${instructions.take(80)}...")
 
             aiEditService.processEdit(
                 fileContent = currentContent,
                 fileName = file.name,
-                instructions = instructions
+                instructions = instructions,
+                model = model                        // ✅ передаём модель
             ).onSuccess { result ->
                 if (result.blocks.isEmpty()) {
                     _aiEditStatus.value = CreatorAIEditService.EditStatus.Error(
@@ -663,12 +650,10 @@ class CreatorViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Применяем блоки к контенту (4-уровневый матчинг)
                 aiEditService.applyEdits(currentContent, result.blocks)
                     .onSuccess { applyResult ->
                         _aiEditNewContent = applyResult.newContent
 
-                        // Обновляем блоки с реальными статусами матчинга
                         val updatedResult = result.copy(
                             blocks = applyResult.appliedBlocks,
                             summary = if (applyResult.isFullyApplied) {
@@ -684,15 +669,13 @@ class CreatorViewModel @Inject constructor(
                         )
 
                         android.util.Log.d("CreatorViewModel",
-                            "✅ AI edit ready: ${applyResult.totalApplied}/${result.blocks.size} blocks applied, " +
+                            "✅ AI edit [${model.displayName}]: ${applyResult.totalApplied}/${result.blocks.size} blocks, " +
                             "${result.inputTokens}in+${result.outputTokens}out, " +
                             "€${String.format("%.5f", result.costEUR)}"
                         )
 
                         if (!applyResult.isFullyApplied) {
-                            android.util.Log.w("CreatorViewModel",
-                                "⚠️ ${applyResult.statusMessage}"
-                            )
+                            android.util.Log.w("CreatorViewModel", "⚠️ ${applyResult.statusMessage}")
                         }
                     }
                     .onFailure { e ->
@@ -710,22 +693,13 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Применяет результат AI-редактирования к файлу в редакторе
-     */
     fun applyAIEdit() {
         if (_aiEditNewContent.isBlank()) return
-
         _fileContent.value = _aiEditNewContent
         android.util.Log.d("CreatorViewModel", "✅ AI edit applied to file content")
-
-        // Закрываем AI Edit экран
         closeAIEdit()
     }
 
-    /**
-     * Сбрасывает результат AI-редактирования (без закрытия экрана)
-     */
     fun discardAIEdit() {
         _aiEditStatus.value = CreatorAIEditService.EditStatus.Idle
         _aiEditNewContent = ""
@@ -738,12 +712,12 @@ class CreatorViewModel @Inject constructor(
 
     fun enterSelectionMode() {
         _selectionMode.value = true
-        _selectedPaths.value  = emptySet()
+        _selectedPaths.value = emptySet()
     }
 
     fun exitSelectionMode() {
         _selectionMode.value = false
-        _selectedPaths.value  = emptySet()
+        _selectedPaths.value = emptySet()
     }
 
     fun toggleItemSelection(path: String) {
@@ -759,11 +733,6 @@ class CreatorViewModel @Inject constructor(
     // MOVE SELECTED ITEMS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Перемещает выбранные файлы/папки в [destinationBasePath].
-     * GitHub не имеет atomic move, поэтому: getContent → createOrUpdate → delete.
-     * Папки обходятся рекурсивно.
-     */
     fun moveSelectedItems(destinationBasePath: String) {
         val selectedItems = _contents.value.filter { it.path in _selectedPaths.value }
         if (selectedItems.isEmpty()) return
@@ -773,8 +742,7 @@ class CreatorViewModel @Inject constructor(
         viewModelScope.launch {
             _moveStatus.value = MoveStatus.Progress(0, 0, "Scanning…")
 
-            // Шаг 1: собираем плоский список (srcFile → destPath)
-            val plan = mutableListOf<Pair<com.opuside.app.core.network.github.model.GitHubContent, String>>()
+            val plan = mutableListOf<Pair<GitHubContent, String>>()
 
             for (item in selectedItems) {
                 val itemDest = if (dest.isEmpty()) item.name else "$dest/${item.name}"
@@ -790,7 +758,6 @@ class CreatorViewModel @Inject constructor(
                 return@launch
             }
 
-            // Шаг 2: copy → delete каждый файл
             var done = 0
             val errors = mutableListOf<String>()
 
@@ -838,7 +805,7 @@ class CreatorViewModel @Inject constructor(
     private suspend fun _collectFilesForMove(
         srcPath: String,
         destPath: String,
-        out: MutableList<Pair<com.opuside.app.core.network.github.model.GitHubContent, String>>
+        out: MutableList<Pair<GitHubContent, String>>
     ) {
         val children = gitHubClient.getContent(srcPath, _currentBranch.value).getOrNull() ?: return
         for (child in children) {
@@ -859,10 +826,6 @@ class CreatorViewModel @Inject constructor(
     // COLLECT SELECTED TO TXT
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Собирает содержимое всех выбранных файлов (и рекурсивно папок) в один текст.
-     * Каждый файл разделён шапкой с путём.
-     */
     fun collectSelectedToTxt() {
         val selectedItems = _contents.value.filter { it.path in _selectedPaths.value }
         if (selectedItems.isEmpty()) return
@@ -871,7 +834,7 @@ class CreatorViewModel @Inject constructor(
             _isLoading.value = true
 
             val sb = StringBuilder()
-            sb.appendLine("# Collected by VoiceDeutsch Master")
+            sb.appendLine("# Collected by OpusIDE")
             sb.appendLine("# Branch: ${_currentBranch.value}")
             sb.appendLine("# Items: ${selectedItems.size}")
             sb.appendLine()
@@ -891,13 +854,12 @@ class CreatorViewModel @Inject constructor(
 
     private suspend fun _collectFolderToTxt(path: String, sb: StringBuilder) {
         val children = gitHubClient.getContent(path, _currentBranch.value).getOrNull() ?: return
-        val sorted = children.sortedWith(compareBy<com.opuside.app.core.network.github.model.GitHubContent> { it.type != "dir" }.thenBy { it.name })
+        val sorted = children.sortedWith(
+            compareBy<GitHubContent> { it.type != "dir" }.thenBy { it.name }
+        )
         for (child in sorted) {
-            if (child.type == "dir") {
-                _collectFolderToTxt(child.path, sb)
-            } else {
-                _appendFileTxt(child.path, child.sha, sb)
-            }
+            if (child.type == "dir") _collectFolderToTxt(child.path, sb)
+            else _appendFileTxt(child.path, child.sha, sb)
         }
     }
 
@@ -932,19 +894,14 @@ class CreatorViewModel @Inject constructor(
     fun createBranch(branchName: String, fromBranch: String = _currentBranch.value) {
         viewModelScope.launch {
             _isLoading.value = true
-            
             android.util.Log.d("CreatorViewModel", "🌿 Creating branch: $branchName from $fromBranch")
-            
             gitHubClient.getBranch(fromBranch)
-                .onSuccess { branch ->
+                .onSuccess {
                     _error.value = "Branch creation via API requires refs endpoint (TODO)"
-                    android.util.Log.w("CreatorViewModel", "⚠️ Branch creation not implemented")
                 }
                 .onFailure { e ->
                     _error.value = "Failed: ${e.message}"
-                    android.util.Log.e("CreatorViewModel", "❌ Failed to create branch", e)
                 }
-            
             _isLoading.value = false
         }
     }
@@ -959,21 +916,17 @@ class CreatorViewModel @Inject constructor(
 
     val breadcrumbs: StateFlow<List<String>> = _currentPath
         .map { path ->
-            if (path.isEmpty()) {
-                listOf("root")
-            } else {
-                listOf("root") + path.split("/").filter { it.isNotEmpty() }
-            }
+            if (path.isEmpty()) listOf("root")
+            else listOf("root") + path.split("/").filter { it.isNotEmpty() }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), listOf("root"))
-    
+
     val gitHubConfig = appSettings.gitHubConfig
 }
 
 sealed class MoveStatus {
-    object Idle    : MoveStatus()
+    object Idle : MoveStatus()
     data class Progress(val done: Int, val total: Int, val currentFile: String) : MoveStatus()
-    data class Done(val movedCount: Int)   : MoveStatus()
-    data class Err(val message: String)    : MoveStatus()
+    data class Done(val movedCount: Int) : MoveStatus()
+    data class Err(val message: String) : MoveStatus()
 }
- 
