@@ -56,41 +56,39 @@ fun SettingsScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val secureSettings = remember { SecureSettingsDataStore(context) }
-    
+
     val gitHubConfig by viewModel.gitHubConfig.collectAsState(initial = SecureSettingsDataStore.GitHubConfig("", "", "main", ""))
     val githubStatus by viewModel.githubStatus.collectAsState()
     val repoInfo by viewModel.repoInfo.collectAsState()
     val claudeStatus by viewModel.claudeStatus.collectAsState()
-    
+
     val githubOwnerInput by viewModel.githubOwnerInput.collectAsState()
     val githubRepoInput by viewModel.githubRepoInput.collectAsState()
     val githubTokenInput by viewModel.githubTokenInput.collectAsState()
     val githubBranchInput by viewModel.githubBranchInput.collectAsState()
     val anthropicKeyInput by viewModel.anthropicKeyInput.collectAsState()
     val claudeModelInput by viewModel.claudeModelInput.collectAsState()
+    // ✅ DeepSeek
+    val deepSeekKeyInput by viewModel.deepSeekKeyInput.collectAsState()
+
     val isSaving by viewModel.isSaving.collectAsState()
     val message by viewModel.message.collectAsState()
-    
+
     val biometricAuthRequest by viewModel.biometricAuthRequest.collectAsState()
-    
+
     val isUnlocked by viewModel.isUnlocked.collectAsState()
     val unlockExpiration by viewModel.unlockExpiration.collectAsState()
     val timerTick by viewModel.timerTick.collectAsState()
-    
+
     val activity = remember(context) {
-        if (context is androidx.activity.ComponentActivity) {
-            context as? FragmentActivity
-        } else {
-            null
-        }
+        if (context is androidx.activity.ComponentActivity) context as? FragmentActivity else null
     }
 
     LaunchedEffect(Unit) {
         if (activity == null) {
             android.util.Log.w("SettingsScreen", "⚠️ FragmentActivity not available")
-            android.util.Log.w("SettingsScreen", "   Context type: ${context.javaClass.simpleName}")
         } else {
-            android.util.Log.d("SettingsScreen", "✅ FragmentActivity available: ${activity.javaClass.simpleName}")
+            android.util.Log.d("SettingsScreen", "✅ FragmentActivity: ${activity.javaClass.simpleName}")
         }
     }
 
@@ -105,29 +103,20 @@ fun SettingsScreen(
 
     if (biometricAuthRequest && activity != null) {
         val currentActivity: FragmentActivity = activity
-        
         LaunchedEffect(Unit) {
             BiometricAuthHelper.authenticate(
                 activity = currentActivity,
                 title = "Unlock Settings",
                 subtitle = "Authentication required to access sensitive settings",
-                onSuccess = {
-                    viewModel.onBiometricSuccess()
-                },
-                onError = { error ->
-                    viewModel.onBiometricError(error)
-                }
+                onSuccess = { viewModel.onBiometricSuccess() },
+                onError = { error -> viewModel.onBiometricError(error) }
             )
         }
     }
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
-    ) { uri ->
-        uri?.let { 
-            viewModel.importConfigFromFile(it)
-        }
-    }
+    ) { uri -> uri?.let { viewModel.importConfigFromFile(it) } }
 
     Scaffold(snackbarHost = { SnackbarHost(snackbarHostState) }) { padding ->
         Column(
@@ -138,13 +127,16 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // ═══════════════════════════════════════════════════════════════════════════
+            // HEADER
+            // ═══════════════════════════════════════════════════════════════════════════
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Settings", style = MaterialTheme.typography.headlineMedium)
-                
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -153,7 +145,7 @@ fun SettingsScreen(
                         targetValue = if (isUnlocked) Color(0xFF22C55E) else Color(0xFFEF4444),
                         label = "lock_indicator"
                     )
-                    
+
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -164,14 +156,12 @@ fun SettingsScreen(
                             tint = indicatorColor,
                             modifier = Modifier.size(24.dp)
                         )
-                        
                         Column {
                             Text(
                                 text = if (isUnlocked) "Unlocked" else "Locked",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = indicatorColor
                             )
-                            
                             if (isUnlocked && unlockExpiration != null) {
                                 val remainingTime = remember(timerTick, unlockExpiration) {
                                     derivedStateOf {
@@ -181,12 +171,9 @@ fun SettingsScreen(
                                             val minutes = remaining / 60
                                             val seconds = remaining % 60
                                             "${minutes}:${seconds.toString().padStart(2, '0')}"
-                                        } else {
-                                            "0:00"
-                                        }
+                                        } else "0:00"
                                     }
                                 }
-                                
                                 Text(
                                     text = remainingTime.value,
                                     style = MaterialTheme.typography.labelSmall,
@@ -195,109 +182,67 @@ fun SettingsScreen(
                             }
                         }
                     }
-                    
+
                     if (!sensitiveFeatureDisabled) {
                         IconButton(
                             onClick = {
-                                if (isUnlocked) {
-                                    viewModel.lock()
-                                } else {
-                                    viewModel.requestUnlock()
-                                }
+                                if (isUnlocked) viewModel.lock() else viewModel.requestUnlock()
                             }
                         ) {
                             Icon(
                                 imageVector = if (isUnlocked) Icons.Default.Lock else Icons.Default.Fingerprint,
                                 contentDescription = if (isUnlocked) "Lock Settings" else "Unlock Settings",
-                                tint = if (isUnlocked) 
-                                    MaterialTheme.colorScheme.onSurface 
-                                else 
-                                    MaterialTheme.colorScheme.primary
+                                tint = if (isUnlocked) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.primary
                             )
                         }
                     }
                 }
             }
 
+            // Root warning
             if (sensitiveFeatureDisabled) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    )
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Filled.Warning,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(32.dp)
-                        )
+                        Icon(Icons.Filled.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(32.dp))
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text(
-                                text = "Root Access Detected",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                            Text(
-                                text = "Sensitive settings are disabled for security",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
+                            Text("Root Access Detected", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+                            Text("Sensitive settings are disabled for security", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
                         }
                     }
                 }
             }
 
+            // Import config
             if (!sensitiveFeatureDisabled && isUnlocked) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                    )
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.Upload,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.onTertiaryContainer
-                                )
+                                Icon(Icons.Default.Upload, null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
                                 Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "Import Configuration",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onTertiaryContainer
-                                )
+                                Text("Import Configuration", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onTertiaryContainer)
                             }
                             Spacer(Modifier.height(4.dp))
-                            Text(
-                                "Load all settings from a .txt file",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer
-                            )
+                            Text("Load all settings from a .txt file", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onTertiaryContainer)
                         }
-                        
                         Button(
-                            onClick = { 
-                                filePickerLauncher.launch("text/plain")
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.tertiary
-                            )
+                            onClick = { filePickerLauncher.launch("text/plain") },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                         ) {
                             Icon(Icons.Default.FolderOpen, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(4.dp))
@@ -344,19 +289,16 @@ fun SettingsScreen(
                     enabled = isUnlocked
                 )
                 Spacer(Modifier.height(8.dp))
-                
+
                 var showToken by remember { mutableStateOf(false) }
                 OutlinedTextField(
                     value = githubTokenInput,
                     onValueChange = viewModel::updateGitHubToken,
-                    label = { 
+                    label = {
                         Text(
-                            if (sensitiveFeatureDisabled)
-                                "Personal Access Token (Disabled - Root Access)"
-                            else if (!isUnlocked)
-                                "Personal Access Token (Locked)"
-                            else
-                                "Personal Access Token"
+                            if (sensitiveFeatureDisabled) "Personal Access Token (Disabled - Root Access)"
+                            else if (!isUnlocked) "Personal Access Token (Locked)"
+                            else "Personal Access Token"
                         )
                     },
                     placeholder = { Text("ghp_xxxxxxxxxxxx") },
@@ -365,35 +307,22 @@ fun SettingsScreen(
                     visualTransformation = if (showToken && isUnlocked) VisualTransformation.None else PasswordVisualTransformation(),
                     leadingIcon = { Icon(Icons.Default.Key, null) },
                     trailingIcon = {
-                        IconButton(
-                            onClick = { showToken = !showToken },
-                            enabled = isUnlocked
-                        ) {
+                        IconButton(onClick = { showToken = !showToken }, enabled = isUnlocked) {
                             Icon(if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
                     },
                     enabled = !sensitiveFeatureDisabled && isUnlocked
                 )
                 Spacer(Modifier.height(12.dp))
-                
+
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = githubStatus)
                     Row {
-                        TextButton(
-                            onClick = viewModel::testGitHubConnection,
-                            enabled = !sensitiveFeatureDisabled
-                        ) { 
-                            Text("Test") 
-                        }
-                        Button(
-                            onClick = viewModel::saveGitHubSettings, 
-                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
-                        ) { 
-                            Text("Save") 
-                        }
+                        TextButton(onClick = viewModel::testGitHubConnection, enabled = !sensitiveFeatureDisabled) { Text("Test") }
+                        Button(onClick = viewModel::saveGitHubSettings, enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked) { Text("Save") }
                     }
                 }
-                
+
                 repoInfo?.let { repo ->
                     HorizontalDivider(Modifier.padding(vertical = 8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -413,14 +342,11 @@ fun SettingsScreen(
                 OutlinedTextField(
                     value = anthropicKeyInput,
                     onValueChange = viewModel::updateAnthropicKey,
-                    label = { 
+                    label = {
                         Text(
-                            if (sensitiveFeatureDisabled)
-                                "API Key (Disabled - Root Access)"
-                            else if (!isUnlocked)
-                                "API Key (Locked)"
-                            else
-                                "API Key"
+                            if (sensitiveFeatureDisabled) "API Key (Disabled - Root Access)"
+                            else if (!isUnlocked) "API Key (Locked)"
+                            else "API Key"
                         )
                     },
                     placeholder = { Text("sk-ant-api03-xxxx") },
@@ -429,22 +355,16 @@ fun SettingsScreen(
                     visualTransformation = if (showApiKey && isUnlocked) VisualTransformation.None else PasswordVisualTransformation(),
                     leadingIcon = { Icon(Icons.Default.Key, null) },
                     trailingIcon = {
-                        IconButton(
-                            onClick = { showApiKey = !showApiKey },
-                            enabled = isUnlocked
-                        ) {
+                        IconButton(onClick = { showApiKey = !showApiKey }, enabled = isUnlocked) {
                             Icon(if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
                         }
                     },
                     enabled = !sensitiveFeatureDisabled && isUnlocked
                 )
                 Spacer(Modifier.height(8.dp))
-                
+
                 var modelExpanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(
-                    expanded = modelExpanded, 
-                    onExpandedChange = { modelExpanded = it }
-                ) {
+                ExposedDropdownMenuBox(expanded = modelExpanded, onExpandedChange = { modelExpanded = it }) {
                     OutlinedTextField(
                         value = claudeModelInput,
                         onValueChange = {},
@@ -454,73 +374,48 @@ fun SettingsScreen(
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded) },
                         enabled = !sensitiveFeatureDisabled && isUnlocked
                     )
-                    ExposedDropdownMenu(
-                        expanded = modelExpanded, 
-                        onDismissRequest = { modelExpanded = false }
-                    ) {
-                        // ✅ ИСПРАВЛЕНО: Используем модели из ClaudeModelConfig
+                    ExposedDropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
                         com.opuside.app.core.ai.ClaudeModelConfig.ClaudeModel.getAllModelsWithNames().forEach { (modelId, displayName) ->
                             DropdownMenuItem(
-                                text = { Text(displayName) }, 
-                                onClick = { 
-                                    viewModel.updateClaudeModel(modelId)
-                                    modelExpanded = false 
-                                }
+                                text = { Text(displayName) },
+                                onClick = { viewModel.updateClaudeModel(modelId); modelExpanded = false }
                             )
                         }
                     }
                 }
                 Spacer(Modifier.height(12.dp))
-                
+
                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                     ConnectionStatusBadge(status = claudeStatus)
                     Row {
                         TextButton(
                             onClick = viewModel::testClaudeConnection,
                             enabled = !sensitiveFeatureDisabled && claudeStatus !is ConnectionStatus.Testing
-                        ) { 
+                        ) {
                             if (claudeStatus is ConnectionStatus.Testing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp
-                                )
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(4.dp))
                             }
-                            Text("Test") 
+                            Text("Test")
                         }
                         Button(
-                            onClick = { viewModel.saveAnthropicSettings() }, 
+                            onClick = { viewModel.saveAnthropicSettings() },
                             enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
-                        ) { 
-                            Text("Save") 
-                        }
+                        ) { Text("Save") }
                     }
                 }
-                
+
                 when (val status = claudeStatus) {
                     is ConnectionStatus.Connected -> {
                         Spacer(Modifier.height(8.dp))
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
                         ) {
-                            Row(
-                                modifier = Modifier.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    Icons.Default.CheckCircle,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
+                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
                                 Spacer(Modifier.width(8.dp))
-                                Text(
-                                    "Connection successful!",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                                Text("Connection successful!", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                             }
                         }
                     }
@@ -528,41 +423,24 @@ fun SettingsScreen(
                         Spacer(Modifier.height(8.dp))
                         Card(
                             modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.errorContainer
-                            )
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                         ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp)
-                            ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        Icons.Default.Error,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.error
-                                    )
+                                    Icon(Icons.Default.Error, null, tint = MaterialTheme.colorScheme.error)
                                     Spacer(Modifier.width(8.dp))
-                                    Text(
-                                        "Test Failed",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = MaterialTheme.colorScheme.error
-                                    )
+                                    Text("Test Failed", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
                                 }
                                 Spacer(Modifier.height(4.dp))
-                                Text(
-                                    status.message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
+                                Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
                             }
                         }
                     }
                     else -> {}
                 }
-                
+
                 if (!sensitiveFeatureDisabled) {
                     Spacer(Modifier.height(8.dp))
-                    
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
@@ -573,10 +451,7 @@ fun SettingsScreen(
                             }
                         )
                     ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 when {
                                     activity == null -> Icons.Default.Warning
@@ -620,6 +495,81 @@ fun SettingsScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════════════════
+            // ✅ DEEPSEEK SETTINGS
+            // ═══════════════════════════════════════════════════════════════════════════
+            SettingsSection(title = "DeepSeek API", icon = Icons.Default.AutoAwesome) {
+                var showDeepSeekKey by remember { mutableStateOf(false) }
+
+                OutlinedTextField(
+                    value = deepSeekKeyInput,
+                    onValueChange = viewModel::updateDeepSeekKey,
+                    label = {
+                        Text(
+                            if (sensitiveFeatureDisabled) "API Key (Disabled - Root Access)"
+                            else if (!isUnlocked) "API Key (Locked)"
+                            else "API Key"
+                        )
+                    },
+                    placeholder = { Text("sk-xxxxxxxxxxxx") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = if (showDeepSeekKey && isUnlocked) VisualTransformation.None else PasswordVisualTransformation(),
+                    leadingIcon = { Icon(Icons.Default.Key, null) },
+                    trailingIcon = {
+                        IconButton(onClick = { showDeepSeekKey = !showDeepSeekKey }, enabled = isUnlocked) {
+                            Icon(if (showDeepSeekKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
+                        }
+                    },
+                    enabled = !sensitiveFeatureDisabled && isUnlocked
+                )
+
+                Spacer(Modifier.height(8.dp))
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0A2030))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text("🐋", style = MaterialTheme.typography.titleMedium)
+                        Column {
+                            Text(
+                                "DeepSeek Chat & R1 Reasoner",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = Color(0xFF4E9BCD)
+                            )
+                            Text(
+                                "Бесплатно 5M токенов. Получить ключ: platform.deepseek.com",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF4E9BCD).copy(alpha = 0.7f)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Row(Modifier.fillMaxWidth(), Arrangement.End) {
+                    Button(
+                        onClick = viewModel::saveDeepSeekSettings,
+                        enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4E9BCD))
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                        } else {
+                            Icon(Icons.Default.Save, null, modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(Modifier.width(4.dp))
+                        Text("Save")
+                    }
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════════════════
             // DEVELOPER TOOLS
             // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Developer Tools", icon = Icons.Default.BugReport) {
@@ -628,10 +578,10 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                
+
                 Spacer(Modifier.height(12.dp))
-                
-                var showRootDialogOnStartup by remember { 
+
+                var showRootDialogOnStartup by remember {
                     mutableStateOf(
                         runBlocking {
                             context.dataStore.data.map { prefs ->
@@ -643,27 +593,16 @@ fun SettingsScreen(
 
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                "Show Root Dialog on Startup",
-                                style = MaterialTheme.typography.titleSmall
-                            )
-                            Text(
-                                "Display security check dialog when app starts",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text("Show Root Dialog on Startup", style = MaterialTheme.typography.titleSmall)
+                            Text("Display security check dialog when app starts", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = showRootDialogOnStartup,
@@ -689,124 +628,75 @@ fun SettingsScreen(
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (SecurityUtils.isDeviceRooted())
-                            MaterialTheme.colorScheme.errorContainer
-                        else
-                            MaterialTheme.colorScheme.primaryContainer
+                        containerColor = if (SecurityUtils.isDeviceRooted()) MaterialTheme.colorScheme.errorContainer
+                        else MaterialTheme.colorScheme.primaryContainer
                     )
                 ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             if (SecurityUtils.isDeviceRooted()) Icons.Default.Warning else Icons.Default.CheckCircle,
-                            null,
-                            Modifier.size(32.dp),
-                            tint = if (SecurityUtils.isDeviceRooted())
-                                MaterialTheme.colorScheme.error
-                            else
-                                MaterialTheme.colorScheme.primary
+                            null, Modifier.size(32.dp),
+                            tint = if (SecurityUtils.isDeviceRooted()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                         )
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text(
                                 if (SecurityUtils.isDeviceRooted()) "Root Detected" else "No Root Detected",
                                 style = MaterialTheme.typography.titleMedium,
-                                color = if (SecurityUtils.isDeviceRooted())
-                                    MaterialTheme.colorScheme.error
-                                else
-                                    MaterialTheme.colorScheme.primary
+                                color = if (SecurityUtils.isDeviceRooted()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                             )
                             Text(
-                                if (SecurityUtils.isDeviceRooted())
-                                    "Sensitive features may be compromised"
-                                else
-                                    "Device is secure",
+                                if (SecurityUtils.isDeviceRooted()) "Sensitive features may be compromised" else "Device is secure",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (SecurityUtils.isDeviceRooted())
-                                    MaterialTheme.colorScheme.onErrorContainer
-                                else
-                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                color = if (SecurityUtils.isDeviceRooted()) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
                     }
                 }
-                
+
                 Spacer(Modifier.height(16.dp))
-                
+
                 var crashStats by remember { mutableStateOf<com.opuside.app.core.util.LogStats?>(null) }
-                
-                LaunchedEffect(Unit) {
-                    crashStats = CrashTestUtil.getLogStats()
-                }
-                
+                LaunchedEffect(Unit) { crashStats = CrashTestUtil.getLogStats() }
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant
-                    )
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Description, 
-                                null, 
-                                Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Icon(Icons.Default.Description, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(Modifier.width(8.dp))
-                            Text(
-                                "Logger Statistics",
-                                style = MaterialTheme.typography.titleSmall
-                            )
+                            Text("Logger Statistics", style = MaterialTheme.typography.titleSmall)
                         }
                         Spacer(Modifier.height(8.dp))
-                        Text(
-                            crashStats?.toString() ?: "Loading...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Text(crashStats?.toString() ?: "Loading...", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                
+
                 Spacer(Modifier.height(12.dp))
-                
+
                 var showLogViewer by remember { mutableStateOf(false) }
                 var selectedLogForViewing by remember { mutableStateOf<LogFile?>(null) }
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(
                         onClick = { CrashTestUtil.triggerTestCrash() },
                         modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = Color(0xFFEF4444)
-                        )
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFEF4444))
                     ) {
                         Icon(Icons.Default.Warning, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("Test Crash")
                     }
-                    
                     Button(
-                        onClick = { 
+                        onClick = {
                             val file = CrashTestUtil.saveLogCatErrors(context)
                             if (file != null) {
-                                Toast.makeText(
-                                    context,
-                                    "✅ LogCat errors saved!\n${file.name}",
-                                    Toast.LENGTH_LONG
-                                ).show()
+                                Toast.makeText(context, "✅ LogCat errors saved!\n${file.name}", Toast.LENGTH_LONG).show()
                                 crashStats = CrashTestUtil.getLogStats()
                             } else {
-                                Toast.makeText(
-                                    context,
-                                    "❌ Failed to save LogCat",
-                                    Toast.LENGTH_SHORT
-                                ).show()
+                                Toast.makeText(context, "❌ Failed to save LogCat", Toast.LENGTH_SHORT).show()
                             }
                         },
                         modifier = Modifier.weight(1f)
@@ -816,25 +706,19 @@ fun SettingsScreen(
                         Text("Save LogCat")
                     }
                 }
-                
+
                 Spacer(Modifier.height(8.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { showLogViewer = true },
                         modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.secondary
-                        )
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
                     ) {
                         Icon(Icons.Default.FolderOpen, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
                         Text("View Logs")
                     }
-                    
                     OutlinedButton(
                         onClick = { CrashTestUtil.shareLatestCrashLog(context) },
                         modifier = Modifier.weight(1f)
@@ -844,51 +728,28 @@ fun SettingsScreen(
                         Text("Share Log")
                     }
                 }
-                
+
                 if (showLogViewer) {
                     LogViewerDialog(
-                        onDismiss = { 
-                            showLogViewer = false
-                            selectedLogForViewing = null
-                        },
-                        onLogSelected = { logFile ->
-                            selectedLogForViewing = logFile
-                        }
+                        onDismiss = { showLogViewer = false; selectedLogForViewing = null },
+                        onLogSelected = { logFile -> selectedLogForViewing = logFile }
                     )
                 }
-                
                 selectedLogForViewing?.let { logFile ->
-                    LogContentDialog(
-                        logFile = logFile,
-                        onDismiss = { selectedLogForViewing = null }
-                    )
+                    LogContentDialog(logFile = logFile, onDismiss = { selectedLogForViewing = null })
                 }
-                
+
                 Spacer(Modifier.height(12.dp))
-                
+
                 Card(
                     modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = Color(0xFFFEF3C7)
-                    )
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF3C7))
                 ) {
-                    Row(
-                        modifier = Modifier.padding(12.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        Icon(
-                            Icons.Default.Warning,
-                            null,
-                            Modifier.size(20.dp),
-                            tint = Color(0xFFD97706)
-                        )
+                    Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
+                        Icon(Icons.Default.Warning, null, Modifier.size(20.dp), tint = Color(0xFFD97706))
                         Spacer(Modifier.width(8.dp))
                         Column {
-                            Text(
-                                "Info",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = Color(0xFFD97706)
-                            )
+                            Text("Info", style = MaterialTheme.typography.titleSmall, color = Color(0xFFD97706))
                             Text(
                                 "• \"Test Crash\" will immediately crash the app\n• Crash logs auto-save when app crashes\n• \"Save LogCat\" saves only errors from logcat\n• \"View Logs\" shows all crash & logcat logs with red error highlighting",
                                 style = MaterialTheme.typography.bodySmall,
@@ -907,19 +768,12 @@ fun SettingsScreen(
                     AppTheme.entries.forEach { theme ->
                         val isSelected = theme == selectedTheme
                         Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onThemeChange(theme) },
+                            modifier = Modifier.fillMaxWidth().clickable { onThemeChange(theme) },
                             colors = CardDefaults.cardColors(
-                                containerColor = if (isSelected)
-                                    MaterialTheme.colorScheme.primaryContainer
-                                else
-                                    MaterialTheme.colorScheme.surface
+                                containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                                else MaterialTheme.colorScheme.surface
                             ),
-                            border = if (isSelected) BorderStroke(
-                                1.5.dp,
-                                MaterialTheme.colorScheme.primary
-                            ) else null
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else null
                         ) {
                             Row(
                                 modifier = Modifier.padding(12.dp),
@@ -932,33 +786,18 @@ fun SettingsScreen(
                                     Box(Modifier.size(16.dp).clip(CircleShape).background(theme.config.accent))
                                 }
                                 Column(Modifier.weight(1f)) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         Text(theme.config.emoji, style = MaterialTheme.typography.bodyMedium)
                                         Text(
                                             theme.config.displayName,
                                             style = MaterialTheme.typography.titleSmall,
-                                            color = if (isSelected)
-                                                MaterialTheme.colorScheme.primary
-                                            else
-                                                MaterialTheme.colorScheme.onSurface
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                         )
                                     }
-                                    Text(
-                                        theme.config.description,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Text(theme.config.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if (isSelected) {
-                                    Icon(
-                                        Icons.Default.CheckCircle,
-                                        null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
+                                    Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 }
                             }
                         }
@@ -974,8 +813,11 @@ fun SettingsScreen(
                 SettingsRow("Build", viewModel.buildType)
                 SettingsRow("Target SDK", "36 (Android 16)")
                 Spacer(Modifier.height(8.dp))
-                Text("OpusIDE — AI-powered mobile development environment.\nUses Claude Opus 4.5 for intelligent code analysis.",
-                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "OpusIDE — AI-powered mobile development environment.\nUses Claude Opus 4.5 for intelligent code analysis.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             // ═══════════════════════════════════════════════════════════════════════════
@@ -988,8 +830,8 @@ fun SettingsScreen(
                     Text("Reset")
                 }
                 Button(
-                    onClick = viewModel::saveAllSettings, 
-                    modifier = Modifier.weight(1f), 
+                    onClick = viewModel::saveAllSettings,
+                    modifier = Modifier.weight(1f),
                     enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
                 ) {
                     if (isSaving) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -1017,20 +859,23 @@ fun SettingsScreen(
                         "• Biometric protection is ALWAYS ENABLED for API keys\n\n" +
                         "📥 QUICK SETUP:\n" +
                         "• Click \"Import Config\" button to load settings from .txt file\n" +
-                        "• File format: [GitHub] and [Claude] sections with key=value pairs\n" +
-                        "• Example file provided in downloads\n\n" +
+                        "• File format: [GitHub] and [Claude] sections with key=value pairs\n\n" +
+                        "🐋 DEEPSEEK:\n" +
+                        "• Зарегистрируйтесь на platform.deepseek.com\n" +
+                        "• Получите 5M бесплатных токенов\n" +
+                        "• Вставьте ключ в секцию DeepSeek API выше\n" +
+                        "• Переключайте модель в Creator → AI Edit\n\n" +
                         "📱 USAGE:\n" +
-                        "1. Set your GitHub repo and API keys above (or import from file)\n" +
+                        "1. Set your GitHub repo and API keys above\n" +
                         "2. In Creator tab: browse files, edit, commit\n" +
                         "3. In Analyzer tab: chat with Claude about your project\n" +
-                        "4. Use Developer Tools to test crash logger\n" +
-                        "5. Toggle Root Dialog in Developer Tools to control startup behavior\n\n" +
-                        "✅ NEW: Click \"Test\" to verify Claude API connection before using Analyzer",
-                        style = MaterialTheme.typography.bodySmall, 
+                        "4. Use Developer Tools to test crash logger",
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onTertiaryContainer
                     )
                 }
             }
+
             Spacer(Modifier.height(32.dp))
         }
     }
