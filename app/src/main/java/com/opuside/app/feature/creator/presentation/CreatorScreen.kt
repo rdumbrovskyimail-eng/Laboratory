@@ -38,6 +38,7 @@ import com.opuside.app.core.network.github.model.GitHubContent
 import com.opuside.app.core.ui.components.EditorConfig
 import com.opuside.app.core.ui.components.VirtualizedCodeEditor
 import com.opuside.app.core.util.detectLanguage
+import com.opuside.app.feature.creator.data.CreatorAIEditService
 import java.io.File
 
 @Composable
@@ -60,6 +61,8 @@ fun CreatorScreen(
     // ★ AI Edit states
     val showAIEditScreen by viewModel.showAIEditScreen.collectAsState()
     val aiEditStatus by viewModel.aiEditStatus.collectAsState()
+    // ✅ Model switcher
+    val selectedAiModel by viewModel.selectedAiModel.collectAsState()
 
     // ★ Selection / Move / Collect states
     val selectionMode by viewModel.selectionMode.collectAsState()
@@ -278,6 +281,8 @@ fun CreatorScreen(
                     fileName = file.name,
                     fileContent = fileContent,
                     editStatus = aiEditStatus,
+                    selectedModel = selectedAiModel,              // ✅
+                    onModelChange = viewModel::onAiModelChange,   // ✅
                     onProcess = viewModel::processAIEdit,
                     onApply = viewModel::applyAIEdit,
                     onDiscard = viewModel::discardAIEdit,
@@ -345,7 +350,7 @@ private fun TopBar(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                
+
                 IconButton(onClick = onRefresh) {
                     Icon(Icons.Default.Refresh, "Refresh")
                 }
@@ -417,8 +422,8 @@ private fun LoadingState() {
         ) {
             CircularProgressIndicator()
             Text(
-                "Loading files...", 
-                style = MaterialTheme.typography.bodyMedium, 
+                "Loading files...",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -443,14 +448,14 @@ private fun ConfigurationNeededState() {
                 Modifier.size(72.dp),
                 tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
             )
-            
+
             Text(
                 "GitHub Not Configured",
                 style = MaterialTheme.typography.headlineSmall,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center
             )
-            
+
             Text(
                 "To start working with your repository:\n\n" +
                 "1. Go to Settings tab\n" +
@@ -463,9 +468,9 @@ private fun ConfigurationNeededState() {
                 textAlign = TextAlign.Center,
                 lineHeight = 20.sp
             )
-            
+
             Spacer(Modifier.height(8.dp))
-            
+
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = MaterialTheme.colorScheme.tertiaryContainer
@@ -653,14 +658,14 @@ private fun EmptyFolderState(modifier: Modifier = Modifier) {
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
-                Icons.Default.FolderOpen, 
-                null, 
-                Modifier.size(64.dp), 
+                Icons.Default.FolderOpen,
+                null,
+                Modifier.size(64.dp),
                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
             )
             Text(
-                "Empty folder", 
-                style = MaterialTheme.typography.bodyLarge, 
+                "Empty folder",
+                style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
@@ -682,7 +687,6 @@ private fun FileItem(
     onDelete      : () -> Unit
 ) {
     val isDir = content.type == "dir"
-
     var showMenu by remember { mutableStateOf(false) }
 
     Card(
@@ -703,60 +707,60 @@ private fun FileItem(
         )
     ) {
         Box {
-        Row(
-            modifier = Modifier
-                .combinedClickable(
-                    onClick     = onClick,
-                    onLongClick = {
-                        if (!selectionMode) showMenu = true
-                        onLongClick()
+            Row(
+                modifier = Modifier
+                    .combinedClickable(
+                        onClick     = onClick,
+                        onLongClick = {
+                            if (!selectionMode) showMenu = true
+                            onLongClick()
+                        }
+                    )
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                AnimatedContent(targetState = selectionMode, label = "icon") { inSelection ->
+                    if (inSelection) {
+                        Icon(
+                            imageVector        = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                            contentDescription = null,
+                            tint               = if (isSelected) MaterialTheme.colorScheme.primary
+                                                 else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier           = Modifier.size(24.dp)
+                        )
+                    } else {
+                        Icon(
+                            imageVector        = if (isDir) Icons.Default.Folder else Icons.Default.Description,
+                            contentDescription = null,
+                            tint               = if (isDir) MaterialTheme.colorScheme.primary
+                                                 else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier           = Modifier.size(24.dp)
+                        )
                     }
-                )
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            AnimatedContent(targetState = selectionMode, label = "icon") { inSelection ->
-                if (inSelection) {
+                }
+
+                Spacer(Modifier.width(12.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(content.name, style = MaterialTheme.typography.bodyLarge)
+                    if (!isDir) {
+                        Text(
+                            formatFileSize(content.size),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                if (!selectionMode) {
                     Icon(
-                        imageVector        = if (isSelected) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                        contentDescription = null,
-                        tint               = if (isSelected) MaterialTheme.colorScheme.primary
-                                             else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier           = Modifier.size(24.dp)
-                    )
-                } else {
-                    Icon(
-                        imageVector        = if (isDir) Icons.Default.Folder else Icons.Default.Description,
-                        contentDescription = null,
-                        tint               = if (isDir) MaterialTheme.colorScheme.primary
-                                             else MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier           = Modifier.size(24.dp)
+                        Icons.Default.ChevronRight,
+                        null,
+                        tint     = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
-
-            Spacer(Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(content.name, style = MaterialTheme.typography.bodyLarge)
-                if (!isDir) {
-                    Text(
-                        formatFileSize(content.size),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            if (!selectionMode) {
-                Icon(
-                    Icons.Default.ChevronRight,
-                    null,
-                    tint     = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-        }
 
             DropdownMenu(
                 expanded = showMenu,
@@ -769,11 +773,7 @@ private fun FileItem(
                         onDelete()
                     },
                     leadingIcon = {
-                        Icon(
-                            Icons.Default.Delete,
-                            null,
-                            tint = MaterialTheme.colorScheme.error
-                        )
+                        Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error)
                     }
                 )
             }
@@ -829,7 +829,7 @@ private fun EditorMode(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// EDITOR TOOLBAR (★ кнопка ⚡ AI Edit вместо FindReplace)
+// EDITOR TOOLBAR
 // ═══════════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -851,9 +851,8 @@ private fun EditorToolbar(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Language badge
                 Surface(
-                    shape = MaterialTheme.shapes.small, 
+                    shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.primaryContainer
                 ) {
                     Text(
@@ -863,15 +862,13 @@ private fun EditorToolbar(
                         color = MaterialTheme.colorScheme.onPrimaryContainer
                     )
                 }
-                
+
                 Spacer(Modifier.width(8.dp))
-                
-                // Action buttons
+
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // ★ AI Edit button
                     FilledTonalButton(
                         onClick = onAIEdit,
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -885,12 +882,8 @@ private fun EditorToolbar(
                         Spacer(Modifier.width(4.dp))
                         Text("AI Edit", style = MaterialTheme.typography.labelMedium)
                     }
-                    
-                    // Copy All button
-                    IconButton(
-                        onClick = onCopyAll,
-                        modifier = Modifier.size(36.dp)
-                    ) {
+
+                    IconButton(onClick = onCopyAll, modifier = Modifier.size(36.dp)) {
                         Icon(
                             Icons.Default.ContentCopy,
                             contentDescription = "Copy All",
@@ -898,12 +891,8 @@ private fun EditorToolbar(
                             tint = MaterialTheme.colorScheme.secondary
                         )
                     }
-                    
-                    // Paste All button
-                    IconButton(
-                        onClick = onPasteAll,
-                        modifier = Modifier.size(36.dp)
-                    ) {
+
+                    IconButton(onClick = onPasteAll, modifier = Modifier.size(36.dp)) {
                         Icon(
                             Icons.Default.ContentPaste,
                             contentDescription = "Paste All (Replace)",
@@ -911,19 +900,18 @@ private fun EditorToolbar(
                             tint = MaterialTheme.colorScheme.tertiary
                         )
                     }
-                    
+
                     Spacer(Modifier.width(4.dp))
-                    
-                    // Save button
+
                     Button(
-                        onClick = onSave, 
+                        onClick = onSave,
                         enabled = hasChanges && !isSaving,
                         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                     ) {
                         if (isSaving) {
                             CircularProgressIndicator(
-                                Modifier.size(16.dp), 
-                                strokeWidth = 2.dp, 
+                                Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
                                 color = MaterialTheme.colorScheme.onPrimary
                             )
                         } else {
@@ -945,7 +933,7 @@ private fun EditorToolbar(
 @Composable
 private fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String, String) -> Unit) {
     var fileName by remember { mutableStateOf("") }
-    
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Create New File") },
@@ -960,23 +948,18 @@ private fun NewFileDialog(onDismiss: () -> Unit, onCreate: (String, String) -> U
             )
         },
         confirmButton = {
-            TextButton(
-                onClick = { onCreate(fileName, "") }, 
-                enabled = fileName.isNotBlank()
-            ) { 
-                Text("Create") 
+            TextButton(onClick = { onCreate(fileName, "") }, enabled = fileName.isNotBlank()) {
+                Text("Create")
             }
         },
-        dismissButton = { 
-            TextButton(onClick = onDismiss) { Text("Cancel") } 
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
 @Composable
 private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
     var message by remember { mutableStateOf("") }
-    
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Commit Changes") },
@@ -991,13 +974,11 @@ private fun CommitDialog(onDismiss: () -> Unit, onCommit: (String) -> Unit) {
             )
         },
         confirmButton = {
-            TextButton(onClick = { onCommit(message.ifBlank { "Update file" }) }) { 
-                Text("Commit") 
+            TextButton(onClick = { onCommit(message.ifBlank { "Update file" }) }) {
+                Text("Commit")
             }
         },
-        dismissButton = { 
-            TextButton(onClick = onDismiss) { Text("Cancel") } 
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
@@ -1026,11 +1007,8 @@ private fun DeleteConfirmationDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    "Are you sure you want to delete:",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                
+                Text("Are you sure you want to delete:", style = MaterialTheme.typography.bodyMedium)
+
                 Surface(
                     shape = MaterialTheme.shapes.small,
                     color = MaterialTheme.colorScheme.errorContainer,
@@ -1054,11 +1032,11 @@ private fun DeleteConfirmationDialog(
                         )
                     }
                 }
-                
+
                 Text(
-                    if (isFolder) 
+                    if (isFolder)
                         "This will delete the folder and ALL its contents recursively. This action cannot be undone."
-                    else 
+                    else
                         "This action cannot be undone. The file will be permanently deleted from GitHub.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -1078,11 +1056,7 @@ private fun DeleteConfirmationDialog(
                 Text("Delete")
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 
@@ -1111,10 +1085,7 @@ private fun MoveDialog(
         title = { Text("Переместить файлы ($selectedCount)") },
         text  = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    "Введите путь назначения в репозитории:",
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Text("Введите путь назначения в репозитории:", style = MaterialTheme.typography.bodyMedium)
                 OutlinedTextField(
                     value          = destPath,
                     onValueChange  = { destPath = it },
@@ -1162,11 +1133,7 @@ private fun MoveDialog(
                         modifier          = Modifier.padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            Icons.Default.Info, null,
-                            Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.onErrorContainer
-                        )
+                        Icon(Icons.Default.Info, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onErrorContainer)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             "GitHub не поддерживает атомарный move. " +
@@ -1179,16 +1146,9 @@ private fun MoveDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = { onMove(destPath.trim()) },
-                enabled = !isMoving
-            ) {
+            Button(onClick = { onMove(destPath.trim()) }, enabled = !isMoving) {
                 if (isMoving) {
-                    CircularProgressIndicator(
-                        Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                     Spacer(Modifier.width(8.dp))
                     Text("Перемещение…")
                 } else {
@@ -1198,9 +1158,7 @@ private fun MoveDialog(
                 }
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !isMoving) { Text("Отмена") }
-        }
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !isMoving) { Text("Отмена") } }
     )
 }
 
@@ -1268,9 +1226,7 @@ private fun CollectedTxtDialog(
                 }
             }
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Закрыть") }
-        }
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } }
     )
 }
 
@@ -1284,16 +1240,8 @@ private fun StatChip(label: String, value: String) {
             modifier            = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(
-                value,
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            Text(
-                label,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-            )
+            Text(value, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
         }
     }
 }
