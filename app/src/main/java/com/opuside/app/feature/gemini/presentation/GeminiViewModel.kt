@@ -30,20 +30,28 @@ import java.util.UUID
 import javax.inject.Inject
 
 /**
- * 🔷 GEMINI VIEW MODEL v1.0
+ * 🔷 GEMINI VIEW MODEL v1.1
  *
  * Full Gemini API integration with:
  * - Multi-turn conversation history
  * - Message sanitization (user/model alternation)
  * - Context window overflow protection
- * - Tool loop with timeout (30s per tool batch)
+ * - Tool loop with timeout (45s per tool batch)
  * - Cancellation-safe (cancels OkHttp Call)
  * - File attachment support
  * - Full GenerationConfig (temperature, topP, topK, thinking, safety, etc.)
  * - ECO/MAX output mode
  * - Foreground service for long streams
- * - API key validation
+ * - API key validation (dual-layer: SecureStore → AppSettings fallback)
  * - Provider tracking in messages
+ *
+ * Fixes v1.1:
+ * - 🔥 MAX_TOOL_ITERATIONS = 8 (было 60) — не убиваем квоту Pro Preview (2 RPM)
+ * - 🔥 MAX_503_RETRIES = 2 (было 5) — сдаёмся раньше на перегревах
+ * - 🔥 TOOL_TIMEOUT_MS = 45s (было 30s) — хватает на загрузку GitHub деревьев
+ * - 🔥 TOOL_INTER_DELAY_MS = 3000ms (было 800ms) — даём передышку серверу
+ * - 🔥 429 → мгновенный break (не спамим повторно в 2 RPM квоту)
+ * - 🔥 Dual-layer API key: SecureStore + AppSettings fallback
  */
 @HiltViewModel
 class GeminiViewModel @Inject constructor(
@@ -60,11 +68,20 @@ class GeminiViewModel @Inject constructor(
         private const val TAG = "GeminiVM"
         private const val KEY_SESSION_ID = "gemini_session_id"
         private const val MAX_OPS_LOG_SIZE = 500
-        private const val MAX_TOOL_ITERATIONS = 60
-        private const val MAX_503_RETRIES = 5
+
+        // 🔥 FIX v1.1: не убиваем Pro Preview (2 RPM) спамом в 60 итераций
+        private const val MAX_TOOL_ITERATIONS = 8
+
+        // 🔥 FIX v1.1: сдаёмся раньше на перегревах — добавит плавности
+        private const val MAX_503_RETRIES = 2
         private const val RETRY_503_BASE_DELAY_MS = 3000L
-        private const val TOOL_TIMEOUT_MS = 30_000L
-        private const val TOOL_INTER_DELAY_MS = 800L
+
+        // 🔥 FIX v1.1: 45s — хватает на загрузку GitHub деревьев (было 30s)
+        private const val TOOL_TIMEOUT_MS = 45_000L
+
+        // 🔥 FIX v1.1: 3s пауза между итерациями — передышка для 2 RPM серверов
+        private const val TOOL_INTER_DELAY_MS = 3000L
+
         private const val MAX_ATTACHED_FILE_BYTES = 2 * 1024 * 1024L  // 2 MB
         private const val CHARS_PER_TOKEN_ESTIMATE = 4
     }
@@ -150,7 +167,6 @@ class GeminiViewModel @Inject constructor(
             val savedModelId = appSettings.geminiModel.first()
             val model = GeminiModel.fromModelId(savedModelId) ?: GeminiModel.getDefault()
             _selectedModel.value = model
-            // ✅ ADD: сброс конфига под загруженную модель
             val maxOut = if (_ecoOutputMode.value) GeminiModelConfig.ECO_OUTPUT_TOKENS else model.maxOutputTokens
             _generationConfig.value = GenerationConfig(
                 temperature = 0.7f,
@@ -212,7 +228,6 @@ class GeminiViewModel @Inject constructor(
 
     fun updateGenerationConfig(config: GenerationConfig) {
         val model = _selectedModel.value
-        // ✅ Strip параметры которые модель не поддерживает
         val validated = config.copy(
             maxOutputTokens = config.maxOutputTokens.coerceAtMost(model.maxOutputTokens),
             thinkingLevel = if (model.supportsThinking) config.thinkingLevel else ThinkingLevel.NONE,
@@ -230,14 +245,13 @@ class GeminiViewModel @Inject constructor(
 
     fun selectModel(model: GeminiModel) {
         _selectedModel.value = model
-        // ✅ СБРОС конфига под возможности новой модели
         val maxOut = if (_ecoOutputMode.value) GeminiModelConfig.ECO_OUTPUT_TOKENS else model.maxOutputTokens
         _generationConfig.value = GenerationConfig(
             temperature = 0.7f,
             topP = 0.95f,
             topK = 40,
             maxOutputTokens = maxOut,
-            thinkingLevel = ThinkingLevel.NONE,  // всегда OFF при смене
+            thinkingLevel = ThinkingLevel.NONE,
             presencePenalty = 0f,
             frequencyPenalty = 0f,
             seed = null
@@ -339,16 +353,19 @@ class GeminiViewModel @Inject constructor(
             _chatError.value = null
             _streamingText.value = null
 
-            // ── Validate API key ────────────────────────────────────
-            val apiKey = secureSettings.getActiveGeminiApiKey().first()
+            // 🔥 FIX v1.1: dual-layer API key check
+            // Слой 1: SecureStore (приоритетный)
+            // Слой 2: AppSettings DataStore (fallback для старых установок)
+            var apiKey = secureSettings.getGeminiApiKey().first()
+            if (apiKey.isBlank()) apiKey = appSettings.geminiApiKey.first()
+
             if (apiKey.isBlank()) {
-                _chatError.value = "Gemini API key not set. Open Settings (Tune icon) to add it."
+                _chatError.value = "Gemini API key not set. Задайте в настройках (иконка Tune)."
                 _isStreaming.value = false
                 return@launch
             }
 
             val model = _selectedModel.value
-            // ✅ FIXED: валидация перед отправкой
             val rawConfig = _generationConfig.value
             val config = rawConfig.copy(
                 maxOutputTokens = rawConfig.maxOutputTokens.coerceAtMost(model.maxOutputTokens),
@@ -383,7 +400,7 @@ class GeminiViewModel @Inject constructor(
             if (_conversationHistoryEnabled.value) {
                 val history = chatDao.getSession(sessionId)
                     .filter { !it.isStreaming && it.content.isNotBlank() && it.role != MessageRole.SYSTEM }
-                    .dropLast(1)  // ✅ FIX: убираем только что вставленное сообщение — оно будет добавлено ниже
+                    .dropLast(1)
                 for (msg in history) {
                     when (msg.role) {
                         MessageRole.USER -> geminiMessages.add(GeminiMessage.user(msg.content))
@@ -393,7 +410,6 @@ class GeminiViewModel @Inject constructor(
                 }
             }
 
-            // Current message (always added separately)
             geminiMessages.add(GeminiMessage.user(fullMessage))
 
             // ── Sanitize messages ───────────────────────────────────
@@ -411,7 +427,6 @@ class GeminiViewModel @Inject constructor(
                 sanitizedMessages.toMutableList(), model, config, systemPrompt, tools
             )
 
-            // ── Foreground service ──────────────────────────────────
             StreamingForegroundService.start(appContext, "Gemini ${model.displayName}")
 
             val startTime = System.currentTimeMillis()
@@ -425,9 +440,10 @@ class GeminiViewModel @Inject constructor(
             try {
                 toolLoop@ while (iteration < MAX_TOOL_ITERATIONS) {
                     iteration++
+
+                    // 🔥 FIX v1.1: 3s пауза — даём передышку 2 RPM серверам
                     if (iteration > 1) kotlinx.coroutines.delay(TOOL_INTER_DELAY_MS)
 
-                    // ── 503/429 retry wrapper ────────────────────────
                     var retryCount503 = 0
                     var iterText = ""
                     var iterToolCalls: List<GeminiToolCall> = emptyList()
@@ -460,7 +476,12 @@ class GeminiViewModel @Inject constructor(
                                         fullResponse = result.accumulated
                                         _streamingText.value = fullResponse
                                         val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
-                                        StreamingForegroundService.updateProgress(appContext, "~${"%,d".format(fullResponse.length / CHARS_PER_TOKEN_ESTIMATE)} tok", fullResponse.length / CHARS_PER_TOKEN_ESTIMATE, elapsed)
+                                        StreamingForegroundService.updateProgress(
+                                            appContext,
+                                            "~${"%,d".format(fullResponse.length / CHARS_PER_TOKEN_ESTIMATE)} tok",
+                                            fullResponse.length / CHARS_PER_TOKEN_ESTIMATE,
+                                            elapsed
+                                        )
                                     }
                                     is GeminiStreamResult.ToolUse -> {
                                         iterHasToolUse = true
@@ -478,12 +499,11 @@ class GeminiViewModel @Inject constructor(
                                         iterUsage = result.usage
                                     }
                                     is GeminiStreamResult.Error -> {
-                                        // ✅ FIX: обрабатываем 429 так же как 503
                                         val httpCode = (result.exception as? GeminiApiException)?.httpCode
-                                        if (httpCode == 503 || httpCode == 429) {
-                                            iterError = "retryable:$httpCode"
-                                        } else {
-                                            iterError = result.exception.message ?: "Unknown error"
+                                        iterError = when (httpCode) {
+                                            429 -> "retryable:429"
+                                            503, 529 -> "retryable:${httpCode}"
+                                            else -> result.exception.message ?: "Unknown error"
                                         }
                                     }
                                 }
@@ -494,18 +514,30 @@ class GeminiViewModel @Inject constructor(
                             iterError = e.message ?: "Unknown"
                         }
 
-                        // ── Handle retryable errors (429 + 503) ──────
+                        // 🔥 FIX v1.1: мгновенный break на 429 — не спамим в 2 RPM квоту
+                        if (iterError?.startsWith("retryable:429") == true) {
+                            _chatError.value = "⚠️ Лимит RPM исчерпан (HTTP 429). " +
+                                "Gemini 3.1 Pro Preview = 2 RPM бесплатно. " +
+                                "Попробуйте Flash/Lite или подождите ~30 секунд."
+                            addOperation("⛔", "429 RPM limit — остановка цикла", OperationLogType.ERROR)
+                            _isStreaming.value = false
+                            _streamingText.value = null
+                            break@toolLoop
+                        }
+
+                        // 503/529 — пробуем MAX_503_RETRIES = 2 раза с экспоненциальной задержкой
                         if (iterError?.startsWith("retryable:") == true) {
                             val code = iterError!!.substringAfter(":")
                             retryCount503++
                             if (retryCount503 <= MAX_503_RETRIES) {
-                                val baseDelay = if (code == "429") 15_000L else RETRY_503_BASE_DELAY_MS
-                                val delayMs = baseDelay * retryCount503
-                                addOperation("🔄", "$code retry $retryCount503/$MAX_503_RETRIES (${delayMs/1000}s)", OperationLogType.PROGRESS)
+                                val delayMs = RETRY_503_BASE_DELAY_MS * retryCount503
+                                addOperation("🔄",
+                                    "Google AI $code overload. Retry $retryCount503/$MAX_503_RETRIES (${delayMs / 1000}s)",
+                                    OperationLogType.PROGRESS)
                                 kotlinx.coroutines.delay(delayMs)
                                 continue@retry503
                             }
-                            iterError = "$code: Overloaded after $MAX_503_RETRIES retries"
+                            iterError = "HTTP $code: сервер перегружен после $MAX_503_RETRIES попыток."
                         }
                         break@retry503
                     }
@@ -516,9 +548,17 @@ class GeminiViewModel @Inject constructor(
                             _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
                         }
                         if (fullResponse.isNotBlank()) {
-                            chatDao.insert(ChatMessageEntity(sessionId = sessionId, role = MessageRole.ASSISTANT, content = fullResponse + "\n\n⚠️ $iterError", isStreaming = false, provider = "gemini"))
+                            chatDao.insert(ChatMessageEntity(
+                                sessionId = sessionId,
+                                role = MessageRole.ASSISTANT,
+                                content = fullResponse + "\n\n⚠️ $iterError",
+                                isStreaming = false,
+                                provider = "gemini"
+                            ))
                         }
-                        _isStreaming.value = false; _streamingText.value = null; _chatError.value = iterError
+                        _isStreaming.value = false
+                        _streamingText.value = null
+                        _chatError.value = iterError
                         addOperation("❌", iterError!!, OperationLogType.ERROR)
                         break@toolLoop
                     }
@@ -531,49 +571,89 @@ class GeminiViewModel @Inject constructor(
 
                     if (iterCompleted) {
                         _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
-                        chatDao.insert(ChatMessageEntity(sessionId = sessionId, role = MessageRole.ASSISTANT, content = fullResponse, isStreaming = false, provider = "gemini"))
-                        _streamingText.value = null; _isStreaming.value = false
+                        chatDao.insert(ChatMessageEntity(
+                            sessionId = sessionId,
+                            role = MessageRole.ASSISTANT,
+                            content = fullResponse,
+                            isStreaming = false,
+                            provider = "gemini"
+                        ))
+                        _streamingText.value = null
+                        _isStreaming.value = false
                         val cost = model.calculateCost(totalInputTokens, totalOutputTokens, totalThinkingTokens)
-                        addOperation("✅", "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)} (${iteration} iter)", OperationLogType.SUCCESS)
+                        addOperation("✅",
+                            "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)} ($iteration iter)",
+                            OperationLogType.SUCCESS)
                         if (_attachedFileContent.value != null) detachFile()
                         break@toolLoop
                     }
 
                     if (iterHasToolUse) {
                         for (tc in iterToolCalls) addOperation("🔧", "Tool: ${tc.name}", OperationLogType.PROGRESS)
+
                         val toolResults = withTimeoutOrNull(TOOL_TIMEOUT_MS) {
-                            iterToolCalls.map { tc -> toolExecutor.execute(tc.name, UUID.randomUUID().toString(), tc.args) }
-                        } ?: iterToolCalls.map { ToolExecutor.ToolResult(UUID.randomUUID().toString(), "Error: timeout", isError = true) }
+                            iterToolCalls.map { tc ->
+                                toolExecutor.execute(tc.name, UUID.randomUUID().toString(), tc.args)
+                            }
+                        } ?: iterToolCalls.map {
+                            ToolExecutor.ToolResult(UUID.randomUUID().toString(), "⚠️ Timeout (${TOOL_TIMEOUT_MS / 1000}s)", isError = true)
+                        }
 
                         for (i in toolResults.indices) {
-                            val tc = iterToolCalls[i]; val tr = toolResults[i]
+                            val tc = iterToolCalls[i]
+                            val tr = toolResults[i]
                             val icon = if (tr.isError) "❌" else "✅"
-                            val opInfo = tr.operation?.let { when(it) { is ToolExecutor.FileOperation.Created -> "Created: ${it.path}"; is ToolExecutor.FileOperation.Edited -> "Edited: ${it.path}"; is ToolExecutor.FileOperation.Deleted -> "Deleted: ${it.path}"; is ToolExecutor.FileOperation.DirectoryCreated -> "Dir: ${it.path}" } } ?: tc.name
+                            val opInfo = tr.operation?.let {
+                                when (it) {
+                                    is ToolExecutor.FileOperation.Created -> "Created: ${it.path}"
+                                    is ToolExecutor.FileOperation.Edited -> "Edited: ${it.path}"
+                                    is ToolExecutor.FileOperation.Deleted -> "Deleted: ${it.path}"
+                                    is ToolExecutor.FileOperation.DirectoryCreated -> "Dir: ${it.path}"
+                                }
+                            } ?: tc.name
                             addOperation(icon, opInfo, if (tr.isError) OperationLogType.ERROR else OperationLogType.SUCCESS)
                         }
 
                         val assistantParts = mutableListOf<GeminiPart>()
                         if (iterText.isNotBlank()) assistantParts.add(GeminiPart.Text(iterText))
-                        iterToolCalls.forEach { tc -> assistantParts.add(GeminiPart.FunctionCall(tc.name, tc.args, tc.thoughtSignature)) }
+                        iterToolCalls.forEach { tc ->
+                            assistantParts.add(GeminiPart.FunctionCall(tc.name, tc.args, tc.thoughtSignature))
+                        }
                         currentMessages.add(GeminiMessage("model", assistantParts))
 
                         val responseParts = toolResults.mapIndexed { i, tr ->
-                            GeminiPart.FunctionResponse(name = iterToolCalls[i].name, response = buildJsonObject { put("result", JsonPrimitive(tr.content)); if (tr.isError) put("error", JsonPrimitive(true)) })
+                            GeminiPart.FunctionResponse(
+                                name = iterToolCalls[i].name,
+                                response = buildJsonObject {
+                                    put("result", JsonPrimitive(tr.content))
+                                    if (tr.isError) put("error", JsonPrimitive(true))
+                                }
+                            )
                         }
                         currentMessages.add(GeminiMessage("user", responseParts))
                         continue@toolLoop
                     }
                 }
 
-                // Tool loop limit
+                // ── Tool loop limit hit ──────────────────────────────
                 if (iteration >= MAX_TOOL_ITERATIONS && _isStreaming.value) {
-                    if (fullResponse.isNotBlank()) {
-                        chatDao.insert(ChatMessageEntity(sessionId = sessionId, role = MessageRole.ASSISTANT, content = fullResponse + "\n\n⚠️ Tool loop limit ($MAX_TOOL_ITERATIONS)", isStreaming = false, provider = "gemini"))
-                        _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
-                    }
-                    _streamingText.value = null; _isStreaming.value = false
-                    addOperation("⚠️", "Tool loop limit ($MAX_TOOL_ITERATIONS)", OperationLogType.ERROR)
+                    val fallbackContent = if (fullResponse.isBlank())
+                        "Анализ файлов слишком затянулся — прервался на итерации $MAX_TOOL_ITERATIONS " +
+                        "для экономии квоты (RPM Guard)."
+                    else fullResponse
+                    chatDao.insert(ChatMessageEntity(
+                        sessionId = sessionId,
+                        role = MessageRole.ASSISTANT,
+                        content = fallbackContent + "\n\n⚙️ Инструменты исчерпали лимит циклов ($MAX_TOOL_ITERATIONS).",
+                        isStreaming = false,
+                        provider = "gemini"
+                    ))
+                    _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
+                    _streamingText.value = null
+                    _isStreaming.value = false
+                    addOperation("⚠️", "Tool loop limit ($MAX_TOOL_ITERATIONS) hit.", OperationLogType.ERROR)
                 }
+
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _isStreaming.value = false
                 _streamingText.value = null
@@ -606,8 +686,8 @@ class GeminiViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════
 
     /**
-     * Gemini requires strict user/model alternation.
-     * Merges consecutive same-role messages, ensures first=user, last=user.
+     * Gemini требует строгое чередование user/model.
+     * Склеивает подряд идущие сообщения одной роли, гарантирует first=user, last=user.
      */
     private fun sanitizeGeminiMessages(
         messages: List<GeminiMessage>
@@ -617,24 +697,15 @@ class GeminiViewModel @Inject constructor(
         val result = mutableListOf<GeminiMessage>()
         for (msg in messages) {
             if (result.isNotEmpty() && result.last().role == msg.role) {
-                // Merge consecutive same-role messages
                 val last = result.removeAt(result.lastIndex)
-                val mergedParts = last.parts + msg.parts
-                result.add(GeminiMessage(msg.role, mergedParts))
+                result.add(GeminiMessage(msg.role, last.parts + msg.parts))
             } else {
                 result.add(msg)
             }
         }
 
-        // First message must be "user"
-        while (result.isNotEmpty() && result.first().role != "user") {
-            result.removeAt(0)
-        }
-
-        // Last message must be "user" (for generation)
-        while (result.isNotEmpty() && result.last().role != "user") {
-            result.removeAt(result.lastIndex)
-        }
+        while (result.isNotEmpty() && result.first().role != "user") result.removeAt(0)
+        while (result.isNotEmpty() && result.last().role != "user") result.removeAt(result.lastIndex)
 
         return result
     }
@@ -643,10 +714,6 @@ class GeminiViewModel @Inject constructor(
     // CONTEXT OVERFLOW PROTECTION
     // ═══════════════════════════════════════════════════════════════════
 
-    /**
-     * Rough estimation: 1 token ≈ 4 characters.
-     * Trims oldest message pairs if context exceeds model limit.
-     */
     private fun protectContextOverflow(
         messages: MutableList<GeminiMessage>,
         model: GeminiModel,
@@ -656,7 +723,7 @@ class GeminiViewModel @Inject constructor(
     ): List<GeminiMessage> {
         val maxInput = model.contextWindow - config.maxOutputTokens
         val overheadTokens = (systemPrompt?.length?.div(CHARS_PER_TOKEN_ESTIMATE) ?: 0) +
-                (if (tools != null) 2000 else 0) // rough tools overhead
+                (if (tools != null) 2000 else 0)
 
         var estimatedTokens = overheadTokens + messages.sumOf { msg ->
             msg.parts.sumOf { part ->
@@ -674,7 +741,6 @@ class GeminiViewModel @Inject constructor(
                 "Context overflow (~${"%,d".format(estimatedTokens)} > ${"%,d".format(maxInput)}). Trimming history.",
                 OperationLogType.PROGRESS)
 
-            // Remove oldest messages in pairs (user+model), keep at least last user message
             while (messages.size > 2 && estimatedTokens > (maxInput * 0.85).toInt()) {
                 val removed = messages.removeAt(0)
                 estimatedTokens -= removed.parts.sumOf { part ->
@@ -684,8 +750,6 @@ class GeminiViewModel @Inject constructor(
                     }
                 }
             }
-
-            // Re-sanitize after trimming
             return sanitizeGeminiMessages(messages)
         }
 
@@ -737,7 +801,7 @@ RULES:
 5. Respond in the same language as the user
 6. Write complete file content when creating/editing (no partial edits)
 7. IMPORTANT: When creating a project with many files, call MULTIPLE create_file tools in a SINGLE response to maximize efficiency
-8. You have up to 60 tool iterations — use them wisely by batching file operations
+8. You have up to $MAX_TOOL_ITERATIONS tool iterations — use them wisely by batching file operations
 9. If a file already exists, create_file will automatically update it (no SHA errors)
     """.trimIndent()
 
