@@ -640,19 +640,21 @@ object GeminiModelConfig {
                 HarmCategory.CIVIC_INTEGRITY to SafetyThreshold.BLOCK_MEDIUM_AND_ABOVE
             )
 
-            val ECO = GenerationConfig(maxOutputTokens = 8192, temperature = 0.7f)
-            val MAX = GenerationConfig(maxOutputTokens = 65_536, temperature = 1.0f)
-            val CODE = GenerationConfig(maxOutputTokens = 65_536, temperature = 0.2f, topP = 0.8f)
+            val ECO = GenerationConfig(maxOutputTokens = 8192, temperature = 0.7f, thinkingLevel = ThinkingLevel.NONE)
+            val MAX = GenerationConfig(maxOutputTokens = 65_536, temperature = 1.0f, thinkingLevel = ThinkingLevel.NONE)
+            val CODE = GenerationConfig(maxOutputTokens = 65_536, temperature = 0.2f, topP = 0.8f, thinkingLevel = ThinkingLevel.NONE)
             val CREATIVE = GenerationConfig(
                 maxOutputTokens = 65_536,
                 temperature = 1.5f,
                 topP = 0.95f,
-                topK = 64
+                topK = 64,
+                thinkingLevel = ThinkingLevel.NONE
             )
             val JSON = GenerationConfig(
                 maxOutputTokens = 8192,
                 temperature = 0.0f,
-                responseMimeType = "application/json"
+                responseMimeType = "application/json",
+                thinkingLevel = ThinkingLevel.NONE
             )
         }
     }
