@@ -7,6 +7,7 @@ import com.opuside.app.core.ai.GeminiModelConfig.GenerationConfig
 import com.opuside.app.core.ai.GeminiModelConfig.GeminiModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import okhttp3.*
@@ -106,9 +107,22 @@ class GeminiApiClient @Inject constructor() {
         val call = httpClient.newCall(request)
         currentCall.set(call)
 
-        val response: Response
-        try {
-            response = withContext(Dispatchers.IO) { call.execute() }
+        kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]?.invokeOnCompletion {
+            if (it is kotlinx.coroutines.CancellationException) {
+                call.cancel()
+            }
+        }
+
+        val response: Response = try {
+            suspendCancellableCoroutine { cont ->
+                cont.invokeOnCancellation { call.cancel() }
+                try {
+                    val resp = call.execute()
+                    cont.resume(resp) {}
+                } catch (e: Exception) {
+                    if (!cont.isCancelled) cont.resumeWithException(e)
+                }
+            }
         } catch (e: java.io.IOException) {
             // Check if cancelled by user
             if (call.isCanceled()) {
@@ -117,6 +131,9 @@ class GeminiApiClient @Inject constructor() {
                 return@flow
             }
             throw e
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            currentCall.set(null)
+            return@flow
         }
 
         try {
