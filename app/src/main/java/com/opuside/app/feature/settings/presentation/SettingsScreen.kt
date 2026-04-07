@@ -748,12 +748,8 @@ fun SettingsScreen(
 
                 // Выбор модели Gemini
                 var geminiModelExpanded by remember { mutableStateOf(false) }
-                val geminiModels = listOf(
-                    "gemini-3.1-pro-preview" to "Gemini 3.1 Pro Preview",
-                    "gemini-3.1-flash-lite-preview" to "Gemini 3.1 Flash Lite Preview",
-                    "gemini-flash-latest" to "Gemini Flash Latest",
-                    "gemini-flash-lite-latest" to "Gemini Flash Lite Latest"
-                )
+                val geminiModels = com.opuside.app.core.ai.GeminiModelConfig.GeminiModel.getActiveModels()
+                    .map { it.modelId to "${it.emoji} ${it.displayName}" }
                 ExposedDropdownMenuBox(
                     expanded = geminiModelExpanded,
                     onExpandedChange = { geminiModelExpanded = it }
