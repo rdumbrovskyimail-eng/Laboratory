@@ -71,7 +71,10 @@ data class ChatMessageEntity(
     val costUSD: Double? = null, // ✅ НОВОЕ: Стоимость в USD
     
     @ColumnInfo(name = "cost_eur")
-    val costEUR: Double? = null // ✅ НОВОЕ: Стоимость в EUR
+    val costEUR: Double? = null, // ✅ НОВОЕ: Стоимость в EUR
+    
+    @ColumnInfo(name = "provider")
+    val provider: String? = null // "claude" | "gemini" | null (legacy)
 ) {
     /**
      * ✅ НОВОЕ: Вычисляемые свойства для удобства
@@ -98,6 +101,12 @@ data class ChatMessageEntity(
      */
     val hasError: Boolean
         get() = errorMessage != null
+
+    val isGemini: Boolean
+        get() = provider == "gemini"
+
+    val isClaude: Boolean
+        get() = provider == "claude" || provider == null
 }
 
 /**
