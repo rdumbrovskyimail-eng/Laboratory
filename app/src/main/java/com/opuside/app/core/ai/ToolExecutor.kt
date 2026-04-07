@@ -2,6 +2,7 @@ package com.opuside.app.core.ai
 
 import android.util.Log
 import com.opuside.app.core.network.github.GitHubApiClient
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.*
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -312,6 +313,39 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
         if (path.contains("..")) return ToolResult(id, "Error: path traversal not allowed", isError = true)
 
         return createOrUpdateWithRetry(id, path, content, commitMsg, FileOperation.Edited(path))
+    }
+
+    /**
+     * ✅ Единый метод с retry: проверяет SHA, обрабатывает race conditions
+     */
+    private suspend fun createOrUpdateWithRetry(
+        id: String, path: String, content: String, commitMsg: String, operation: FileOperation
+    ): ToolResult {
+        for (attempt in 1..3) {
+            try {
+                val existingSha = try {
+                    gitHubClient.getFileContent(path).getOrNull()?.sha
+                } catch (_: Exception) { null }
+
+                val result = gitHubClient.createOrUpdateFile(
+                    path = path, content = content, message = commitMsg, sha = existingSha
+                ).getOrThrow()
+
+                repoIndexManager.invalidate()
+                val action = if (existingSha != null) "Updated" else "Created"
+                return ToolResult(id, "✅ $action: `$path` (sha: ${result.content.sha.take(8)})", operation = operation)
+            } catch (e: Exception) {
+                val msg = e.message ?: ""
+                val isShaError = msg.contains("sha", ignoreCase = true) || msg.contains("422")
+                if (isShaError && attempt < 3) {
+                    Log.w(TAG, "SHA conflict $path, retry $attempt/3")
+                    delay(1500L * attempt)
+                    continue
+                }
+                return ToolResult(id, "❌ Failed: `$path`: ${e.message}", isError = true)
+            }
+        }
+        return ToolResult(id, "❌ Failed after 3 retries: `$path`", isError = true)
     }
 
     private suspend fun executeDeleteFile(id: String, input: JsonObject): ToolResult {
