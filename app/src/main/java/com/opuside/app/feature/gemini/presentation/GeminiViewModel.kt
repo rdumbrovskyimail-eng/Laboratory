@@ -6,7 +6,11 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.ai.GeminiModelConfig
-import com.opuside.app.core.ai.GeminiModelConfig.*
+import com.opuside.app.core.ai.GeminiModelConfig.GeminiModel
+import com.opuside.app.core.ai.GeminiModelConfig.GeminiCost
+import com.opuside.app.core.ai.GeminiModelConfig.GeminiSession
+import com.opuside.app.core.ai.GeminiModelConfig.GenerationConfig
+import com.opuside.app.core.ai.GeminiModelConfig.ThinkingLevel
 import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.database.dao.ChatDao
