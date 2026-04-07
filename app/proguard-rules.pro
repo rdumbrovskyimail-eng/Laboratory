@@ -89,3 +89,14 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Gemini API / kotlinx.serialization
+# ═══════════════════════════════════════════════════════════════════════════════
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.AnnotationsKt
+-keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
+-keep,includedescriptorclasses class com.opuside.app.core.network.gemini.**$$serializer { *; }
+-keepclassmembers class com.opuside.app.core.network.gemini.** {
+    *** Companion;
+}
