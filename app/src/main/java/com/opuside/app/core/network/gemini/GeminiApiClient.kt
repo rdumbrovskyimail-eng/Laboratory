@@ -491,6 +491,7 @@ class GeminiApiClient @Inject constructor() {
             config.responseMimeType?.let {
                 put("responseMimeType", JsonPrimitive(it))
             }
+            // ✅ FIXED: не отправлять если модель не поддерживает
             if (config.presencePenalty != 0f && model.supportsPresencePenalty) {
                 put("presencePenalty", JsonPrimitive(config.presencePenalty))
             }
