@@ -34,6 +34,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
 import com.opuside.app.core.security.BiometricAuthHelper
+import com.opuside.app.core.security.GeminiKeyEntry
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.util.CrashTestUtil
