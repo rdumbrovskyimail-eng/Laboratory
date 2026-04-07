@@ -736,9 +736,13 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun testGeminiConnection() {
-        val key = _geminiKeyInput.value.trim()
+        val activeKeys = _geminiKeys.value
+        val activeIdx = _geminiActiveKeyIndex.value
+        val key = if (activeKeys.isNotEmpty() && activeIdx in activeKeys.indices)
+            activeKeys[activeIdx].key.trim()
+        else _geminiKeyInput.value.trim()
         if (key.isBlank()) {
-            _message.value = "❌ Введите Gemini API key перед тестом"
+            _message.value = "❌ Add a Gemini API key first"
             return
         }
 
