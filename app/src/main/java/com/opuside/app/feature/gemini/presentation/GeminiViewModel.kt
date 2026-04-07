@@ -399,218 +399,157 @@ class GeminiViewModel @Inject constructor(
             var totalOutputTokens = 0
             var totalThinkingTokens = 0
             var iteration = 0
-            var retryCount503 = 0
             var currentMessages = contextProtected.toMutableList()
 
             try {
-                while (iteration < MAX_TOOL_ITERATIONS) {
-                    if (iteration > 1) kotlinx.coroutines.delay(TOOL_INTER_DELAY_MS)
+                toolLoop@ while (iteration < MAX_TOOL_ITERATIONS) {
                     iteration++
-                    var iterationComplete = false
-                    var retry503Requested = false
+                    if (iteration > 1) kotlinx.coroutines.delay(TOOL_INTER_DELAY_MS)
 
-                    geminiClient.streamGenerate(
-                        model = model,
-                        messages = currentMessages,
-                        systemPrompt = systemPrompt,
-                        config = config,
-                        tools = tools,
-                        sendTools = _sendToolsEnabled.value,
-                        sendSystemPrompt = _sendSystemPromptEnabled.value,
-                        apiKey = apiKey
-                    ).collect { result ->
-                        when (result) {
-                            is GeminiStreamResult.Started -> {
-                                _streamingText.value = ""
-                            }
+                    // ── 503 retry wrapper ────────────────────────────
+                    var retryCount503 = 0
+                    var iterText = ""
+                    var iterToolCalls: List<GeminiToolCall> = emptyList()
+                    var iterUsage: GeminiUsage? = null
+                    var iterHasToolUse = false
+                    var iterCompleted = false
+                    var iterError: String? = null
 
-                            is GeminiStreamResult.Delta -> {
-                                fullResponse = result.accumulated
-                                _streamingText.value = fullResponse
+                    retry503@ while (true) {
+                        iterText = ""
+                        iterToolCalls = emptyList()
+                        iterUsage = null
+                        iterHasToolUse = false
+                        iterCompleted = false
+                        iterError = null
 
-                                // Update foreground service
-                                val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
-                                val tokens = fullResponse.length / CHARS_PER_TOKEN_ESTIMATE
-                                StreamingForegroundService.updateProgress(
-                                    appContext,
-                                    progressText = "Generating: ~${"%,d".format(tokens)} tokens",
-                                    tokens = tokens,
-                                    elapsedSec = elapsed
-                                )
-                            }
-
-                            is GeminiStreamResult.ToolUse -> {
-                                result.usage?.let {
-                                    totalInputTokens += it.inputTokens
-                                    totalOutputTokens += it.outputTokens
-                                    totalThinkingTokens += it.thinkingTokens
-                                }
-
-                                if (result.textSoFar.isNotBlank()) {
-                                    fullResponse = result.textSoFar
-                                    _streamingText.value = fullResponse
-                                }
-
-                                // Log tool calls
-                                for (tc in result.toolCalls) {
-                                    addOperation("🔧", "Tool: ${tc.name}",
-                                        OperationLogType.PROGRESS)
-                                }
-
-                                // Execute tools with timeout
-                                val toolResults = withTimeoutOrNull(TOOL_TIMEOUT_MS) {
-                                    result.toolCalls.map { tc ->
-                                        toolExecutor.execute(
-                                            tc.name,
-                                            UUID.randomUUID().toString(),
-                                            tc.args
-                                        )
+                        try {
+                            geminiClient.streamGenerate(
+                                model = model, messages = currentMessages,
+                                systemPrompt = systemPrompt, config = config,
+                                tools = tools, sendTools = _sendToolsEnabled.value,
+                                sendSystemPrompt = _sendSystemPromptEnabled.value,
+                                apiKey = apiKey
+                            ).collect { result ->
+                                when (result) {
+                                    is GeminiStreamResult.Started -> {
+                                        _streamingText.value = fullResponse.ifEmpty { "" }
                                     }
-                                } ?: run {
-                                    addOperation("⏰", "Tool execution timeout (${TOOL_TIMEOUT_MS / 1000}s)",
-                                        OperationLogType.ERROR)
-                                    result.toolCalls.map { tc ->
-                                        ToolExecutor.ToolResult(
-                                            toolUseId = UUID.randomUUID().toString(),
-                                            content = "Error: Tool execution timed out after ${TOOL_TIMEOUT_MS / 1000} seconds",
-                                            isError = true
-                                        )
+                                    is GeminiStreamResult.Delta -> {
+                                        fullResponse = result.accumulated
+                                        _streamingText.value = fullResponse
+                                        val elapsed = ((System.currentTimeMillis() - startTime) / 1000).toInt()
+                                        StreamingForegroundService.updateProgress(appContext, "~${"%,d".format(fullResponse.length / CHARS_PER_TOKEN_ESTIMATE)} tok", fullResponse.length / CHARS_PER_TOKEN_ESTIMATE, elapsed)
                                     }
-                                }
-
-                                // Log tool results
-                                for (i in toolResults.indices) {
-                                    val tc = result.toolCalls[i]
-                                    val tr = toolResults[i]
-                                    val icon = if (tr.isError) "❌" else "✅"
-                                    val opInfo = tr.operation?.let {
-                                        when (it) {
-                                            is ToolExecutor.FileOperation.Created -> "Created: ${it.path}"
-                                            is ToolExecutor.FileOperation.Edited -> "Edited: ${it.path}"
-                                            is ToolExecutor.FileOperation.Deleted -> "Deleted: ${it.path}"
-                                            is ToolExecutor.FileOperation.DirectoryCreated -> "Dir: ${it.path}"
+                                    is GeminiStreamResult.ToolUse -> {
+                                        iterHasToolUse = true
+                                        iterText = result.textSoFar
+                                        iterToolCalls = result.toolCalls
+                                        iterUsage = result.usage
+                                        if (result.textSoFar.isNotBlank()) {
+                                            fullResponse = result.textSoFar
+                                            _streamingText.value = fullResponse
                                         }
-                                    } ?: tc.name
-                                    addOperation(icon, opInfo,
-                                        if (tr.isError) OperationLogType.ERROR else OperationLogType.SUCCESS)
-                                }
-
-                                // Build assistant message with function calls
-                                val assistantParts = mutableListOf<GeminiPart>()
-                                if (result.textSoFar.isNotBlank()) {
-                                    assistantParts.add(GeminiPart.Text(result.textSoFar))
-                                }
-                                result.toolCalls.forEach { tc ->
-                                    assistantParts.add(GeminiPart.FunctionCall(tc.name, tc.args, tc.thoughtSignature))
-                                }
-                                currentMessages.add(GeminiMessage("model", assistantParts))
-
-                                // Build function responses
-                                val responseParts = toolResults.mapIndexed { i, tr ->
-                                    GeminiPart.FunctionResponse(
-                                        name = result.toolCalls[i].name,
-                                        response = buildJsonObject {
-                                            put("result", JsonPrimitive(tr.content))
-                                            if (tr.isError) put("error", JsonPrimitive(true))
+                                    }
+                                    is GeminiStreamResult.Completed -> {
+                                        iterCompleted = true
+                                        fullResponse = result.fullText
+                                        iterUsage = result.usage
+                                    }
+                                    is GeminiStreamResult.Error -> {
+                                        val is503 = (result.exception as? GeminiApiException)?.httpCode == 503
+                                        if (is503) {
+                                            iterError = "503"
+                                        } else {
+                                            iterError = result.exception.message ?: "Unknown error"
                                         }
-                                    )
-                                }
-                                currentMessages.add(GeminiMessage("user", responseParts))
-                            }
-
-                            is GeminiStreamResult.Completed -> {
-                                fullResponse = result.fullText
-                                result.usage?.let {
-                                    totalInputTokens += it.inputTokens
-                                    totalOutputTokens += it.outputTokens
-                                    totalThinkingTokens += it.thinkingTokens
-                                }
-
-                                _currentSession.value?.addMessage(
-                                    totalInputTokens, totalOutputTokens, totalThinkingTokens
-                                )
-
-                                chatDao.insert(ChatMessageEntity(
-                                    sessionId = sessionId,
-                                    role = MessageRole.ASSISTANT,
-                                    content = fullResponse,
-                                    isStreaming = false,
-                                    provider = "gemini"
-                                ))
-
-                                _streamingText.value = null
-                                _isStreaming.value = false
-
-                                val cost = model.calculateCost(
-                                    totalInputTokens, totalOutputTokens, totalThinkingTokens
-                                )
-                                val toolInfo = if (iteration > 1) " (${iteration} iter)" else ""
-                                addOperation("✅",
-                                    "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)}$toolInfo",
-                                    OperationLogType.SUCCESS)
-
-                                if (_attachedFileContent.value != null) detachFile()
-                                iterationComplete = true
-                            }
-
-                             is GeminiStreamResult.Error -> {
-                                val is503 = (result.exception as? GeminiApiException)?.httpCode == 503
-                                if (is503 && retryCount503 < MAX_503_RETRIES) {
-                                    retryCount503++
-                                    addOperation("🔄", "503 Error, retry $retryCount503/$MAX_503_RETRIES", OperationLogType.PROGRESS)
-                                    kotlinx.coroutines.delay(RETRY_503_BASE_DELAY_MS * retryCount503)
-                                    retry503Requested = true
-                                    iterationComplete = true
-                                } else {
-                                    if (totalInputTokens > 0 || totalOutputTokens > 0) {
-                                        _currentSession.value?.addMessage(
-                                            totalInputTokens, totalOutputTokens, totalThinkingTokens
-                                        )
-                                        val cost = model.calculateCost(totalInputTokens, totalOutputTokens, totalThinkingTokens)
-                                        addOperation("⚠️",
-                                            "Partial: ${"%,d".format(cost.totalTokens)} tok before error",
-                                            OperationLogType.INFO)
                                     }
-                                    if (fullResponse.isNotBlank()) {
-                                        chatDao.insert(ChatMessageEntity(
-                                            sessionId = sessionId,
-                                            role = MessageRole.ASSISTANT,
-                                            content = fullResponse + "\n\n⚠️ Response interrupted: ${result.exception.message}",
-                                            isStreaming = false,
-                                            provider = "gemini"
-                                        ))
-                                    }
-                                    _isStreaming.value = false
-                                    _streamingText.value = null
-                                    _chatError.value = result.exception.message
-                                    addOperation("❌", result.exception.message ?: "Error",
-                                        OperationLogType.ERROR)
-                                    iterationComplete = true
                                 }
                             }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            iterError = e.message ?: "Unknown"
                         }
+
+                        // ── Handle 503 retry ─────────────────────────
+                        if (iterError == "503") {
+                            retryCount503++
+                            if (retryCount503 <= MAX_503_RETRIES) {
+                                val delayMs = RETRY_503_BASE_DELAY_MS * retryCount503
+                                addOperation("🔄", "503 retry $retryCount503/$MAX_503_RETRIES (${delayMs/1000}s)", OperationLogType.PROGRESS)
+                                kotlinx.coroutines.delay(delayMs)
+                                continue@retry503
+                            }
+                            // Out of retries
+                            iterError = "503: Model overloaded after $MAX_503_RETRIES retries"
+                        }
+                        break@retry503
                     }
-                    if (iterationComplete) {
-                        if (retry503Requested) {
-                            iteration--
-                        } else {
-                            break
+
+                    // ── Process iteration result ─────────────────────
+                    if (iterError != null) {
+                        if (totalInputTokens > 0) {
+                            _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
                         }
+                        if (fullResponse.isNotBlank()) {
+                            chatDao.insert(ChatMessageEntity(sessionId = sessionId, role = MessageRole.ASSISTANT, content = fullResponse + "\n\n⚠️ $iterError", isStreaming = false, provider = "gemini"))
+                        }
+                        _isStreaming.value = false; _streamingText.value = null; _chatError.value = iterError
+                        addOperation("❌", iterError!!, OperationLogType.ERROR)
+                        break@toolLoop
+                    }
+
+                    iterUsage?.let {
+                        totalInputTokens += it.inputTokens
+                        totalOutputTokens += it.outputTokens
+                        totalThinkingTokens += it.thinkingTokens
+                    }
+
+                    if (iterCompleted) {
+                        _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
+                        chatDao.insert(ChatMessageEntity(sessionId = sessionId, role = MessageRole.ASSISTANT, content = fullResponse, isStreaming = false, provider = "gemini"))
+                        _streamingText.value = null; _isStreaming.value = false
+                        val cost = model.calculateCost(totalInputTokens, totalOutputTokens, totalThinkingTokens)
+                        addOperation("✅", "${"%,d".format(cost.totalTokens)} tok, €${String.format("%.4f", cost.totalCostEUR)} (${iteration} iter)", OperationLogType.SUCCESS)
+                        if (_attachedFileContent.value != null) detachFile()
+                        break@toolLoop
+                    }
+
+                    if (iterHasToolUse) {
+                        for (tc in iterToolCalls) addOperation("🔧", "Tool: ${tc.name}", OperationLogType.PROGRESS)
+                        val toolResults = withTimeoutOrNull(TOOL_TIMEOUT_MS) {
+                            iterToolCalls.map { tc -> toolExecutor.execute(tc.name, UUID.randomUUID().toString(), tc.args) }
+                        } ?: iterToolCalls.map { ToolExecutor.ToolResult(UUID.randomUUID().toString(), "Error: timeout", isError = true) }
+
+                        for (i in toolResults.indices) {
+                            val tc = iterToolCalls[i]; val tr = toolResults[i]
+                            val icon = if (tr.isError) "❌" else "✅"
+                            val opInfo = tr.operation?.let { when(it) { is ToolExecutor.FileOperation.Created -> "Created: ${it.path}"; is ToolExecutor.FileOperation.Edited -> "Edited: ${it.path}"; is ToolExecutor.FileOperation.Deleted -> "Deleted: ${it.path}"; is ToolExecutor.FileOperation.DirectoryCreated -> "Dir: ${it.path}" } } ?: tc.name
+                            addOperation(icon, opInfo, if (tr.isError) OperationLogType.ERROR else OperationLogType.SUCCESS)
+                        }
+
+                        val assistantParts = mutableListOf<GeminiPart>()
+                        if (iterText.isNotBlank()) assistantParts.add(GeminiPart.Text(iterText))
+                        iterToolCalls.forEach { tc -> assistantParts.add(GeminiPart.FunctionCall(tc.name, tc.args, tc.thoughtSignature)) }
+                        currentMessages.add(GeminiMessage("model", assistantParts))
+
+                        val responseParts = toolResults.mapIndexed { i, tr ->
+                            GeminiPart.FunctionResponse(name = iterToolCalls[i].name, response = buildJsonObject { put("result", JsonPrimitive(tr.content)); if (tr.isError) put("error", JsonPrimitive(true)) })
+                        }
+                        currentMessages.add(GeminiMessage("user", responseParts))
+                        continue@toolLoop
                     }
                 }
 
-                // Tool loop limit reached
-                if (iteration >= MAX_TOOL_ITERATIONS && fullResponse.isNotBlank()) {
-                    val cost = model.calculateCost(totalInputTokens, totalOutputTokens, totalThinkingTokens)
-                    chatDao.insert(ChatMessageEntity(
-                        sessionId = sessionId, role = MessageRole.ASSISTANT,
-                        content = fullResponse + "\n\n⚠️ Tool loop limit reached.",
-                        isStreaming = false, provider = "gemini"
-                    ))
-                    _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
-                    _streamingText.value = null
-                    _isStreaming.value = false
-                    addOperation("⚠️", "Tool loop limit (${MAX_TOOL_ITERATIONS})", OperationLogType.ERROR)
+                // Tool loop limit
+                if (iteration >= MAX_TOOL_ITERATIONS && _isStreaming.value) {
+                    if (fullResponse.isNotBlank()) {
+                        chatDao.insert(ChatMessageEntity(sessionId = sessionId, role = MessageRole.ASSISTANT, content = fullResponse + "\n\n⚠️ Tool loop limit ($MAX_TOOL_ITERATIONS)", isStreaming = false, provider = "gemini"))
+                        _currentSession.value?.addMessage(totalInputTokens, totalOutputTokens, totalThinkingTokens)
+                    }
+                    _streamingText.value = null; _isStreaming.value = false
+                    addOperation("⚠️", "Tool loop limit ($MAX_TOOL_ITERATIONS)", OperationLogType.ERROR)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _isStreaming.value = false
