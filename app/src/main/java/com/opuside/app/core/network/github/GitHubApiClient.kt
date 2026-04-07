@@ -193,12 +193,14 @@ class GitHubApiClient @Inject constructor(
                 type = "not_configured",
                 message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
             ))
-            
+
+        val currentSha = sha ?: getFileContent(path, branch).getOrNull()?.sha
+
         val encodedContent = Base64.encodeToString(content.toByteArray(), Base64.NO_WRAP)
         val request = CreateOrUpdateFileRequest(
             message = message,
             content = encodedContent,
-            sha = sha,
+            sha = currentSha,
             branch = branch ?: config.branch
         )
         
@@ -224,10 +226,12 @@ class GitHubApiClient @Inject constructor(
                 message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
             ))
 
+        val currentSha = sha ?: getFileContent(path, branch).getOrNull()?.sha
+
         val request = CreateOrUpdateFileRequest(
             message = message,
             content = content,
-            sha = sha,
+            sha = currentSha,
             branch = branch ?: config.branch
         )
 
