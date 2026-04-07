@@ -95,6 +95,12 @@ class SettingsViewModel @Inject constructor(
     private val _geminiKeyInput = MutableStateFlow("")
     val geminiKeyInput: StateFlow<String> = _geminiKeyInput.asStateFlow()
 
+    private val _geminiKeys = MutableStateFlow<List<SecureSettingsDataStore.GeminiKeyEntry>>(emptyList())
+    val geminiKeys: StateFlow<List<SecureSettingsDataStore.GeminiKeyEntry>> = _geminiKeys.asStateFlow()
+
+    private val _geminiActiveKeyIndex = MutableStateFlow(0)
+    val geminiActiveKeyIndex: StateFlow<Int> = _geminiActiveKeyIndex.asStateFlow()
+
     private val _geminiModelInput = MutableStateFlow("gemini-flash-latest")
     val geminiModelInput: StateFlow<String> = _geminiModelInput.asStateFlow()
 
@@ -204,6 +210,22 @@ class SettingsViewModel @Inject constructor(
                 } catch (e: Exception) {
                     android.util.Log.e(TAG, "  ❌ Failed to decrypt Gemini key", e)
                     ""
+                }
+
+                val geminiKeysList = try {
+                    secureSettings.getGeminiApiKeys().first()
+                } catch (e: Exception) { emptyList() }
+                val activeIdx = try {
+                    secureSettings.getGeminiActiveKeyIndex().first()
+                } catch (e: Exception) { 0 }
+                _geminiKeys.value = geminiKeysList
+                _geminiActiveKeyIndex.value = activeIdx
+
+                // Миграция: если есть legacy ключ но нет списка — создать первый элемент
+                if (geminiKeysList.isEmpty() && geminiKey.isNotBlank()) {
+                    val migrated = listOf(SecureSettingsDataStore.GeminiKeyEntry("Key 1", geminiKey))
+                    _geminiKeys.value = migrated
+                    viewModelScope.launch { secureSettings.setGeminiApiKeys(migrated) }
                 }
 
                 // Claude model
