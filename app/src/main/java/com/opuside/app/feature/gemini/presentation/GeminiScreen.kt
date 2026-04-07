@@ -22,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -74,6 +75,12 @@ private object G {
     val blueSoft = Color(0xFF1A2744)
     val greenSoft = Color(0xFF1A2E1A)
     val redSoft = Color(0xFF2E1A1A)
+    val googleBlue = Color(0xFF4285F4)
+    val googleRed = Color(0xFFEA4335)
+    val googleYellow = Color(0xFFFBBC04)
+    val googleGreen = Color(0xFF34A853)
+    val headerGrad1 = Color(0xFF1A1B2E)
+    val headerGrad2 = Color(0xFF0D1117)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -189,7 +196,12 @@ fun GeminiScreen(
                 }
             }
             AnimatedVisibility(visible = showSettingsPanel, modifier = Modifier.align(Alignment.TopEnd), enter = slideInHorizontally { it } + fadeIn(), exit = slideOutHorizontally { it } + fadeOut()) {
-                SettingsPanel(genConfig, selectedModel, { viewModel.updateGenerationConfig(it) }) { showSettingsPanel = false }
+                SettingsPanel(
+                    config = genConfig,
+                    model = selectedModel,
+                    onUpdate = { viewModel.updateGenerationConfig(it) },
+                    onClose = { showSettingsPanel = false }
+                )
             }
         }
     }
@@ -209,13 +221,26 @@ private fun TopBar(
     onToggleHistory: () -> Unit, onCopyChat: () -> Unit, onShowModel: () -> Unit,
     onShowStats: () -> Unit, onToggleSettings: () -> Unit, onNewSession: () -> Unit, onBackToAnalyzer: () -> Unit
 ) {
-    Surface(color = G.bg, modifier = Modifier.fillMaxWidth()) {
+    Surface(
+        color = Color.Transparent,
+        modifier = Modifier.fillMaxWidth().background(
+            brush = Brush.verticalGradient(
+                colors = listOf(G.headerGrad1, G.headerGrad2)
+            )
+        )
+    ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = onBackToAnalyzer, modifier = Modifier.size(36.dp)) { Icon(Icons.Default.ArrowBack, "Back", tint = G.t2, modifier = Modifier.size(20.dp)) }
                     Spacer(Modifier.width(4.dp))
                     Text("GEMINI", fontSize = 20.sp, fontWeight = FontWeight.Black, color = G.blue, letterSpacing = 1.sp)
+                    Spacer(Modifier.width(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                        listOf(G.googleBlue, G.googleRed, G.googleYellow, G.googleGreen).forEach { c ->
+                            Box(Modifier.size(5.dp).clip(CircleShape).background(c))
+                        }
+                    }
                     Spacer(Modifier.width(8.dp))
                     Surface(color = G.blueSoft, shape = RoundedCornerShape(6.dp), border = BorderStroke(1.dp, G.blue)) {
                         Text("API", Modifier.padding(horizontal = 8.dp, vertical = 3.dp), fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = G.blue)
@@ -276,13 +301,18 @@ private fun TopBar(
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun SettingsPanel(config: GenerationConfig, model: GeminiModel, onUpdate: (GenerationConfig) -> Unit, onClose: () -> Unit) {
+private fun SettingsPanel(
+    config: GenerationConfig,
+    model: GeminiModel,
+    onUpdate: (GenerationConfig) -> Unit,
+    onClose: () -> Unit
+) {
     Surface(color = G.surface, shadowElevation = 12.dp, modifier = Modifier.width(340.dp).fillMaxHeight().padding(top = 60.dp),
         shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("GENERATION CONFIG", fontSize = 14.sp, fontWeight = FontWeight.Black, color = G.blue, letterSpacing = 1.sp)
-                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Close, "Close", tint = G.t2, modifier = Modifier.size(18.dp)) }
+                IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, "Close", tint = G.t2, modifier = Modifier.size(18.dp)) }
             }
             Text("AI Studio parameters", fontSize = 10.sp, color = G.t3)
 
@@ -448,7 +478,12 @@ private fun SettingsPanel(config: GenerationConfig, model: GeminiModel, onUpdate
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
             if (isUser) { Text("👤", fontSize = 11.sp); Text("You", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = G.blue) }
-            else { Text("🔷", fontSize = 11.sp); Text("Gemini", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = G.cyan) }
+            else {
+                Surface(shape = CircleShape, color = G.blue.copy(0.15f), modifier = Modifier.size(20.dp)) {
+                    Box(contentAlignment = Alignment.Center) { Text("G", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = G.blue) }
+                }
+                Text("Gemini", fontSize = 10.sp, fontWeight = FontWeight.SemiBold, color = G.cyan)
+            }
         }
         Surface(color = bg, shape = RoundedCornerShape(topStart = if (isUser) 16.dp else 4.dp, topEnd = if (isUser) 4.dp else 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp),
             border = BorderStroke(1.dp, G.border), modifier = Modifier.fillMaxWidth(if (isUser) 0.88f else 0.96f)) {
