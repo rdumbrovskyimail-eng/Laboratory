@@ -150,6 +150,18 @@ class GeminiViewModel @Inject constructor(
             val savedModelId = appSettings.geminiModel.first()
             val model = GeminiModel.fromModelId(savedModelId) ?: GeminiModel.getDefault()
             _selectedModel.value = model
+            // ✅ ADD: сброс конфига под загруженную модель
+            val maxOut = if (_ecoOutputMode.value) GeminiModelConfig.ECO_OUTPUT_TOKENS else model.maxOutputTokens
+            _generationConfig.value = GenerationConfig(
+                temperature = 0.7f,
+                topP = 0.95f,
+                topK = 40,
+                maxOutputTokens = maxOut,
+                thinkingLevel = ThinkingLevel.NONE,
+                presencePenalty = 0f,
+                frequencyPenalty = 0f,
+                seed = null
+            )
             _currentSession.value = GeminiModelConfig.SessionManager
                 .createSession(sessionId, model)
         }
@@ -336,7 +348,15 @@ class GeminiViewModel @Inject constructor(
             }
 
             val model = _selectedModel.value
-            val config = _generationConfig.value
+            // ✅ FIXED: валидация перед отправкой
+            val rawConfig = _generationConfig.value
+            val config = rawConfig.copy(
+                maxOutputTokens = rawConfig.maxOutputTokens.coerceAtMost(model.maxOutputTokens),
+                thinkingLevel = if (model.supportsThinking) rawConfig.thinkingLevel else ThinkingLevel.NONE,
+                presencePenalty = if (model.supportsPresencePenalty) rawConfig.presencePenalty else 0f,
+                frequencyPenalty = if (model.supportsFrequencyPenalty) rawConfig.frequencyPenalty else 0f,
+                seed = if (model.supportsSeed) rawConfig.seed else null
+            )
 
             // ── Build message with attachment ────────────────────────
             val attachedContent = _attachedFileContent.value
