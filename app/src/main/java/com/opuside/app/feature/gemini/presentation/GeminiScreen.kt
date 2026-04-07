@@ -189,8 +189,7 @@ fun GeminiScreen(
                 }
             }
             AnimatedVisibility(visible = showSettingsPanel, modifier = Modifier.align(Alignment.TopEnd), enter = slideInHorizontally { it } + fadeIn(), exit = slideOutHorizontally { it } + fadeOut()) {
-                SettingsPanel(genConfig, selectedModel, viewModel) { viewModel.updateGenerationConfig(it) ; showSettingsPanel = showSettingsPanel /* keep open */ }
-                // Close via onClose in SettingsPanel header
+                SettingsPanel(genConfig, selectedModel, { viewModel.updateGenerationConfig(it) }) { showSettingsPanel = false }
             }
         }
     }
@@ -277,49 +276,17 @@ private fun TopBar(
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun SettingsPanel(config: GenerationConfig, model: GeminiModel, viewModel: GeminiViewModel, onUpdate: (GenerationConfig) -> Unit) {
-    val apiKeyMasked by viewModel.apiKeyMasked.collectAsState()
-    var showCloseBtn by remember { mutableStateOf(true) } // always visible
-
+private fun SettingsPanel(config: GenerationConfig, model: GeminiModel, onUpdate: (GenerationConfig) -> Unit, onClose: () -> Unit) {
     Surface(color = G.surface, shadowElevation = 12.dp, modifier = Modifier.width(340.dp).fillMaxHeight().padding(top = 60.dp),
         shape = RoundedCornerShape(topStart = 16.dp, bottomStart = 16.dp)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("GENERATION CONFIG", fontSize = 14.sp, fontWeight = FontWeight.Black, color = G.blue, letterSpacing = 1.sp)
-                // Close button handled by parent AnimatedVisibility toggle
+                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) { Icon(Icons.Default.Close, "Close", tint = G.t2, modifier = Modifier.size(18.dp)) }
             }
             Text("AI Studio parameters", fontSize = 10.sp, color = G.t3)
 
             Spacer(Modifier.height(16.dp))
-
-            // ── API KEY ─────────────────────────────────────────────
-            Sec("API Key")
-            Text(apiKeyMasked, fontSize = 10.sp, color = G.green, fontFamily = FontFamily.Monospace)
-            Spacer(Modifier.height(4.dp))
-            var apiKeyInput by remember { mutableStateOf("") }
-            var showKey by remember { mutableStateOf(false) }
-            OutlinedTextField(
-                value = apiKeyInput, onValueChange = { apiKeyInput = it }, modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("AIza...", color = G.t3, fontSize = 12.sp) },
-                visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, fontFamily = FontFamily.Monospace, color = G.t1),
-                colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = G.blue, unfocusedBorderColor = G.border, cursorColor = G.blue),
-                singleLine = true, shape = RoundedCornerShape(8.dp),
-                trailingIcon = {
-                    Row {
-                        IconButton(onClick = { showKey = !showKey }, modifier = Modifier.size(32.dp)) {
-                            Icon(if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Toggle", tint = G.t2, modifier = Modifier.size(16.dp))
-                        }
-                        if (apiKeyInput.isNotBlank()) {
-                            IconButton(onClick = { viewModel.setApiKey(apiKeyInput); apiKeyInput = "" }, modifier = Modifier.size(32.dp)) {
-                                Icon(Icons.Default.Check, "Save", tint = G.green, modifier = Modifier.size(18.dp))
-                            }
-                        }
-                    }
-                }
-            )
-
-            Spacer(Modifier.height(20.dp))
 
             // ── Presets ─────────────────────────────────────────────
             Sec("Quick Presets")
