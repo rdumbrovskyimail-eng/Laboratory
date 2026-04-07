@@ -575,17 +575,6 @@ class GeminiViewModel @Inject constructor(
                         }
                     }
                 }
-                                _isStreaming.value = false
-                                _streamingText.value = null
-                                _chatError.value = result.exception.message
-                                addOperation("❌", result.exception.message ?: "Error",
-                                    OperationLogType.ERROR)
-                                iterationComplete = true
-                            }
-                        }
-                    }
-                    if (iterationComplete) break
-                }
 
                 // Tool loop limit reached
                 if (iteration >= MAX_TOOL_ITERATIONS && fullResponse.isNotBlank()) {
