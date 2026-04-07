@@ -199,11 +199,20 @@ class GeminiViewModel @Inject constructor(
     }
 
     fun updateGenerationConfig(config: GenerationConfig) {
-        _generationConfig.value = config
+        val model = _selectedModel.value
+        // ✅ Strip параметры которые модель не поддерживает
+        val validated = config.copy(
+            maxOutputTokens = config.maxOutputTokens.coerceAtMost(model.maxOutputTokens),
+            thinkingLevel = if (model.supportsThinking) config.thinkingLevel else ThinkingLevel.NONE,
+            presencePenalty = if (model.supportsPresencePenalty) config.presencePenalty else 0f,
+            frequencyPenalty = if (model.supportsFrequencyPenalty) config.frequencyPenalty else 0f,
+            seed = if (model.supportsSeed) config.seed else null
+        )
+        _generationConfig.value = validated
         addOperation("⚙️",
-            "Config: T=${config.temperature} P=${config.topP} K=${config.topK}" +
-                    if (config.thinkingLevel != ThinkingLevel.NONE)
-                        " Think=${config.thinkingLevel.displayName}" else "",
+            "Config: T=${validated.temperature} P=${validated.topP} K=${validated.topK}" +
+                    if (validated.thinkingLevel != ThinkingLevel.NONE)
+                        " Think=${validated.thinkingLevel.displayName}" else "",
             OperationLogType.INFO)
     }
 
