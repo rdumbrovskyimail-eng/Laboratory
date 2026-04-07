@@ -22,6 +22,7 @@ import com.opuside.app.feature.scratch.data.local.ScratchEntity
  * - Version 2: (пропущена)
  * - Version 3: Добавлены поля для метаданных (model_used, cached_tokens, input_tokens, output_tokens, cost_usd, cost_eur)
  * - Version 4: ✅ НОВОЕ - Добавлена таблица scratch_records
+ * - Version 5: Добавлено поле provider в таблицу chat_messages
  *
  * ВАЖНО:
  * При изменении схемы БД:
@@ -34,7 +35,7 @@ import com.opuside.app.feature.scratch.data.local.ScratchEntity
         ChatMessageEntity::class,
         ScratchEntity::class   // ✅ ДОБАВЛЕНО
     ],
-    version = 4,  // ✅ ИЗМЕНЕНО: 3 → 4
+    version = 5,  // ✅ ИЗМЕНЕНО: 4 → 5
     exportSchema = true
 )
 @TypeConverters(Converters::class)
@@ -86,5 +87,15 @@ val MIGRATION_3_4 = object : Migration(3, 4) {
                 createdAt INTEGER NOT NULL
             )
         """)
+    }
+}
+
+/**
+ * ✅ НОВОЕ: Миграция с версии 4 на 5
+ * Добавляет поле provider в таблицу chat_messages
+ */
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(database: SupportSQLiteDatabase) {
+        database.execSQL("ALTER TABLE chat_messages ADD COLUMN provider TEXT DEFAULT NULL")
     }
 }
