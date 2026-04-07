@@ -61,6 +61,8 @@ class GeminiViewModel @Inject constructor(
         private const val KEY_SESSION_ID = "gemini_session_id"
         private const val MAX_OPS_LOG_SIZE = 500
         private const val MAX_TOOL_ITERATIONS = 8
+        private const val MAX_503_RETRIES = 3
+        private const val RETRY_503_BASE_DELAY_MS = 5000L
         private const val TOOL_TIMEOUT_MS = 30_000L
         private const val MAX_ATTACHED_FILE_BYTES = 2 * 1024 * 1024L  // 2 MB
         private const val CHARS_PER_TOKEN_ESTIMATE = 4
@@ -374,12 +376,15 @@ class GeminiViewModel @Inject constructor(
             var totalOutputTokens = 0
             var totalThinkingTokens = 0
             var iteration = 0
+            var retryCount503 = 0
             var currentMessages = contextProtected.toMutableList()
 
             try {
                 while (iteration < MAX_TOOL_ITERATIONS) {
+                    if (iteration > 1) kotlinx.coroutines.delay(400L)
                     iteration++
                     var iterationComplete = false
+                    var retry503Requested = false
 
                     geminiClient.streamGenerate(
                         model = model,
@@ -525,25 +530,51 @@ class GeminiViewModel @Inject constructor(
                                 iterationComplete = true
                             }
 
-                            is GeminiStreamResult.Error -> {
-                                if (totalInputTokens > 0 || totalOutputTokens > 0) {
-                                    _currentSession.value?.addMessage(
-                                        totalInputTokens, totalOutputTokens, totalThinkingTokens
-                                    )
-                                    val cost = model.calculateCost(totalInputTokens, totalOutputTokens, totalThinkingTokens)
-                                    addOperation("⚠️",
-                                        "Partial: ${"%,d".format(cost.totalTokens)} tok before error",
-                                        OperationLogType.INFO)
+                             is GeminiStreamResult.Error -> {
+                                val is503 = (result.exception as? GeminiApiException)?.httpCode == 503
+                                if (is503 && retryCount503 < MAX_503_RETRIES) {
+                                    retryCount503++
+                                    addOperation("🔄", "503 Error, retry $retryCount503/$MAX_503_RETRIES", OperationLogType.PROGRESS)
+                                    kotlinx.coroutines.delay(RETRY_503_BASE_DELAY_MS * retryCount503)
+                                    retry503Requested = true
+                                    iterationComplete = true
+                                } else {
+                                    if (totalInputTokens > 0 || totalOutputTokens > 0) {
+                                        _currentSession.value?.addMessage(
+                                            totalInputTokens, totalOutputTokens, totalThinkingTokens
+                                        )
+                                        val cost = model.calculateCost(totalInputTokens, totalOutputTokens, totalThinkingTokens)
+                                        addOperation("⚠️",
+                                            "Partial: ${"%,d".format(cost.totalTokens)} tok before error",
+                                            OperationLogType.INFO)
+                                    }
+                                    if (fullResponse.isNotBlank()) {
+                                        chatDao.insert(ChatMessageEntity(
+                                            sessionId = sessionId,
+                                            role = MessageRole.ASSISTANT,
+                                            content = fullResponse + "\n\n⚠️ Response interrupted: ${result.exception.message}",
+                                            isStreaming = false,
+                                            provider = "gemini"
+                                        ))
+                                    }
+                                    _isStreaming.value = false
+                                    _streamingText.value = null
+                                    _chatError.value = result.exception.message
+                                    addOperation("❌", result.exception.message ?: "Error",
+                                        OperationLogType.ERROR)
+                                    iterationComplete = true
                                 }
-                                if (fullResponse.isNotBlank()) {
-                                    chatDao.insert(ChatMessageEntity(
-                                        sessionId = sessionId,
-                                        role = MessageRole.ASSISTANT,
-                                        content = fullResponse + "\n\n⚠️ Response interrupted: ${result.exception.message}",
-                                        isStreaming = false,
-                                        provider = "gemini"
-                                    ))
-                                }
+                            }
+                        }
+                    }
+                    if (iterationComplete) {
+                        if (retry503Requested) {
+                            iteration--
+                        } else {
+                            break
+                        }
+                    }
+                }
                                 _isStreaming.value = false
                                 _streamingText.value = null
                                 _chatError.value = result.exception.message
