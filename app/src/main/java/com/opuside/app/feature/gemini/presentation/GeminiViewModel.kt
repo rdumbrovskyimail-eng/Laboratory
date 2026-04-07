@@ -209,8 +209,21 @@ class GeminiViewModel @Inject constructor(
 
     fun selectModel(model: GeminiModel) {
         _selectedModel.value = model
+        // ✅ СБРОС конфига под возможности новой модели
+        val maxOut = if (_ecoOutputMode.value) GeminiModelConfig.ECO_OUTPUT_TOKENS else model.maxOutputTokens
+        _generationConfig.value = GenerationConfig(
+            temperature = 0.7f,
+            topP = 0.95f,
+            topK = 40,
+            maxOutputTokens = maxOut,
+            thinkingLevel = ThinkingLevel.NONE,  // всегда OFF при смене
+            presencePenalty = 0f,
+            frequencyPenalty = 0f,
+            seed = null
+        )
         viewModelScope.launch { appSettings.setGeminiModel(model.modelId) }
         startNewSession()
+        addOperation("🔄", "Model: ${model.displayName} (config reset)", OperationLogType.SUCCESS)
     }
 
     // ═══════════════════════════════════════════════════════════════════
