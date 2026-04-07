@@ -8,10 +8,19 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🔷 GEMINI MODEL CONFIGURATION v1.0 (April 2026)
+ * 🔷 GEMINI MODEL CONFIGURATION v2.0 (April 2026)
  *
  * All active Gemini API models (non-Live) as of 2026-04-07.
  * Pricing source: ai.google.dev/gemini-api/docs/pricing (updated 2026-04-06).
+ * Specs source: ai.google.dev/gemini-api/docs/gemini-3 (Gemini 3 Developer Guide)
+ *
+ * v2.0 CHANGES:
+ * - Fixed 3.1 Flash-Lite pricing ($0.25/$1.50, was $0.10/$0.40)
+ * - Fixed 2.5 Flash pricing ($0.30/$2.50 flat, was $0.15/$0.60 tiered)
+ * - Fixed 3 Flash thinking price ($3.00, was $3.50)
+ * - Enabled thinking for 3.1 Flash-Lite and 2.5 Flash-Lite
+ * - Added per-model capability flags for UI validation
+ * - Added supportsPresencePenalty, supportsFrequencyPenalty, supportsSeed
  *
  * Context caching:
  * - Cache read = 0.1× base input price
@@ -50,7 +59,7 @@ object GeminiModelConfig {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // THINKING LEVELS (Gemini 3.1 uses thinkingLevel, not thinkingBudget)
+    // THINKING LEVELS
     // ═══════════════════════════════════════════════════════════════════
 
     enum class ThinkingLevel(val apiName: String, val displayName: String) {
@@ -83,6 +92,7 @@ object GeminiModelConfig {
 
     // ═══════════════════════════════════════════════════════════════════
     // MODELS — all active non-Live models as of April 2026
+    // Pricing verified: ai.google.dev/gemini-api/docs/pricing (2026-04-06)
     // ═══════════════════════════════════════════════════════════════════
 
     enum class GeminiModel(
@@ -91,12 +101,12 @@ object GeminiModelConfig {
         val description: String,
         val contextWindow: Int,
         val maxOutputTokens: Int,
-        val inputPricePerM: Double,        // USD per 1M input tokens (≤200K)
-        val outputPricePerM: Double,       // USD per 1M output tokens (≤200K)
-        val longInputPricePerM: Double,    // USD per 1M input tokens (>200K)
-        val longOutputPricePerM: Double,   // USD per 1M output tokens (>200K)
-        val longContextThreshold: Int,     // Int.MAX_VALUE = flat pricing (no tier)
-        val cacheReadPricePerM: Double,    // 0.1× base input
+        val inputPricePerM: Double,
+        val outputPricePerM: Double,
+        val longInputPricePerM: Double,
+        val longOutputPricePerM: Double,
+        val longContextThreshold: Int,
+        val cacheReadPricePerM: Double,
         val cacheStoragePricePerMPerHour: Double,
         val supportsThinking: Boolean,
         val thinkingOutputPricePerM: Double,
@@ -105,12 +115,21 @@ object GeminiModelConfig {
         val supportsFunctionCalling: Boolean,
         val supportsJsonMode: Boolean,
         val supportsSystemInstruction: Boolean,
-        val speedRating: Int,              // 1–10, 10=fastest
+        // ── Per-model capability flags for UI validation ─────────────
+        val supportsPresencePenalty: Boolean,
+        val supportsFrequencyPenalty: Boolean,
+        val supportsSeed: Boolean,
+        val supportsResponseMimeType: Boolean,
+        val supportsCaching: Boolean,
+        val defaultThinkingLevel: ThinkingLevel,
+        val speedRating: Int,
         val emoji: String,
         val deprecated: Boolean = false,
         val deprecationDate: String? = null
     ) {
         // ── Gemini 3.1 Pro Preview ──────────────────────────────────
+        // Pricing: $2/$12 (≤200K), $4/$18 (>200K)
+        // Output includes thinking at same rate
         GEMINI_3_1_PRO(
             modelId = "gemini-3.1-pro-preview",
             displayName = "3.1 Pro Preview",
@@ -131,11 +150,18 @@ object GeminiModelConfig {
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
+            supportsPresencePenalty = true,
+            supportsFrequencyPenalty = true,
+            supportsSeed = true,
+            supportsResponseMimeType = true,
+            supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.HIGH,
             speedRating = 4,
             emoji = "🧠"
         ),
 
         // ── Gemini 3.1 Pro Custom Tools ─────────────────────────────
+        // Same pricing as 3.1 Pro, optimized for custom tool priority
         GEMINI_3_1_PRO_CUSTOMTOOLS(
             modelId = "gemini-3.1-pro-preview-customtools",
             displayName = "3.1 Pro CustomTools",
@@ -156,11 +182,19 @@ object GeminiModelConfig {
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
+            supportsPresencePenalty = true,
+            supportsFrequencyPenalty = true,
+            supportsSeed = true,
+            supportsResponseMimeType = true,
+            supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.HIGH,
             speedRating = 4,
             emoji = "🔧"
         ),
 
         // ── Gemini 3 Flash Preview ──────────────────────────────────
+        // Pricing: $0.50/$3.00 FLAT (no long context tier)
+        // Output includes thinking at $3.00
         GEMINI_3_FLASH(
             modelId = "gemini-3-flash-preview",
             displayName = "3 Flash Preview",
@@ -175,42 +209,57 @@ object GeminiModelConfig {
             cacheReadPricePerM = 0.05,
             cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
-            thinkingOutputPricePerM = 3.50,
+            thinkingOutputPricePerM = 3.00,
             supportsGrounding = true,
             supportsCodeExecution = true,
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
+            supportsPresencePenalty = true,
+            supportsFrequencyPenalty = true,
+            supportsSeed = true,
+            supportsResponseMimeType = true,
+            supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.HIGH,
             speedRating = 7,
             emoji = "⚡"
         ),
 
         // ── Gemini 3.1 Flash-Lite Preview ───────────────────────────
+        // Pricing: $0.25/$1.50 FLAT (verified 2026-04-06)
+        // Supports thinking: minimal(default), low, medium, high
         GEMINI_3_1_FLASH_LITE(
             modelId = "gemini-3.1-flash-lite-preview",
             displayName = "3.1 Flash-Lite",
-            description = "Budget-friendly, high volume, flat pricing",
+            description = "Cost-efficient, high volume, flat pricing",
             contextWindow = 1_000_000,
             maxOutputTokens = 65_536,
-            inputPricePerM = 0.10,
-            outputPricePerM = 0.40,
-            longInputPricePerM = 0.10,
-            longOutputPricePerM = 0.40,
+            inputPricePerM = 0.25,
+            outputPricePerM = 1.50,
+            longInputPricePerM = 0.25,
+            longOutputPricePerM = 1.50,
             longContextThreshold = Int.MAX_VALUE,
-            cacheReadPricePerM = 0.01,
-            cacheStoragePricePerMPerHour = 0.25,
-            supportsThinking = false,
-            thinkingOutputPricePerM = 0.0,
+            cacheReadPricePerM = 0.025,
+            cacheStoragePricePerMPerHour = 1.00,
+            supportsThinking = true,
+            thinkingOutputPricePerM = 1.50,
             supportsGrounding = true,
             supportsCodeExecution = false,
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
+            supportsPresencePenalty = false,
+            supportsFrequencyPenalty = false,
+            supportsSeed = false,
+            supportsResponseMimeType = true,
+            supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.MINIMAL,
             speedRating = 9,
             emoji = "💨"
         ),
 
         // ── Gemini 2.5 Pro (auto-updated alias) ────────────────────
+        // Pricing: $1.25/$10 (≤200K), $2.50/$15 (>200K)
         GEMINI_2_5_PRO(
             modelId = "gemini-2.5-pro",
             displayName = "2.5 Pro",
@@ -231,36 +280,52 @@ object GeminiModelConfig {
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
+            supportsPresencePenalty = true,
+            supportsFrequencyPenalty = true,
+            supportsSeed = true,
+            supportsResponseMimeType = true,
+            supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.HIGH,
             speedRating = 5,
             emoji = "🏆"
         ),
 
         // ── Gemini 2.5 Flash (auto-updated alias) ──────────────────
+        // Pricing: $0.30/$2.50 FLAT (verified 2026-04-06, was $0.15/$0.60 tiered)
+        // Output price includes thinking tokens at same rate
         GEMINI_2_5_FLASH(
             modelId = "gemini-2.5-flash",
             displayName = "2.5 Flash",
             description = "Hybrid reasoning, fast, versatile",
             contextWindow = 1_000_000,
             maxOutputTokens = 65_536,
-            inputPricePerM = 0.15,
-            outputPricePerM = 0.60,
+            inputPricePerM = 0.30,
+            outputPricePerM = 2.50,
             longInputPricePerM = 0.30,
-            longOutputPricePerM = 1.20,
-            longContextThreshold = 200_000,
-            cacheReadPricePerM = 0.015,
+            longOutputPricePerM = 2.50,
+            longContextThreshold = Int.MAX_VALUE,
+            cacheReadPricePerM = 0.03,
             cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
-            thinkingOutputPricePerM = 3.50,
+            thinkingOutputPricePerM = 2.50,
             supportsGrounding = true,
             supportsCodeExecution = true,
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
+            supportsPresencePenalty = true,
+            supportsFrequencyPenalty = true,
+            supportsSeed = true,
+            supportsResponseMimeType = true,
+            supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.HIGH,
             speedRating = 8,
             emoji = "⚡"
         ),
 
         // ── Gemini 2.5 Flash-Lite (auto-updated alias) ─────────────
+        // Pricing: $0.10/$0.40 FLAT (verified 2026-04-06)
+        // Supports thinking with controllable budgets (per Google blog)
         GEMINI_2_5_FLASH_LITE(
             modelId = "gemini-2.5-flash-lite",
             displayName = "2.5 Flash-Lite",
@@ -274,13 +339,19 @@ object GeminiModelConfig {
             longContextThreshold = Int.MAX_VALUE,
             cacheReadPricePerM = 0.01,
             cacheStoragePricePerMPerHour = 0.25,
-            supportsThinking = false,
-            thinkingOutputPricePerM = 0.0,
+            supportsThinking = true,
+            thinkingOutputPricePerM = 0.40,
             supportsGrounding = true,
             supportsCodeExecution = false,
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
+            supportsPresencePenalty = false,
+            supportsFrequencyPenalty = false,
+            supportsSeed = false,
+            supportsResponseMimeType = true,
+            supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.MINIMAL,
             speedRating = 10,
             emoji = "🪶"
         );
@@ -292,8 +363,52 @@ object GeminiModelConfig {
             contextWindow - getEffectiveOutputTokens(ecoMode)
 
         /**
+         * Validate a GenerationConfig against this model's capabilities.
+         * Returns list of warning messages (empty = all OK).
+         */
+        fun validateConfig(config: GenerationConfig): List<String> {
+            val warnings = mutableListOf<String>()
+
+            if (config.thinkingLevel != ThinkingLevel.NONE && !supportsThinking) {
+                warnings.add("$displayName does not support Thinking")
+            }
+
+            if (config.presencePenalty != 0f && !supportsPresencePenalty) {
+                warnings.add("$displayName does not support Presence Penalty")
+            }
+
+            if (config.frequencyPenalty != 0f && !supportsFrequencyPenalty) {
+                warnings.add("$displayName does not support Frequency Penalty")
+            }
+
+            if (config.seed != null && !supportsSeed) {
+                warnings.add("$displayName does not support Seed")
+            }
+
+            if (config.responseMimeType != null && !supportsResponseMimeType) {
+                warnings.add("$displayName does not support Response Format selection")
+            }
+
+            if (config.maxOutputTokens > maxOutputTokens) {
+                warnings.add("Max output ${config.maxOutputTokens} exceeds model limit $maxOutputTokens")
+            }
+
+            return warnings
+        }
+
+        /**
+         * Get supported thinking levels for this model.
+         * Returns only levels this model actually supports.
+         */
+        fun getSupportedThinkingLevels(): List<ThinkingLevel> {
+            if (!supportsThinking) return listOf(ThinkingLevel.NONE)
+            return ThinkingLevel.entries.toList()
+        }
+
+        /**
          * Calculate cost for a single API call.
-         * Gemini charges thinking tokens at thinkingOutputPricePerM.
+         * For models with flat output pricing (output includes thinking),
+         * thinkingOutputPricePerM == outputPricePerM.
          */
         fun calculateCost(
             inputTokens: Int,
@@ -508,11 +623,11 @@ object GeminiModelConfig {
         val topK: Int = 40,
         val maxOutputTokens: Int = 8192,
         val stopSequences: List<String> = emptyList(),
-        val responseMimeType: String? = null,       // "application/json", "text/plain", null=auto
-        val responseSchema: String? = null,          // JSON schema string (for JSON mode)
-        val presencePenalty: Float = 0f,             // -2.0 to 2.0
-        val frequencyPenalty: Float = 0f,            // -2.0 to 2.0
-        val seed: Int? = null,                       // deterministic output if set
+        val responseMimeType: String? = null,
+        val responseSchema: String? = null,
+        val presencePenalty: Float = 0f,
+        val frequencyPenalty: Float = 0f,
+        val seed: Int? = null,
         val thinkingLevel: ThinkingLevel = ThinkingLevel.NONE,
         val safetySettings: Map<HarmCategory, SafetyThreshold> = defaultSafetySettings()
     ) {
