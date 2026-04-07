@@ -47,6 +47,8 @@ class SecureSettingsDataStore @Inject constructor(
 
         private val KEY_GEMINI_API = stringPreferencesKey("gemini_api_encrypted_v1")
         private val KEY_GEMINI_IV = stringPreferencesKey("gemini_api_iv_v1")
+        private val GEMINI_API_KEYS_JSON = stringPreferencesKey("gemini_api_keys_json")
+        private val GEMINI_ACTIVE_KEY_INDEX = intPreferencesKey("gemini_active_key_index")
 
         private val KEY_DEEPSEEK_API = stringPreferencesKey("deepseek_api_encrypted_v1")
         private val KEY_DEEPSEEK_IV = stringPreferencesKey("deepseek_api_iv_v1")
@@ -370,6 +372,44 @@ class SecureSettingsDataStore @Inject constructor(
     fun getGeminiApiKey(): Flow<String> =
         getDecryptedKeyFlow("GeminiApiKey", KEY_GEMINI_API, KEY_GEMINI_IV)
 
+    suspend fun setGeminiApiKeys(keys: List<GeminiKeyEntry>) {
+        val json = org.json.JSONArray()
+        keys.forEach { entry ->
+            json.put(org.json.JSONObject().apply {
+                put("label", entry.label)
+                put("key", entry.key)
+            })
+        }
+        dataStore.edit { it[GEMINI_API_KEYS_JSON] = json.toString() }
+    }
+
+    fun getGeminiApiKeys(): Flow<List<GeminiKeyEntry>> = dataStore.data.map { prefs ->
+        val json = prefs[GEMINI_API_KEYS_JSON] ?: "[]"
+        try {
+            val arr = org.json.JSONArray(json)
+            (0 until arr.length()).map { i ->
+                val obj = arr.getJSONObject(i)
+                GeminiKeyEntry(obj.getString("label"), obj.getString("key"))
+            }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    suspend fun setGeminiActiveKeyIndex(index: Int) {
+        dataStore.edit { it[GEMINI_ACTIVE_KEY_INDEX] = index }
+    }
+
+    fun getGeminiActiveKeyIndex(): Flow<Int> = dataStore.data.map { prefs ->
+        prefs[GEMINI_ACTIVE_KEY_INDEX] ?: 0
+    }
+
+    fun getActiveGeminiApiKey(): Flow<String> = combine(
+        getGeminiApiKeys(),
+        getGeminiActiveKeyIndex()
+    ) { keys, index ->
+        if (keys.isNotEmpty() && index in keys.indices) keys[index].key
+        else getGeminiApiKey().first()
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // PUBLIC API — GITHUB TOKEN
     // ═══════════════════════════════════════════════════════════════════════════
@@ -462,6 +502,11 @@ class SecureSettingsDataStore @Inject constructor(
 private data class EncryptedData(
     val ciphertext: String,
     val iv: String
+)
+
+data class GeminiKeyEntry(
+    val label: String,
+    val key: String
 )
 
 class BiometricAuthException(message: String) : SecurityException(message)
