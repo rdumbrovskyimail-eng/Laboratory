@@ -481,7 +481,7 @@ class GeminiViewModel @Inject constructor(
                                     assistantParts.add(GeminiPart.Text(result.textSoFar))
                                 }
                                 result.toolCalls.forEach { tc ->
-                                    assistantParts.add(GeminiPart.FunctionCall(tc.name, tc.args))
+                                    assistantParts.add(GeminiPart.FunctionCall(tc.name, tc.args, tc.thoughtSignature))
                                 }
                                 currentMessages.add(GeminiMessage("model", assistantParts))
 
