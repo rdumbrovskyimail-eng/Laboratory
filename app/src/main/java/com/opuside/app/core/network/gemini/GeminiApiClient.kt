@@ -491,13 +491,15 @@ class GeminiApiClient @Inject constructor() {
             config.responseMimeType?.let {
                 put("responseMimeType", JsonPrimitive(it))
             }
-            if (config.presencePenalty != 0f) {
+            if (config.presencePenalty != 0f && model.supportsPresencePenalty) {
                 put("presencePenalty", JsonPrimitive(config.presencePenalty))
             }
-            if (config.frequencyPenalty != 0f) {
+            if (config.frequencyPenalty != 0f && model.supportsFrequencyPenalty) {
                 put("frequencyPenalty", JsonPrimitive(config.frequencyPenalty))
             }
-            config.seed?.let { put("seed", JsonPrimitive(it)) }
+            if (config.seed != null && model.supportsSeed) {
+                put("seed", JsonPrimitive(config.seed))
+            }
 
             // Thinking config (Gemini 3.x uses thinkingLevel, not budget)
             if (model.supportsThinking &&
