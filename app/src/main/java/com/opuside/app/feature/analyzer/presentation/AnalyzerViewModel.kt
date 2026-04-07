@@ -607,7 +607,8 @@ class AnalyzerViewModel @Inject constructor(
             chatDao.insert(ChatMessageEntity(
                 sessionId = sessionId,
                 role = MessageRole.USER,
-                content = if (attachedName != null) "$message\n📎 $attachedName (${_attachedFileSize.value / 1024}KB)" else message
+                content = if (attachedName != null) "$message\n📎 $attachedName (${_attachedFileSize.value / 1024}KB)" else message,
+                provider = "claude"
             ))
 
             // Загружаем историю
@@ -703,7 +704,8 @@ class AnalyzerViewModel @Inject constructor(
                                 sessionId = sessionId,
                                 role = MessageRole.ASSISTANT,
                                 content = fullResponse,
-                                isStreaming = false
+                                isStreaming = false,
+                                provider = "claude"
                             ))
 
                             _streamingText.value = null
