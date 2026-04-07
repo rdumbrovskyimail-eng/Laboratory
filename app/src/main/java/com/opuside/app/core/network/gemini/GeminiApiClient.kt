@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -114,13 +116,15 @@ class GeminiApiClient @Inject constructor() {
         }
 
         val response: Response = try {
-            suspendCancellableCoroutine { cont ->
-                cont.invokeOnCancellation { call.cancel() }
-                try {
-                    val resp = call.execute()
-                    cont.resume(resp) {}
-                } catch (e: Exception) {
-                    if (!cont.isCancelled) cont.resumeWithException(e)
+            withContext(Dispatchers.IO) {
+                suspendCancellableCoroutine { cont ->
+                    cont.invokeOnCancellation { call.cancel() }
+                    try {
+                        val resp = call.execute()
+                        cont.resume(resp)
+                    } catch (e: Exception) {
+                        if (cont.isActive) cont.resumeWithException(e)
+                    }
                 }
             }
         } catch (e: java.io.IOException) {
