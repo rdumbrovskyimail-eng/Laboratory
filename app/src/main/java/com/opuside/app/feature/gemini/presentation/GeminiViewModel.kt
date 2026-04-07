@@ -151,6 +151,13 @@ class GeminiViewModel @Inject constructor(
                 .createSession(sessionId, model)
         }
         addOperation("🔷", "Gemini ready", OperationLogType.SUCCESS)
+
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(3600_000)
+                try { GeminiModelConfig.SessionManager.cleanupOldSessions() } catch (_: Exception) {}
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
