@@ -9,6 +9,7 @@ import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.GitHubRepository
+import com.opuside.app.core.security.GeminiKeyEntry
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.util.ConfigImporter
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -95,8 +96,8 @@ class SettingsViewModel @Inject constructor(
     private val _geminiKeyInput = MutableStateFlow("")
     val geminiKeyInput: StateFlow<String> = _geminiKeyInput.asStateFlow()
 
-    private val _geminiKeys = MutableStateFlow<List<SecureSettingsDataStore.GeminiKeyEntry>>(emptyList())
-    val geminiKeys: StateFlow<List<SecureSettingsDataStore.GeminiKeyEntry>> = _geminiKeys.asStateFlow()
+    private val _geminiKeys = MutableStateFlow<List<GeminiKeyEntry>>(emptyList())
+    val geminiKeys: StateFlow<List<GeminiKeyEntry>> = _geminiKeys.asStateFlow()
 
     private val _geminiActiveKeyIndex = MutableStateFlow(0)
     val geminiActiveKeyIndex: StateFlow<Int> = _geminiActiveKeyIndex.asStateFlow()
@@ -223,7 +224,7 @@ class SettingsViewModel @Inject constructor(
 
                 // Миграция: если есть legacy ключ но нет списка — создать первый элемент
                 if (geminiKeysList.isEmpty() && geminiKey.isNotBlank()) {
-                    val migrated = listOf(SecureSettingsDataStore.GeminiKeyEntry("Key 1", geminiKey))
+                    val migrated = listOf(GeminiKeyEntry("Key 1", geminiKey))
                     _geminiKeys.value = migrated
                     viewModelScope.launch { secureSettings.setGeminiApiKeys(migrated) }
                 }
@@ -443,7 +444,7 @@ class SettingsViewModel @Inject constructor(
             _message.value = "❌ Key cannot be empty"
             return
         }
-        val newList = _geminiKeys.value + SecureSettingsDataStore.GeminiKeyEntry(
+        val newList = _geminiKeys.value + GeminiKeyEntry(
             label = label.ifBlank { "Key ${_geminiKeys.value.size + 1}" },
             key = key
         )
