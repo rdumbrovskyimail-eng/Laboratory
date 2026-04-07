@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -628,30 +629,120 @@ fun SettingsScreen(
             // GEMINI SETTINGS
             // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Gemini API", icon = Icons.Default.AutoAwesomeMotion) {
-                var showGeminiKey by remember { mutableStateOf(false) }
+                // Собираем state
+                val geminiKeys by viewModel.geminiKeys.collectAsState()
+                val geminiActiveKeyIndex by viewModel.geminiActiveKeyIndex.collectAsState()
 
-                OutlinedTextField(
-                    value = geminiKeyInput,
-                    onValueChange = viewModel::updateGeminiKey,
-                    label = {
-                        Text(
-                            if (sensitiveFeatureDisabled) "API Key (Disabled - Root Access)"
-                            else if (!isUnlocked) "API Key (Locked)"
-                            else "API Key"
-                        )
-                    },
-                    placeholder = { Text("AIzaSy-xxxxxxxxxxxx") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = if (showGeminiKey && isUnlocked) VisualTransformation.None else PasswordVisualTransformation(),
-                    leadingIcon = { Icon(Icons.Default.Key, null) },
-                    trailingIcon = {
-                        IconButton(onClick = { showGeminiKey = !showGeminiKey }, enabled = isUnlocked) {
-                            Icon(if (showGeminiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
+                // Заголовок
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("API Keys (${geminiKeys.size}/10)", style = MaterialTheme.typography.titleSmall)
+                    if (isUnlocked && geminiKeys.size < 10) {
+                        var showAddDialog by remember { mutableStateOf(false) }
+                        IconButton(onClick = { showAddDialog = true }) {
+                            Icon(Icons.Default.Add, "Add Key", tint = MaterialTheme.colorScheme.primary)
                         }
-                    },
-                    enabled = !sensitiveFeatureDisabled && isUnlocked
-                )
+                        if (showAddDialog) {
+                            var newLabel by remember { mutableStateOf("") }
+                            var newKey by remember { mutableStateOf("") }
+                            AlertDialog(
+                                onDismissRequest = { showAddDialog = false },
+                                title = { Text("Add Gemini Key") },
+                                text = {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = newLabel,
+                                            onValueChange = { newLabel = it },
+                                            label = { Text("Label") },
+                                            placeholder = { Text("e.g. Project Alpha") },
+                                            singleLine = true,
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                        OutlinedTextField(
+                                            value = newKey,
+                                            onValueChange = { newKey = it },
+                                            label = { Text("API Key") },
+                                            placeholder = { Text("AIzaSy-...") },
+                                            singleLine = true,
+                                            visualTransformation = PasswordVisualTransformation(),
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                },
+                                confirmButton = {
+                                    Button(onClick = {
+                                        viewModel.addGeminiKey(newLabel, newKey)
+                                        showAddDialog = false
+                                    }) { Text("Add") }
+                                },
+                                dismissButton = {
+                                    TextButton(onClick = { showAddDialog = false }) { Text("Cancel") }
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
+
+                if (geminiKeys.isEmpty()) {
+                    Text(
+                        "No API keys configured",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    geminiKeys.forEachIndexed { index, entry ->
+                        val isActive = index == geminiActiveKeyIndex
+                        Card(
+                            modifier = Modifier.fillMaxWidth().clickable { viewModel.setActiveGeminiKey(index) },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isActive) Color(0xFF1A2744) else MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            border = if (isActive) BorderStroke(1.5.dp, Color(0xFF8AB4F8)) else null
+                        ) {
+                            Row(
+                                Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isActive,
+                                    onClick = { viewModel.setActiveGeminiKey(index) },
+                                    colors = RadioButtonDefaults.colors(selectedColor = Color(0xFF8AB4F8))
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        entry.label,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (isActive) Color(0xFF8AB4F8) else MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        "${entry.key.take(8)}...${entry.key.takeLast(4)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (isUnlocked) {
+                                    IconButton(
+                                        onClick = { viewModel.removeGeminiKey(index) },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Delete, "Remove",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                }
 
                 Spacer(Modifier.height(8.dp))
 
