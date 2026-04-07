@@ -813,7 +813,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     private fun testGeminiApi(apiKey: String, modelId: String): Boolean {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelId:generateContent?key=$apiKey"
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelId:generateContent"
         val body = JSONObject().apply {
             put("contents", JSONArray().apply {
                 put(JSONObject().apply {
@@ -831,6 +831,7 @@ class SettingsViewModel @Inject constructor(
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("x-goog-api-key", apiKey)
             connectTimeout = 20_000
             readTimeout = 30_000
             doOutput = true
@@ -878,7 +879,7 @@ class SettingsViewModel @Inject constructor(
 
     fun resetToDefaults() {
         _claudeModelInput.value = "claude-opus-4-6"
-        _geminiModelInput.value = "gemini-flash-latest"
+        _geminiModelInput.value = com.opuside.app.core.ai.GeminiModelConfig.GeminiModel.getDefault().modelId
         _message.value = "⚠️ Settings reset to defaults (not saved)"
     }
 
