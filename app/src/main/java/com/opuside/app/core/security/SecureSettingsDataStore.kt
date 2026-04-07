@@ -45,6 +45,9 @@ class SecureSettingsDataStore @Inject constructor(
         private val KEY_GITHUB_TOKEN = stringPreferencesKey("github_token_encrypted_v2")
         private val KEY_GITHUB_IV = stringPreferencesKey("github_token_iv_v2")
 
+        private val KEY_GEMINI_API = stringPreferencesKey("gemini_api_encrypted_v1")
+        private val KEY_GEMINI_IV = stringPreferencesKey("gemini_api_iv_v1")
+
         private val KEY_DEEPSEEK_API = stringPreferencesKey("deepseek_api_encrypted_v1")
         private val KEY_DEEPSEEK_IV = stringPreferencesKey("deepseek_api_iv_v1")
 
@@ -363,8 +366,10 @@ class SecureSettingsDataStore @Inject constructor(
     // PUBLIC API — GEMINI
     // ═══════════════════════════════════════════════════════════════════════════
 
-    suspend fun setGeminiApiKey(key: String) =
+    suspend fun setGeminiApiKey(key: String, useBiometric: Boolean = false) {
         saveEncryptedKey("GEMINI API KEY", key, KEY_GEMINI_API, KEY_GEMINI_IV)
+        dataStore.edit { prefs -> prefs[KEY_BIOMETRIC_ENABLED] = useBiometric }
+    }
 
     fun getGeminiApiKey(): Flow<String> =
         getDecryptedKeyFlow("GeminiApiKey", KEY_GEMINI_API, KEY_GEMINI_IV)
