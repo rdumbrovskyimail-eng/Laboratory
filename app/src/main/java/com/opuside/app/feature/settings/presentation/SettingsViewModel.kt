@@ -433,6 +433,57 @@ class SettingsViewModel @Inject constructor(
         android.util.Log.d(TAG, "🔄 Gemini model updated: $model")
     }
 
+    fun addGeminiKey(label: String, key: String) {
+        if (!checkUnlocked()) return
+        if (_geminiKeys.value.size >= 10) {
+            _message.value = "❌ Maximum 10 keys allowed"
+            return
+        }
+        if (key.isBlank()) {
+            _message.value = "❌ Key cannot be empty"
+            return
+        }
+        val newList = _geminiKeys.value + SecureSettingsDataStore.GeminiKeyEntry(
+            label = label.ifBlank { "Key ${_geminiKeys.value.size + 1}" },
+            key = key
+        )
+        _geminiKeys.value = newList
+        viewModelScope.launch { secureSettings.setGeminiApiKeys(newList) }
+        _message.value = "✅ Key added: $label"
+    }
+
+    fun removeGeminiKey(index: Int) {
+        if (!checkUnlocked()) return
+        val list = _geminiKeys.value.toMutableList()
+        if (index !in list.indices) return
+        list.removeAt(index)
+        _geminiKeys.value = list
+        if (_geminiActiveKeyIndex.value >= list.size) {
+            _geminiActiveKeyIndex.value = (list.size - 1).coerceAtLeast(0)
+        }
+        viewModelScope.launch {
+            secureSettings.setGeminiApiKeys(list)
+            secureSettings.setGeminiActiveKeyIndex(_geminiActiveKeyIndex.value)
+        }
+    }
+
+    fun setActiveGeminiKey(index: Int) {
+        if (index !in _geminiKeys.value.indices) return
+        _geminiActiveKeyIndex.value = index
+        viewModelScope.launch { secureSettings.setGeminiActiveKeyIndex(index) }
+        val label = _geminiKeys.value[index].label
+        _message.value = "🔑 Active: $label"
+    }
+
+    fun updateGeminiKeyLabel(index: Int, newLabel: String) {
+        if (!checkUnlocked()) return
+        val list = _geminiKeys.value.toMutableList()
+        if (index !in list.indices) return
+        list[index] = list[index].copy(label = newLabel)
+        _geminiKeys.value = list
+        viewModelScope.launch { secureSettings.setGeminiApiKeys(list) }
+    }
+
     // ═════════════════════════════════════════════════════════════════════════
     // SAVE OPERATIONS
     // ═════════════════════════════════════════════════════════════════════════
