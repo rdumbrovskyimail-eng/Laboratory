@@ -31,6 +31,8 @@ class AppSettings @Inject constructor(
         val LAST_SESSION_ID = stringPreferencesKey("last_session_id")
         val CLAUDE_MODEL = stringPreferencesKey("claude_model")
         val GEMINI_MODEL = stringPreferencesKey("gemini_model")
+        val GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
+        val GEMINI_GENERATION_CONFIG = stringPreferencesKey("gemini_generation_config")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -69,6 +71,18 @@ class AppSettings @Inject constructor(
 
     suspend fun setClaudeModel(model: String) {
         dataStore.edit { it[Keys.CLAUDE_MODEL] = model }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // GEMINI API KEY
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    val geminiApiKey: Flow<String> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.GEMINI_API_KEY] ?: "" }
+
+    suspend fun setGeminiApiKey(key: String) {
+        dataStore.edit { it[Keys.GEMINI_API_KEY] = key }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
