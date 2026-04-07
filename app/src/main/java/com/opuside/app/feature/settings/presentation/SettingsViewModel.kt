@@ -591,16 +591,18 @@ class SettingsViewModel @Inject constructor(
             android.util.Log.d(TAG, "💾 SAVING GEMINI SETTINGS")
 
             try {
-                if (_geminiKeyInput.value.isBlank()) {
-                    _message.value = "❌ Gemini API Key cannot be empty"
+                if (_geminiKeys.value.isEmpty()) {
+                    _message.value = "❌ Add at least one Gemini API key"
                     return@launch
                 }
 
-                secureSettings.setGeminiApiKey(_geminiKeyInput.value)
+                secureSettings.setGeminiApiKeys(_geminiKeys.value)
+                secureSettings.setGeminiActiveKeyIndex(_geminiActiveKeyIndex.value)
+                secureSettings.setGeminiApiKey(_geminiKeys.value[_geminiActiveKeyIndex.value].key)
                 appSettings.setGeminiModel(_geminiModelInput.value)
 
-                _message.value = "✅ Gemini settings saved successfully"
-                android.util.Log.d(TAG, "✅ GEMINI SETTINGS SAVED")
+                _message.value = "✅ Gemini settings saved (${_geminiKeys.value.size} keys)"
+                android.util.Log.d(TAG, "✅ GEMINI SETTINGS SAVED (${_geminiKeys.value.size} keys)")
 
             } catch (e: Exception) {
                 android.util.Log.e(TAG, "❌ SAVE FAILED", e)
