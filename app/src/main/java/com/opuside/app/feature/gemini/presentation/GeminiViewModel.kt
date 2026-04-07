@@ -526,6 +526,24 @@ class GeminiViewModel @Inject constructor(
                             }
 
                             is GeminiStreamResult.Error -> {
+                                if (totalInputTokens > 0 || totalOutputTokens > 0) {
+                                    _currentSession.value?.addMessage(
+                                        totalInputTokens, totalOutputTokens, totalThinkingTokens
+                                    )
+                                    val cost = model.calculateCost(totalInputTokens, totalOutputTokens, totalThinkingTokens)
+                                    addOperation("⚠️",
+                                        "Partial: ${"%,d".format(cost.totalTokens)} tok before error",
+                                        OperationLogType.INFO)
+                                }
+                                if (fullResponse.isNotBlank()) {
+                                    chatDao.insert(ChatMessageEntity(
+                                        sessionId = sessionId,
+                                        role = MessageRole.ASSISTANT,
+                                        content = fullResponse + "\n\n⚠️ Response interrupted: ${result.exception.message}",
+                                        isStreaming = false,
+                                        provider = "gemini"
+                                    ))
+                                }
                                 _isStreaming.value = false
                                 _streamingText.value = null
                                 _chatError.value = result.exception.message
