@@ -169,6 +169,7 @@ class GeminiApiClient @Inject constructor() {
             emit(GeminiStreamResult.Started)
 
             val fullText = StringBuilder()
+            val lastThoughtSignature = StringBuilder()
             var totalInputTokens = 0
             var totalOutputTokens = 0
             var totalThinkingTokens = 0
@@ -207,7 +208,8 @@ class GeminiApiClient @Inject constructor() {
                                     totalOutputTokens = out
                                     totalThinkingTokens = think
                                     totalCachedTokens = cached
-                                }
+                                },
+                                lastThoughtSignature = lastThoughtSignature
                             )
 
                             // Emit text delta
@@ -236,7 +238,8 @@ class GeminiApiClient @Inject constructor() {
                                     totalOutputTokens = out
                                     totalThinkingTokens = think
                                     totalCachedTokens = cached
-                                })
+                                },
+                                lastThoughtSignature)
                         } catch (e: Exception) {
                             Log.w(TAG, "Parse final chunk error: ${e.message}")
                         }
@@ -331,7 +334,8 @@ class GeminiApiClient @Inject constructor() {
         pendingToolCalls: MutableList<GeminiToolCall>,
         onHasToolCalls: () -> Unit,
         onFinishReason: (FinishReason?) -> Unit,
-        onUsage: (inputTokens: Int, outputTokens: Int, thinkingTokens: Int, cachedTokens: Int) -> Unit
+        onUsage: (inputTokens: Int, outputTokens: Int, thinkingTokens: Int, cachedTokens: Int) -> Unit,
+        lastThoughtSignature: StringBuilder
     ) {
         val chunk = Json.parseToJsonElement(jsonStr).jsonObject
         val candidates = chunk["candidates"]?.jsonArray ?: return
@@ -355,13 +359,24 @@ class GeminiApiClient @Inject constructor() {
                         Log.d(TAG, "Thinking: ${thought.take(80)}...")
                     }
 
-                    // Function call
-                    partObj["functionCall"]?.jsonObject?.let { fc ->
-                        val name = fc["name"]?.jsonPrimitive?.content ?: "unknown"
-                        val args = fc["args"]?.jsonObject ?: buildJsonObject {}
-                        pendingToolCalls.add(GeminiToolCall(name = name, args = args))
-                        onHasToolCalls()
-                    }
+            // Thinking signature
+            partObj["thoughtSignature"]?.jsonPrimitive?.contentOrNull?.let { sig ->
+                lastThoughtSignature.clear()
+                lastThoughtSignature.append(sig)
+                Log.d(TAG, "Got thoughtSignature: ${sig.take(20)}...")
+            }
+
+            // Function call
+            partObj["functionCall"]?.jsonObject?.let { fc ->
+                val name = fc["name"]?.jsonPrimitive?.content ?: "unknown"
+                val args = fc["args"]?.jsonObject ?: buildJsonObject {}
+                pendingToolCalls.add(GeminiToolCall(
+                    name = name,
+                    args = args,
+                    thoughtSignature = lastThoughtSignature.toString().ifEmpty { null }
+                ))
+                onHasToolCalls()
+            }
                 }
             }
 
@@ -421,6 +436,9 @@ class GeminiApiClient @Inject constructor() {
                                 put("name", JsonPrimitive(part.name))
                                 put("args", part.args)
                             })
+                            if (part.thoughtSignature != null) {
+                                put("thoughtSignature", JsonPrimitive(part.thoughtSignature))
+                            }
                         }
                     }
                 }))
@@ -540,13 +558,14 @@ data class GeminiMessage(
 sealed class GeminiPart {
     data class Text(val text: String) : GeminiPart()
     data class InlineData(val mimeType: String, val base64Data: String) : GeminiPart()
-    data class FunctionCall(val name: String, val args: JsonObject) : GeminiPart()
+    data class FunctionCall(val name: String, val args: JsonObject, val thoughtSignature: String? = null) : GeminiPart()
     data class FunctionResponse(val name: String, val response: JsonObject) : GeminiPart()
 }
 
 data class GeminiToolCall(
     val name: String,
-    val args: JsonObject
+    val args: JsonObject,
+    val thoughtSignature: String? = null
 )
 
 data class GeminiUsage(
