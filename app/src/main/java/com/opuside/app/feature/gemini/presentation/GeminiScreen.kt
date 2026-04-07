@@ -41,7 +41,12 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.opuside.app.core.ai.GeminiModelConfig
-import com.opuside.app.core.ai.GeminiModelConfig.*
+import com.opuside.app.core.ai.GeminiModelConfig.GeminiModel
+import com.opuside.app.core.ai.GeminiModelConfig.GeminiCost
+import com.opuside.app.core.ai.GeminiModelConfig.GenerationConfig
+import com.opuside.app.core.ai.GeminiModelConfig.ThinkingLevel
+import com.opuside.app.core.ai.GeminiModelConfig.HarmCategory
+import com.opuside.app.core.ai.GeminiModelConfig.SafetyThreshold
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
 import kotlinx.coroutines.delay
