@@ -641,8 +641,10 @@ class SettingsViewModel @Inject constructor(
                     secureSettings.setDeepSeekApiKey(_deepSeekKeyInput.value)
                 }
 
-                if (_geminiKeyInput.value.isNotBlank()) {
-                    secureSettings.setGeminiApiKey(_geminiKeyInput.value)
+                if (_geminiKeys.value.isNotEmpty()) {
+                    secureSettings.setGeminiApiKeys(_geminiKeys.value)
+                    secureSettings.setGeminiActiveKeyIndex(_geminiActiveKeyIndex.value)
+                    secureSettings.setGeminiApiKey(_geminiKeys.value[_geminiActiveKeyIndex.value].key)
                     appSettings.setGeminiModel(_geminiModelInput.value)
                 }
 
