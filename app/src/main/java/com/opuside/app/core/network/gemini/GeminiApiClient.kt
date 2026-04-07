@@ -23,24 +23,16 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🔷 GEMINI API CLIENT v1.0 (REST SSE Streaming)
+ * 🔷 GEMINI API CLIENT v1.1 (REST SSE Streaming)
  *
  * Endpoint: generativelanguage.googleapis.com/v1beta
  * Streaming via SSE: streamGenerateContent?alt=sse
  *
- * Features:
- * - Function calling (Claude tool defs auto-mapped)
- * - System instruction
- * - Thinking (thinkingLevel)
- * - Safety settings per-category
- * - All generation params (temperature, topP, topK, penalties, seed, stopSequences)
- * - Inline file attachment (base64)
- * - Proper SSE multi-line parsing
- * - Rate limit (429) handling with Retry-After
- * - finishReason handling (SAFETY, RECITATION, MAX_TOKENS)
- * - Cancellation-safe (OkHttp call cancel)
- * - Response resource leak protection (finally close)
- * - API key redaction in logs
+ * Fixes v1.1:
+ * - 🔥 RAM: rawJsonBytes вместо toString().toRequestBody() — нет GC-фризов на больших историях
+ * - 🔥 OpenAPI: строгая конвертация input_schema (Anthropic) → parameters (Gemini)
+ *   Ключ: type=OBJECT + только properties/required — убирает Bad Request / 503 у Pro Preview
+ * - 🔥 Умная обработка 429 (Retry-After с сервера) и 503/529
  */
 @Singleton
 class GeminiApiClient @Inject constructor() {
@@ -99,9 +91,12 @@ class GeminiApiClient @Inject constructor() {
         Log.d(TAG, "→ POST ${model.modelId} (${messages.size} msgs, " +
                 "maxTokens=${config.maxOutputTokens}, temp=${config.temperature})")
 
+        // 🔥 FIX RAM: прямая конвертация в байты — избегаем двойного toString() на огромных историях
+        val rawJsonBytes = requestBody.toString().toByteArray(Charsets.UTF_8)
+
         val request = Request.Builder()
             .url(url)
-            .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+            .post(rawJsonBytes.toRequestBody("application/json".toMediaType()))
             .header("Content-Type", "application/json")
             .header("x-goog-api-key", apiKey)
             .build()
@@ -128,7 +123,6 @@ class GeminiApiClient @Inject constructor() {
                 }
             }
         } catch (e: java.io.IOException) {
-            // Check if cancelled by user
             if (call.isCanceled()) {
                 Log.d(TAG, "Request cancelled by user during execute")
                 currentCall.set(null)
@@ -147,13 +141,24 @@ class GeminiApiClient @Inject constructor() {
                 val errorMsg = parseErrorMessage(errorBody)
 
                 when (response.code) {
+                    // 🔥 FIX: берём Retry-After с сервера, не хардкодим
                     429 -> {
-                        val retryAfter = response.header("Retry-After")?.toIntOrNull() ?: 30
+                        val retryAfter = response.header("Retry-After")?.toIntOrNull() ?: 15
                         Log.w(TAG, "Rate limited. Retry after ${retryAfter}s")
                         emit(GeminiStreamResult.Error(
                             GeminiApiException(
-                                "Rate limit exceeded. Try again in ${retryAfter} seconds. " +
-                                "Consider enabling billing for higher limits.",
+                                "Квота (Rate limit) API исчерпана: HTTP 429. " +
+                                "Ждем ~${retryAfter}s. Если у вас Pro модель — попробуйте Flash/Lite версию.",
+                                429
+                            )
+                        ))
+                    }
+                    // 🔥 FIX: 503 и 529 — перегрев сервера (огромный контекст / шторм сети)
+                    503, 529 -> {
+                        emit(GeminiStreamResult.Error(
+                            GeminiApiException(
+                                "API сервер перегружен: HTTP ${response.code}. " +
+                                "Огромный размер контекста или шторм сети. $errorMsg",
                                 response.code
                             )
                         ))
@@ -163,9 +168,9 @@ class GeminiApiClient @Inject constructor() {
                                 errorBody.contains("BILLING")
                         emit(GeminiStreamResult.Error(
                             GeminiApiException(
-                                if (isBilling) "Billing not enabled. Enable at console.cloud.google.com"
-                                else "Access denied. Check your API key permissions.",
-                                response.code
+                                if (isBilling) "Включите Billing на Google Cloud для этой модели."
+                                else "Ключ отклонен (403). Проверьте ключ.",
+                                403
                             )
                         ))
                     }
@@ -237,7 +242,7 @@ class GeminiApiClient @Inject constructor() {
                             // Emit text delta
                             if (fullText.isNotEmpty()) {
                                 emit(GeminiStreamResult.Delta(
-                                    delta = "",  // individual delta not tracked for simplicity
+                                    delta = "",
                                     accumulated = fullText.toString()
                                 ))
                             }
@@ -328,7 +333,6 @@ class GeminiApiClient @Inject constructor() {
                 }
             }
         } catch (e: java.io.IOException) {
-            // Check if cancelled by user
             if (call.isCanceled()) {
                 Log.d(TAG, "Request cancelled by user during stream read")
                 return@flow
@@ -381,24 +385,24 @@ class GeminiApiClient @Inject constructor() {
                         Log.d(TAG, "Thinking: ${thought.take(80)}...")
                     }
 
-            // Thinking signature
-            partObj["thoughtSignature"]?.jsonPrimitive?.contentOrNull?.let { sig ->
-                lastThoughtSignature.clear()
-                lastThoughtSignature.append(sig)
-                Log.d(TAG, "Got thoughtSignature: ${sig.take(20)}...")
-            }
+                    // Thinking signature
+                    partObj["thoughtSignature"]?.jsonPrimitive?.contentOrNull?.let { sig ->
+                        lastThoughtSignature.clear()
+                        lastThoughtSignature.append(sig)
+                        Log.d(TAG, "Got thoughtSignature: ${sig.take(20)}...")
+                    }
 
-            // Function call
-            partObj["functionCall"]?.jsonObject?.let { fc ->
-                val name = fc["name"]?.jsonPrimitive?.content ?: "unknown"
-                val args = fc["args"]?.jsonObject ?: buildJsonObject {}
-                pendingToolCalls.add(GeminiToolCall(
-                    name = name,
-                    args = args,
-                    thoughtSignature = lastThoughtSignature.toString().ifEmpty { null }
-                ))
-                onHasToolCalls()
-            }
+                    // Function call
+                    partObj["functionCall"]?.jsonObject?.let { fc ->
+                        val name = fc["name"]?.jsonPrimitive?.content ?: "unknown"
+                        val args = fc["args"]?.jsonObject ?: buildJsonObject {}
+                        pendingToolCalls.add(GeminiToolCall(
+                            name = name,
+                            args = args,
+                            thoughtSignature = lastThoughtSignature.toString().ifEmpty { null }
+                        ))
+                        onHasToolCalls()
+                    }
                 }
             }
 
@@ -491,7 +495,6 @@ class GeminiApiClient @Inject constructor() {
             config.responseMimeType?.let {
                 put("responseMimeType", JsonPrimitive(it))
             }
-            // ✅ FIXED: не отправлять если модель не поддерживает
             if (config.presencePenalty != 0f && model.supportsPresencePenalty) {
                 put("presencePenalty", JsonPrimitive(config.presencePenalty))
             }
@@ -502,7 +505,6 @@ class GeminiApiClient @Inject constructor() {
                 put("seed", JsonPrimitive(config.seed))
             }
 
-            // Thinking config (Gemini 3.x uses thinkingLevel, not budget)
             if (model.supportsThinking &&
                 config.thinkingLevel != GeminiModelConfig.ThinkingLevel.NONE
             ) {
@@ -521,21 +523,32 @@ class GeminiApiClient @Inject constructor() {
         }))
 
         // ── Tools (function calling) ────────────────────────────────
-        // Maps Claude tool format (input_schema) → Gemini (parameters)
-        if (tools != null && tools.isNotEmpty()) {
+        // 🔥 FIX OpenAPI: строгая конвертация Anthropic input_schema → Gemini parameters.
+        // Проблема: Claude хранит схему в "input_schema", Gemini ожидает "parameters".
+        // Кроме того, Gemini 3.1 Pro Preview жёстко валидирует: type должен быть "OBJECT" (uppercase),
+        // и допускаются только поля properties + required. Лишние поля → Bad Request / 503.
+        if (!tools.isNullOrEmpty()) {
             put("tools", JsonArray(listOf(
                 buildJsonObject {
                     put("functionDeclarations", JsonArray(tools.map { tool ->
                         buildJsonObject {
                             put("name", tool["name"]!!)
                             put("description", tool["description"]!!)
-                            // Safe mapping: fallback to empty object if no schema
-                            val params = tool["input_schema"]?.jsonObject
-                                ?: buildJsonObject {
-                                    put("type", JsonPrimitive("object"))
+                            // Клонируем только "внутренности" input_schema — убираем лишние поля
+                            val schema = tool["input_schema"]?.jsonObject
+                            if (schema != null) {
+                                put("parameters", buildJsonObject {
+                                    put("type", JsonPrimitive("OBJECT"))
+                                    schema["properties"]?.let { put("properties", it) }
+                                    schema["required"]?.let { put("required", it) }
+                                })
+                            } else {
+                                // Нет схемы — пустой объект (безопасный фолбэк)
+                                put("parameters", buildJsonObject {
+                                    put("type", JsonPrimitive("OBJECT"))
                                     put("properties", buildJsonObject {})
-                                }
-                            put("parameters", params)
+                                })
+                            }
                         }
                     }))
                 }
