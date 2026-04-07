@@ -60,10 +60,11 @@ class GeminiViewModel @Inject constructor(
         private const val TAG = "GeminiVM"
         private const val KEY_SESSION_ID = "gemini_session_id"
         private const val MAX_OPS_LOG_SIZE = 500
-        private const val MAX_TOOL_ITERATIONS = 8
-        private const val MAX_503_RETRIES = 3
-        private const val RETRY_503_BASE_DELAY_MS = 5000L
+        private const val MAX_TOOL_ITERATIONS = 60
+        private const val MAX_503_RETRIES = 5
+        private const val RETRY_503_BASE_DELAY_MS = 3000L
         private const val TOOL_TIMEOUT_MS = 30_000L
+        private const val TOOL_INTER_DELAY_MS = 800L
         private const val MAX_ATTACHED_FILE_BYTES = 2 * 1024 * 1024L  // 2 MB
         private const val CHARS_PER_TOKEN_ESTIMATE = 4
     }
@@ -381,7 +382,7 @@ class GeminiViewModel @Inject constructor(
 
             try {
                 while (iteration < MAX_TOOL_ITERATIONS) {
-                    if (iteration > 1) kotlinx.coroutines.delay(400L)
+                    if (iteration > 1) kotlinx.coroutines.delay(TOOL_INTER_DELAY_MS)
                     iteration++
                     var iterationComplete = false
                     var retry503Requested = false
