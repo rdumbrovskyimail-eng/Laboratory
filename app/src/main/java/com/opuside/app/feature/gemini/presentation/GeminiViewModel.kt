@@ -13,7 +13,7 @@ import com.opuside.app.core.ai.GeminiModelConfig.GenerationConfig
 import com.opuside.app.core.ai.GeminiModelConfig.ThinkingLevel
 import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.data.SecureSettingsDataStore
+import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.database.dao.ChatDao
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
