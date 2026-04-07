@@ -51,10 +51,6 @@ class SecureSettingsDataStore @Inject constructor(
         private val KEY_DEEPSEEK_API = stringPreferencesKey("deepseek_api_encrypted_v1")
         private val KEY_DEEPSEEK_IV = stringPreferencesKey("deepseek_api_iv_v1")
 
-        // ✅ Gemini
-        private val KEY_GEMINI_API = stringPreferencesKey("gemini_api_encrypted_v1")
-        private val KEY_GEMINI_IV = stringPreferencesKey("gemini_api_iv_v1")
-
         private val KEY_BIOMETRIC_ENABLED = booleanPreferencesKey("biometric_enabled")
 
         private val KEY_GITHUB_OWNER = stringPreferencesKey("github_owner")
