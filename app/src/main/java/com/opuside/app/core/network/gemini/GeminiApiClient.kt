@@ -82,7 +82,7 @@ class GeminiApiClient @Inject constructor() {
         sendSystemPrompt: Boolean = true,
         apiKey: String
     ): Flow<GeminiStreamResult> = flow {
-        val url = "$BASE_URL/models/${model.modelId}:streamGenerateContent?alt=sse&key=$apiKey"
+        val url = "$BASE_URL/models/${model.modelId}:streamGenerateContent?alt=sse"
 
         val requestBody = buildRequestJson(
             model = model,
@@ -100,6 +100,7 @@ class GeminiApiClient @Inject constructor() {
             .url(url)
             .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
             .header("Content-Type", "application/json")
+            .header("x-goog-api-key", apiKey)
             .build()
 
         val call = httpClient.newCall(request)
