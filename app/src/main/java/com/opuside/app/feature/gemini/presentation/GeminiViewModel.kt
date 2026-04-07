@@ -13,6 +13,7 @@ import com.opuside.app.core.ai.GeminiModelConfig.GenerationConfig
 import com.opuside.app.core.ai.GeminiModelConfig.ThinkingLevel
 import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
+import com.opuside.app.core.data.SecureSettingsDataStore
 import com.opuside.app.core.database.dao.ChatDao
 import com.opuside.app.core.database.entity.ChatMessageEntity
 import com.opuside.app.core.database.entity.MessageRole
@@ -51,6 +52,7 @@ class GeminiViewModel @Inject constructor(
     private val chatDao: ChatDao,
     private val savedStateHandle: SavedStateHandle,
     private val appSettings: AppSettings,
+    private val secureSettings: SecureSettingsDataStore,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -136,11 +138,6 @@ class GeminiViewModel @Inject constructor(
 
     private var sendJob: Job? = null
 
-    // ── API key masked display ──
-    val apiKeyMasked: StateFlow<String> = appSettings.geminiApiKey
-        .map { GeminiModelConfig.maskApiKey(it) }
-        .stateIn(viewModelScope, SharingStarted.Eagerly, "Loading...")
-
     // ═══════════════════════════════════════════════════════════════════
     // INIT
     // ═══════════════════════════════════════════════════════════════════
@@ -204,13 +201,6 @@ class GeminiViewModel @Inject constructor(
         _selectedModel.value = model
         viewModelScope.launch { appSettings.setGeminiModel(model.modelId) }
         startNewSession()
-    }
-
-    fun setApiKey(key: String) {
-        viewModelScope.launch {
-            appSettings.setGeminiApiKey(key)
-            addOperation("🔑", "API Key saved", OperationLogType.SUCCESS)
-        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -306,14 +296,9 @@ class GeminiViewModel @Inject constructor(
             _streamingText.value = null
 
             // ── Validate API key ────────────────────────────────────
-            val apiKey = appSettings.geminiApiKey.first()
+            val apiKey = secureSettings.getGeminiApiKey().first()
             if (apiKey.isBlank()) {
                 _chatError.value = "Gemini API key not set. Open Settings (Tune icon) to add it."
-                _isStreaming.value = false
-                return@launch
-            }
-            if (!GeminiModelConfig.isValidApiKey(apiKey)) {
-                _chatError.value = "Invalid Gemini API key format. Key should start with 'AIza...'"
                 _isStreaming.value = false
                 return@launch
             }
