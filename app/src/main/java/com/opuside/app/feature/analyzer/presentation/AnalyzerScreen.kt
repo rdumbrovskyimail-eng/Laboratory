@@ -47,6 +47,8 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.text.selection.SelectionContainer
 import com.opuside.app.core.ui.theme.AppTheme
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.opuside.app.feature.gemini.presentation.GeminiScreen
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ПРОФЕССИОНАЛЬНАЯ ЦВЕТОВАЯ СХЕМА
@@ -130,6 +132,7 @@ fun AnalyzerScreen(
     var showModelDialog by remember { mutableStateOf(false) }
     var showSessionStats by remember { mutableStateOf(false) }
     var showSettingsPanel by remember { mutableStateOf(false) }
+    var showGeminiScreen by rememberSaveable { mutableStateOf(false) }
 
 
     val chatListState = rememberLazyListState()
@@ -165,6 +168,14 @@ fun AnalyzerScreen(
             viewModel.addOperation("❌", "File error: ${e.message}",
                 AnalyzerViewModel.OperationLogType.ERROR)
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // GEMINI SCREEN SWITCH
+    // ═══════════════════════════════════════════════════════════════════
+    if (showGeminiScreen) {
+        GeminiScreen(onBackToAnalyzer = { showGeminiScreen = false })
+        return
     }
 
     val cm = cacheModeEnabled
@@ -224,6 +235,7 @@ fun AnalyzerScreen(
                 onNewSession = { viewModel.startNewSession() },
                 onEndSession = { viewModel.startNewSession() },
                 onToggleSettings = { showSettingsPanel = !showSettingsPanel },
+                onSwitchToGemini = { showGeminiScreen = true },
                 cm = cm,
                 bg = bg,
                 t1 = t1,
@@ -485,6 +497,7 @@ private fun ProfessionalTopBar(
     onNewSession: () -> Unit,
     onEndSession: () -> Unit,
     onToggleSettings: () -> Unit,
+    onSwitchToGemini: () -> Unit,
     cm: Boolean,
     bg: Color,
     t1: Color,
@@ -536,6 +549,23 @@ private fun ProfessionalTopBar(
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Surface(
+                        onClick = onSwitchToGemini,
+                        color = Color(0xFF4285F4).copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.5.dp, Color(0xFF4285F4)),
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Row(
+                            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text("🔷", fontSize = 14.sp)
+                            Text("Gemini", fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                color = Color(0xFF4285F4))
+                        }
+                    }
                     IconButton(
                         onClick = onToggleHistory,
                         enabled = !cacheModeEnabled,
