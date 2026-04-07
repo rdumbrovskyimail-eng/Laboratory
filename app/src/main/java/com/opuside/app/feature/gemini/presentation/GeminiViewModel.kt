@@ -296,7 +296,7 @@ class GeminiViewModel @Inject constructor(
             _streamingText.value = null
 
             // ── Validate API key ────────────────────────────────────
-            val apiKey = secureSettings.getGeminiApiKey().first()
+            val apiKey = secureSettings.getActiveGeminiApiKey().first()
             if (apiKey.isBlank()) {
                 _chatError.value = "Gemini API key not set. Open Settings (Tune icon) to add it."
                 _isStreaming.value = false
