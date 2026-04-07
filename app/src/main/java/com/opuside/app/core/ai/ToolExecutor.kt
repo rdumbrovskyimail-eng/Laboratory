@@ -288,36 +288,30 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
     }
 
     private suspend fun executeCreateFile(id: String, input: JsonObject): ToolResult {
-        val path = input["path"]?.jsonPrimitive?.contentOrNull ?: return ToolResult(id, "Error: 'path' required", isError = true)
-        val content = input["content"]?.jsonPrimitive?.contentOrNull ?: return ToolResult(id, "Error: 'content' required", isError = true)
-        val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull ?: "Create $path via Claude"
+        val path = input["path"]?.jsonPrimitive?.contentOrNull
+            ?: return ToolResult(id, "Error: 'path' required", isError = true)
+        val content = input["content"]?.jsonPrimitive?.contentOrNull
+            ?: return ToolResult(id, "Error: 'content' required", isError = true)
+        val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull
+            ?: "Create $path via AI"
 
         if (path.contains("..")) return ToolResult(id, "Error: path traversal not allowed", isError = true)
 
-        return try {
-            val result = gitHubClient.createOrUpdateFile(path = path, content = content, message = commitMsg).getOrThrow()
-            repoIndexManager.invalidate()
-            ToolResult(id, "✅ Created: `$path` (sha: ${result.content.sha.take(8)})", operation = FileOperation.Created(path))
-        } catch (e: Exception) {
-            ToolResult(id, "❌ Failed to create `$path`: ${e.message}", isError = true)
-        }
+        // ✅ FIX: Проверяем существование файла → auto-update с SHA
+        return createOrUpdateWithRetry(id, path, content, commitMsg, FileOperation.Created(path))
     }
 
     private suspend fun executeEditFile(id: String, input: JsonObject): ToolResult {
-        val path = input["path"]?.jsonPrimitive?.contentOrNull ?: return ToolResult(id, "Error: 'path' required", isError = true)
-        val content = input["content"]?.jsonPrimitive?.contentOrNull ?: return ToolResult(id, "Error: 'content' required", isError = true)
-        val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull ?: "Edit $path via Claude"
+        val path = input["path"]?.jsonPrimitive?.contentOrNull
+            ?: return ToolResult(id, "Error: 'path' required", isError = true)
+        val content = input["content"]?.jsonPrimitive?.contentOrNull
+            ?: return ToolResult(id, "Error: 'content' required", isError = true)
+        val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull
+            ?: "Edit $path via AI"
 
         if (path.contains("..")) return ToolResult(id, "Error: path traversal not allowed", isError = true)
 
-        return try {
-            val currentFile = gitHubClient.getFileContent(path).getOrThrow()
-            val result = gitHubClient.createOrUpdateFile(path = path, content = content, message = commitMsg, sha = currentFile.sha).getOrThrow()
-            repoIndexManager.invalidate()
-            ToolResult(id, "✅ Edited: `$path` (sha: ${result.content.sha.take(8)})", operation = FileOperation.Edited(path))
-        } catch (e: Exception) {
-            ToolResult(id, "❌ Failed to edit `$path`: ${e.message}", isError = true)
-        }
+        return createOrUpdateWithRetry(id, path, content, commitMsg, FileOperation.Edited(path))
     }
 
     private suspend fun executeDeleteFile(id: String, input: JsonObject): ToolResult {
