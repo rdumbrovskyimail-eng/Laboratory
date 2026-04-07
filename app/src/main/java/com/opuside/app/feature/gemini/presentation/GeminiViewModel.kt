@@ -383,6 +383,7 @@ class GeminiViewModel @Inject constructor(
             if (_conversationHistoryEnabled.value) {
                 val history = chatDao.getSession(sessionId)
                     .filter { !it.isStreaming && it.content.isNotBlank() && it.role != MessageRole.SYSTEM }
+                    .dropLast(1)  // ✅ FIX: убираем только что вставленное сообщение — оно будет добавлено ниже
                 for (msg in history) {
                     when (msg.role) {
                         MessageRole.USER -> geminiMessages.add(GeminiMessage.user(msg.content))
@@ -392,7 +393,7 @@ class GeminiViewModel @Inject constructor(
                 }
             }
 
-            // Current message
+            // Current message (always added separately)
             geminiMessages.add(GeminiMessage.user(fullMessage))
 
             // ── Sanitize messages ───────────────────────────────────
@@ -426,7 +427,7 @@ class GeminiViewModel @Inject constructor(
                     iteration++
                     if (iteration > 1) kotlinx.coroutines.delay(TOOL_INTER_DELAY_MS)
 
-                    // ── 503 retry wrapper ────────────────────────────
+                    // ── 503/429 retry wrapper ────────────────────────
                     var retryCount503 = 0
                     var iterText = ""
                     var iterToolCalls: List<GeminiToolCall> = emptyList()
@@ -477,9 +478,10 @@ class GeminiViewModel @Inject constructor(
                                         iterUsage = result.usage
                                     }
                                     is GeminiStreamResult.Error -> {
-                                        val is503 = (result.exception as? GeminiApiException)?.httpCode == 503
-                                        if (is503) {
-                                            iterError = "503"
+                                        // ✅ FIX: обрабатываем 429 так же как 503
+                                        val httpCode = (result.exception as? GeminiApiException)?.httpCode
+                                        if (httpCode == 503 || httpCode == 429) {
+                                            iterError = "retryable:$httpCode"
                                         } else {
                                             iterError = result.exception.message ?: "Unknown error"
                                         }
@@ -492,17 +494,18 @@ class GeminiViewModel @Inject constructor(
                             iterError = e.message ?: "Unknown"
                         }
 
-                        // ── Handle 503 retry ─────────────────────────
-                        if (iterError == "503") {
+                        // ── Handle retryable errors (429 + 503) ──────
+                        if (iterError?.startsWith("retryable:") == true) {
+                            val code = iterError!!.substringAfter(":")
                             retryCount503++
                             if (retryCount503 <= MAX_503_RETRIES) {
-                                val delayMs = RETRY_503_BASE_DELAY_MS * retryCount503
-                                addOperation("🔄", "503 retry $retryCount503/$MAX_503_RETRIES (${delayMs/1000}s)", OperationLogType.PROGRESS)
+                                val baseDelay = if (code == "429") 15_000L else RETRY_503_BASE_DELAY_MS
+                                val delayMs = baseDelay * retryCount503
+                                addOperation("🔄", "$code retry $retryCount503/$MAX_503_RETRIES (${delayMs/1000}s)", OperationLogType.PROGRESS)
                                 kotlinx.coroutines.delay(delayMs)
                                 continue@retry503
                             }
-                            // Out of retries
-                            iterError = "503: Model overloaded after $MAX_503_RETRIES retries"
+                            iterError = "$code: Overloaded after $MAX_503_RETRIES retries"
                         }
                         break@retry503
                     }
