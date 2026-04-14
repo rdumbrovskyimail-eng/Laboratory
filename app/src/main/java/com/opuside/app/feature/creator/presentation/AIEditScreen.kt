@@ -53,16 +53,9 @@ private object EditColors {
     val orange = Color(0xFFF0883E)
     val orangeBg = Color(0xFF2D1A00)
 
-    val deepseek = Color(0xFF4E9BCD)
-    val deepseekBg = Color(0xFF0A2030)
-
     // Gemini brand colors
-    val geminiPro = Color(0xFF8AB4F8)
-    val geminiProBg = Color(0xFF1A1F3A)
     val geminiFlash = Color(0xFF81C995)
     val geminiFlashBg = Color(0xFF0D2418)
-    val geminiFlashLite = Color(0xFFFFB86C)
-    val geminiFlashLiteBg = Color(0xFF2A1A00)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -71,29 +64,17 @@ private object EditColors {
 
 private val CreatorAIEditService.AiModel.accentColor: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.CLAUDE_SONNET          -> EditColors.blue
-        CreatorAIEditService.AiModel.DEEPSEEK_CHAT          -> EditColors.deepseek
-        CreatorAIEditService.AiModel.DEEPSEEK_REASONER      -> EditColors.orange
-        CreatorAIEditService.AiModel.GEMINI_PRO_PREVIEW     -> EditColors.geminiPro
-        CreatorAIEditService.AiModel.GEMINI_FLASH_LITE_PREVIEW -> EditColors.geminiFlashLite
-        CreatorAIEditService.AiModel.GEMINI_FLASH_LATEST    -> EditColors.geminiFlash
-        CreatorAIEditService.AiModel.GEMINI_FLASH_LITE_LATEST  -> EditColors.geminiFlashLite
+        CreatorAIEditService.AiModel.GEMINI_3_FLASH -> EditColors.geminiFlash
     }
 
 private val CreatorAIEditService.AiModel.accentBg: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.CLAUDE_SONNET          -> EditColors.blueBg
-        CreatorAIEditService.AiModel.DEEPSEEK_CHAT          -> EditColors.deepseekBg
-        CreatorAIEditService.AiModel.DEEPSEEK_REASONER      -> EditColors.orangeBg
-        CreatorAIEditService.AiModel.GEMINI_PRO_PREVIEW     -> EditColors.geminiProBg
-        CreatorAIEditService.AiModel.GEMINI_FLASH_LITE_PREVIEW -> EditColors.geminiFlashLiteBg
-        CreatorAIEditService.AiModel.GEMINI_FLASH_LATEST    -> EditColors.geminiFlashBg
-        CreatorAIEditService.AiModel.GEMINI_FLASH_LITE_LATEST  -> EditColors.geminiFlashLiteBg
+        CreatorAIEditService.AiModel.GEMINI_3_FLASH -> EditColors.geminiFlashBg
     }
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * AIEditScreen v2.3 — с поддержкой Gemini моделей
+ * AIEditScreen v2.4 — Gemini 3 Flash Preview
  * ═══════════════════════════════════════════════════════════════════════════
  */
 @Composable
@@ -154,53 +135,36 @@ fun AIEditScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════
-        // MODEL SWITCHER BAR — горизонтальный скролл для 7 моделей
-        // ═══════════════════════════════════════════════════════
-
-        Surface(
-            color = EditColors.surfaceElevated,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column {
-                HorizontalDivider(color = EditColors.border, thickness = 1.dp)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // Model badge (static, since only one model)
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = EditColors.geminiFlashBg,
+                    border = BorderStroke(1.5.dp, EditColors.geminiFlash)
                 ) {
-                    Text(
-                        "  Модель:",
-                        fontSize = 11.sp,
-                        color = EditColors.text3,
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Spacer(Modifier.width(6.dp))
                     Row(
-                        modifier = Modifier
-                            .horizontalScroll(rememberScrollState())
-                            .padding(end = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        CreatorAIEditService.AiModel.entries.forEach { model ->
-                            ModelChip(
-                                model = model,
-                                isSelected = selectedModel == model,
-                                enabled = !isProcessing,
-                                onClick = { onModelChange(model) }
-                            )
-                        }
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(EditColors.geminiFlash)
+                        )
+                        Text(
+                            selectedModel.badge,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = EditColors.geminiFlash,
+                            fontFamily = FontFamily.Monospace
+                        )
                     }
                 }
-                HorizontalDivider(color = EditColors.border, thickness = 1.dp)
             }
         }
+
+        HorizontalDivider(color = EditColors.border, thickness = 1.dp)
 
         // ═══════════════════════════════════════════════════════
         // MAIN CONTENT
@@ -255,54 +219,6 @@ fun AIEditScreen(
             onApply = onApply,
             onDiscard = onDiscard
         )
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// MODEL CHIP
-// ═══════════════════════════════════════════════════════════════════════════
-
-@Composable
-private fun ModelChip(
-    model: CreatorAIEditService.AiModel,
-    isSelected: Boolean,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    val accentColor = model.accentColor
-    val bgColor = if (isSelected) model.accentBg else EditColors.surface
-
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(20.dp),
-        color = bgColor,
-        border = BorderStroke(
-            width = if (isSelected) 1.5.dp else 1.dp,
-            color = if (isSelected) accentColor else EditColors.border
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            if (isSelected) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(accentColor)
-                )
-            }
-            Text(
-                model.badge,
-                fontSize = 11.sp,
-                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                color = if (isSelected) accentColor else EditColors.text3,
-                fontFamily = FontFamily.Monospace
-            )
-        }
     }
 }
 
@@ -739,12 +655,9 @@ private fun HintSection() {
                 "📝" to "Опишите изменения на любом языке",
                 "📋" to "Скопируйте инструкции из чата AI и вставьте",
                 "🔄" to "Несколько замен — AI создаст отдельные блоки",
-                "🐋" to "DeepSeek Chat — дешевле, быстрее для простых правок",
-                "🧠" to "DeepSeek R1 — мыслит дольше, точнее для сложных задач",
-                "⚡" to "Claude Sonnet 4.6 — максимум качества",
-                "✨" to "Gemini Pro — мощная альтернатива от Google",
-                "🔥" to "Gemini Flash — быстро и дёшево",
-                "👁️" to "Превью diff перед применением + статус матчинга"
+                "⚡" to "Gemini 3 Flash Preview — быстро, точно, дёшево",
+                "👁️" to "Превью diff перед применением + статус матчинга",
+                "✅" to "Нажмите «Применить» после проверки блоков"
             ).forEach { (emoji, text) ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
