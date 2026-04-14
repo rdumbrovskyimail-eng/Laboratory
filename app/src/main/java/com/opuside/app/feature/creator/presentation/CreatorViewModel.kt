@@ -126,8 +126,7 @@ class CreatorViewModel @Inject constructor(
 
     private var _aiEditNewContent: String = ""
 
-    // ✅ Выбранная модель для AI Edit
-    private val _selectedAiModel = MutableStateFlow(CreatorAIEditService.AiModel.CLAUDE_SONNET)
+    private val _selectedAiModel = MutableStateFlow(CreatorAIEditService.AiModel.GEMINI_3_FLASH)
     val selectedAiModel: StateFlow<CreatorAIEditService.AiModel> = _selectedAiModel.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -608,10 +607,8 @@ class CreatorViewModel @Inject constructor(
         android.util.Log.d("CreatorViewModel", "🤖 AI Edit closed")
     }
 
-    // ✅ Переключение модели
     fun onAiModelChange(model: CreatorAIEditService.AiModel) {
         _selectedAiModel.value = model
-        // Сбрасываем результат при смене модели
         if (_aiEditStatus.value is CreatorAIEditService.EditStatus.Success ||
             _aiEditStatus.value is CreatorAIEditService.EditStatus.Error) {
             _aiEditStatus.value = CreatorAIEditService.EditStatus.Idle
@@ -620,7 +617,6 @@ class CreatorViewModel @Inject constructor(
         android.util.Log.d("CreatorViewModel", "🤖 AI model switched to: ${model.displayName}")
     }
 
-    // ✅ processAIEdit передаёт выбранную модель
     fun processAIEdit(instructions: String) {
         val file = _selectedFile.value ?: return
         val currentContent = _fileContent.value
@@ -641,7 +637,7 @@ class CreatorViewModel @Inject constructor(
                 fileContent = currentContent,
                 fileName = file.name,
                 instructions = instructions,
-                model = model                        // ✅ передаём модель
+                model = model
             ).onSuccess { result ->
                 if (result.blocks.isEmpty()) {
                     _aiEditStatus.value = CreatorAIEditService.EditStatus.Error(
