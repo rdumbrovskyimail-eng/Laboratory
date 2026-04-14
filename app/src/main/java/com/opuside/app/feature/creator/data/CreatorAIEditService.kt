@@ -32,63 +32,18 @@ class CreatorAIEditService @Inject constructor(
         val costPerMInputUsd: Double,
         val costPerMOutputUsd: Double
     ) {
-        CLAUDE_SONNET(
-            displayName = "Claude Sonnet 4.6",
-            apiId = "claude-sonnet-4-6",
-            badge = "⚡ Sonnet",
-            costPerMInputUsd = 3.0,
-            costPerMOutputUsd = 15.0
-        ),
-        DEEPSEEK_CHAT(
-            displayName = "DeepSeek Chat",
-            apiId = "deepseek-chat",
-            badge = "🐋 DS Chat",
-            costPerMInputUsd = 0.14,
-            costPerMOutputUsd = 0.28
-        ),
-        DEEPSEEK_REASONER(
-            displayName = "DeepSeek Reasoner",
-            apiId = "deepseek-reasoner",
-            badge = "🧠 DS R1",
-            costPerMInputUsd = 0.55,
-            costPerMOutputUsd = 2.19
-        ),
-        GEMINI_PRO_PREVIEW(
-            displayName = "Gemini 3.1 Pro Preview",
-            apiId = "gemini-3.1-pro-preview",
-            badge = "✨ G Pro",
-            costPerMInputUsd = 1.25,
-            costPerMOutputUsd = 5.0
-        ),
-        GEMINI_FLASH_LITE_PREVIEW(
-            displayName = "Gemini 3.1 Flash Lite Preview",
-            apiId = "gemini-3.1-flash-lite-preview",
-            badge = "⚡ G FLite",
-            costPerMInputUsd = 0.075,
-            costPerMOutputUsd = 0.30
-        ),
-        GEMINI_FLASH_LATEST(
-            displayName = "Gemini Flash Latest",
-            apiId = "gemini-flash-latest",
-            badge = "🔥 G Flash",
-            costPerMInputUsd = 0.075,
-            costPerMOutputUsd = 0.30
-        ),
-        GEMINI_FLASH_LITE_LATEST(
-            displayName = "Gemini Flash Lite Latest",
-            apiId = "gemini-flash-lite-latest",
-            badge = "💨 G FLite2",
-            costPerMInputUsd = 0.0375,
-            costPerMOutputUsd = 0.15
+        GEMINI_3_FLASH(
+            displayName = "Gemini 3 Flash Preview",
+            apiId = "gemini-3-flash-preview",
+            badge = "⚡ G Flash",
+            costPerMInputUsd = 0.5,
+            costPerMOutputUsd = 3.0
         )
     }
 
     companion object {
         private const val TAG = "CreatorAIEdit"
-        private const val CLAUDE_API_URL = "https://api.anthropic.com/v1/messages"
-        private const val DEEPSEEK_API_URL = "https://api.deepseek.com/v1/chat/completions"
         private const val GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val CLAUDE_API_VERSION = "2023-06-01"
         private const val MAX_OUTPUT_TOKENS = 8192
         private const val LINE_NUMBER_THRESHOLD = 300
 
@@ -241,7 +196,7 @@ Example 2 — Delete a function:
         fileContent: String,
         fileName: String,
         instructions: String,
-        model: AiModel = AiModel.CLAUDE_SONNET
+        model: AiModel = AiModel.GEMINI_3_FLASH
     ): Result<EditResult> = withContext(Dispatchers.IO) {
         try {
             val lineCount = fileContent.lines().size
@@ -251,18 +206,8 @@ Example 2 — Delete a function:
             val systemPrompt = buildSystemPrompt(useLineNumbers)
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
-            val rawResponse = when (model) {
-                AiModel.CLAUDE_SONNET ->
-                    callClaudeApi(systemPrompt, userMessage, model)
-                AiModel.DEEPSEEK_CHAT,
-                AiModel.DEEPSEEK_REASONER ->
-                    callDeepSeekApi(systemPrompt, userMessage, model)
-                AiModel.GEMINI_PRO_PREVIEW,
-                AiModel.GEMINI_FLASH_LITE_PREVIEW,
-                AiModel.GEMINI_FLASH_LATEST,
-                AiModel.GEMINI_FLASH_LITE_LATEST ->
-                    callGeminiApi(systemPrompt, userMessage, model)
-            }.getOrElse { return@withContext Result.failure(it) }
+            val rawResponse = callGeminiApi(systemPrompt, userMessage, model)
+                .getOrElse { return@withContext Result.failure(it) }
 
             val content = rawResponse.first
             val inputTokens = rawResponse.second
@@ -286,102 +231,6 @@ Example 2 — Delete a function:
             Log.e(TAG, "❌ processEdit failed", e)
             Result.failure(e)
         }
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // CLAUDE API
-    // ═══════════════════════════════════════════════════════════════════
-
-    private suspend fun callClaudeApi(
-        systemPrompt: String,
-        userMessage: String,
-        model: AiModel
-    ): Result<Triple<String, Int, Int>> {
-        val apiKey = try {
-            secureSettings.getAnthropicApiKey().first()
-        } catch (e: Exception) { "" }
-        if (apiKey.isBlank()) return Result.failure(Exception("Claude API key не настроен. Укажите ключ в Settings."))
-
-        val requestBody = JSONObject().apply {
-            put("model", model.apiId)
-            put("max_tokens", MAX_OUTPUT_TOKENS)
-            put("system", systemPrompt)
-            put("messages", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", userMessage)
-                })
-            })
-        }
-
-        return executeRequest(
-            url = CLAUDE_API_URL,
-            body = requestBody,
-            headers = mapOf(
-                "Content-Type" to "application/json",
-                "x-api-key" to apiKey,
-                "anthropic-version" to CLAUDE_API_VERSION
-            ),
-            parseResponse = { json ->
-                val content = json.getJSONArray("content").let { arr ->
-                    (0 until arr.length())
-                        .map { arr.getJSONObject(it) }
-                        .filter { it.getString("type") == "text" }
-                        .joinToString("") { it.getString("text") }
-                }
-                val usage = json.getJSONObject("usage")
-                Triple(content, usage.getInt("input_tokens"), usage.getInt("output_tokens"))
-            }
-        )
-    }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // DEEPSEEK API
-    // ═══════════════════════════════════════════════════════════════════
-
-    private suspend fun callDeepSeekApi(
-        systemPrompt: String,
-        userMessage: String,
-        model: AiModel
-    ): Result<Triple<String, Int, Int>> {
-        val apiKey = try {
-            secureSettings.getDeepSeekApiKey().first()
-        } catch (e: Exception) { "" }
-        if (apiKey.isBlank()) return Result.failure(Exception("DeepSeek API key не настроен. Укажите ключ в Settings."))
-
-        val requestBody = JSONObject().apply {
-            put("model", model.apiId)
-            put("max_tokens", MAX_OUTPUT_TOKENS)
-            put("messages", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "system")
-                    put("content", systemPrompt)
-                })
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", userMessage)
-                })
-            })
-        }
-
-        return executeRequest(
-            url = DEEPSEEK_API_URL,
-            body = requestBody,
-            headers = mapOf(
-                "Content-Type" to "application/json",
-                "Authorization" to "Bearer $apiKey"
-            ),
-            parseResponse = { json ->
-                val choice = json.getJSONArray("choices").getJSONObject(0)
-                val content = choice.getJSONObject("message").getString("content")
-                val usage = json.getJSONObject("usage")
-                Triple(
-                    content,
-                    usage.getInt("prompt_tokens"),
-                    usage.getInt("completion_tokens")
-                )
-            }
-        )
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -739,7 +588,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
 
     private fun formatApiError(code: Int, body: String): String {
         val msg = try {
-            // Gemini error format
             val json = JSONObject(body)
             json.optJSONObject("error")?.optString("message")
                 ?: json.optString("message", "")
