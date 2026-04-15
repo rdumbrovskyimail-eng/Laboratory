@@ -64,17 +64,17 @@ private object EditColors {
 
 private val CreatorAIEditService.AiModel.accentColor: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.GEMINI_3_FLASH -> EditColors.geminiFlash
+        CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlash
     }
 
 private val CreatorAIEditService.AiModel.accentBg: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.GEMINI_3_FLASH -> EditColors.geminiFlashBg
+        CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlashBg
     }
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * AIEditScreen v2.4 — Gemini 3 Flash Preview
+ * AIEditScreen v2.4 — Gemini 3.1 Flash-Lite Preview
  * ═══════════════════════════════════════════════════════════════════════════
  */
 @Composable
@@ -83,7 +83,6 @@ fun AIEditScreen(
     fileContent: String,
     editStatus: CreatorAIEditService.EditStatus,
     selectedModel: CreatorAIEditService.AiModel,
-    onModelChange: (CreatorAIEditService.AiModel) -> Unit,
     onProcess: (instructions: String) -> Unit,
     onApply: () -> Unit,
     onDiscard: () -> Unit,
@@ -135,11 +134,11 @@ fun AIEditScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                // Model badge (static, since only one model)
+                // Model badge
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = EditColors.geminiFlashBg,
-                    border = BorderStroke(1.5.dp, EditColors.geminiFlash)
+                    color = selectedModel.accentBg,
+                    border = BorderStroke(1.5.dp, selectedModel.accentColor)
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -150,13 +149,13 @@ fun AIEditScreen(
                             modifier = Modifier
                                 .size(6.dp)
                                 .clip(CircleShape)
-                                .background(EditColors.geminiFlash)
+                                .background(selectedModel.accentColor)
                         )
                         Text(
                             selectedModel.badge,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
-                            color = EditColors.geminiFlash,
+                            color = selectedModel.accentColor,
                             fontFamily = FontFamily.Monospace
                         )
                     }
@@ -189,7 +188,11 @@ fun AIEditScreen(
                 enabled = !isProcessing
             )
 
-            FileInfoChip(fileName = fileName, contentLength = fileContent.length)
+            FileInfoChip(
+                fileName = fileName,
+                contentLength = fileContent.length,
+                lineCount = fileContent.lines().size
+            )
 
             when (editStatus) {
                 is CreatorAIEditService.EditStatus.Processing ->
@@ -323,7 +326,11 @@ private fun InstructionsSection(
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun FileInfoChip(fileName: String, contentLength: Int) {
+private fun FileInfoChip(
+    fileName: String,
+    contentLength: Int,
+    lineCount: Int
+) {
     Surface(
         color = EditColors.surfaceElevated,
         shape = RoundedCornerShape(8.dp),
@@ -343,7 +350,6 @@ private fun FileInfoChip(fileName: String, contentLength: Int) {
                 color = EditColors.text3,
                 fontFamily = FontFamily.Monospace
             )
-            val lineCount = contentLength / 40
             if (lineCount > 300) {
                 Text("•", color = EditColors.text3, fontSize = 12.sp)
                 Text("📏 line numbers ON", fontSize = 10.sp, color = EditColors.yellow, fontFamily = FontFamily.Monospace)
@@ -655,7 +661,7 @@ private fun HintSection() {
                 "📝" to "Опишите изменения на любом языке",
                 "📋" to "Скопируйте инструкции из чата AI и вставьте",
                 "🔄" to "Несколько замен — AI создаст отдельные блоки",
-                "⚡" to "Gemini 3 Flash Preview — быстро, точно, дёшево",
+                "⚡" to "Gemini 3.1 Flash-Lite Preview — быстро, точно, дёшево",
                 "👁️" to "Превью diff перед применением + статус матчинга",
                 "✅" to "Нажмите «Применить» после проверки блоков"
             ).forEach { (emoji, text) ->
