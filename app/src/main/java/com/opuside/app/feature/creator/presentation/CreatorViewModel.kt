@@ -126,7 +126,7 @@ class CreatorViewModel @Inject constructor(
 
     private var _aiEditNewContent: String = ""
 
-    private val _selectedAiModel = MutableStateFlow(CreatorAIEditService.AiModel.GEMINI_3_FLASH)
+    private val _selectedAiModel = MutableStateFlow(CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE)
     val selectedAiModel: StateFlow<CreatorAIEditService.AiModel> = _selectedAiModel.asStateFlow()
 
     // ═══════════════════════════════════════════════════════════════════════════
