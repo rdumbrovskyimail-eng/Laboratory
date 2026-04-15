@@ -32,19 +32,19 @@ class CreatorAIEditService @Inject constructor(
         val costPerMInputUsd: Double,
         val costPerMOutputUsd: Double
     ) {
-        GEMINI_3_FLASH(
-            displayName = "Gemini 3 Flash Preview",
-            apiId = "gemini-3-flash-preview",
-            badge = "⚡ G Flash",
-            costPerMInputUsd = 0.5,
-            costPerMOutputUsd = 3.0
+        GEMINI_3_1_FLASH_LITE(
+            displayName = "Gemini 3.1 Flash-Lite Preview",
+            apiId = "gemini-3.1-flash-lite-preview",
+            badge = "🪶 G3.1 Lite",
+            costPerMInputUsd = 0.25,
+            costPerMOutputUsd = 1.50
         )
     }
 
     companion object {
         private const val TAG = "CreatorAIEdit"
         private const val GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val MAX_OUTPUT_TOKENS = 8192
+        private const val MAX_OUTPUT_TOKENS = 65536
         private const val LINE_NUMBER_THRESHOLD = 300
 
         private val SYSTEM_PROMPT = """
@@ -196,7 +196,7 @@ Example 2 — Delete a function:
         fileContent: String,
         fileName: String,
         instructions: String,
-        model: AiModel = AiModel.GEMINI_3_FLASH
+        model: AiModel = AiModel.GEMINI_3_1_FLASH_LITE
     ): Result<EditResult> = withContext(Dispatchers.IO) {
         try {
             val lineCount = fileContent.lines().size
