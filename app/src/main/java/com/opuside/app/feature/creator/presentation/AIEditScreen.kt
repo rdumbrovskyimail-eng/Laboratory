@@ -83,6 +83,7 @@ fun AIEditScreen(
     fileContent: String,
     editStatus: CreatorAIEditService.EditStatus,
     selectedModel: CreatorAIEditService.AiModel,
+    onModelChange: (CreatorAIEditService.AiModel) -> Unit,
     onProcess: (instructions: String) -> Unit,
     onApply: () -> Unit,
     onDiscard: () -> Unit,
