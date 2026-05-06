@@ -370,18 +370,24 @@ class WorkflowsViewModel @Inject constructor(
         }
     }
 
-    fun openReleaseUrl(context: Context, url: String) {
-        try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-            context.startActivity(intent)
-            _state.update { it.copy(message = "Открываем ссылку для скачивания...") }
-        } catch (e: Exception) {
-            _state.update { it.copy(message = "Ошибка открытия ссылки: ${e.message}") }
+    fun downloadReleaseAsset(context: Context, release: ReleaseItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(message = "Получаем ссылку для скачивания...") }
+            try {
+                gitHubApiClient.getReleaseAssetDownloadUrl(release.assetId).fold(
+                    onSuccess = { redirectUrl ->
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(redirectUrl))
+                        context.startActivity(intent)
+                        _state.update { it.copy(message = "Открываем скачивание...") }
+                    },
+                    onFailure = { e ->
+                        _state.update { it.copy(message = "Ошибка: ${e.message}") }
+                    }
+                )
+            } catch (e: Exception) {
+                _state.update { it.copy(message = "Ошибка: ${e.message}") }
+            }
         }
-    }
-
-    fun downloadApkWithManager(context: Context, releaseItem: ReleaseItem) {
-        openReleaseUrl(context, releaseItem.downloadUrl)
     }
 
     // ════════════════════════════════════════════════════════════════════════
