@@ -499,6 +499,43 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
+    suspend fun getReleaseAssetDownloadUrl(assetId: Long): Result<String> {
+        val config = getConfig()
+            ?: return Result.failure(GitHubApiException(
+                type = "not_configured",
+                message = "GitHub not configured."
+            ))
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = java.net.URL(
+                    "$BASE_URL/repos/${config.owner}/${config.repo}/releases/assets/$assetId"
+                )
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty("Authorization", "Bearer ${config.token}")
+                conn.setRequestProperty("Accept", "application/octet-stream")
+                conn.setRequestProperty("X-GitHub-Api-Version", API_VERSION)
+                conn.connect()
+
+                val location = conn.getHeaderField("Location")
+                val status = conn.responseCode
+                conn.disconnect()
+
+                if (location != null) {
+                    Result.success(location)
+                } else {
+                    Result.failure(GitHubApiException(
+                        "no_redirect", 
+                        "No download URL (status: $status)"
+                    ))
+                }
+            } catch (e: Exception) {
+                Result.failure(GitHubApiException("network_error", e.message ?: "Unknown error"))
+            }
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
     // ★ NEW: GITHUB RELEASES
     // ═══════════════════════════════════════════════════════════════════════════
