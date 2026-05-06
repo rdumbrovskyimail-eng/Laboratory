@@ -213,6 +213,49 @@ class WorkflowsViewModel @Inject constructor(
         }
     }
 
+    fun loadReleaseForWorkflow(headSha: String) {
+        // Если релизы уже загружены — берём из кеша
+        val cached = _state.value.releases
+        if (cached.isNotEmpty()) {
+            _state.update { it.copy(releaseForWorkflow = cached.firstOrNull()) }
+            return
+        }
+
+        viewModelScope.launch {
+            _state.update { it.copy(isLoadingReleaseForWorkflow = true) }
+            gitHubApiClient.getReleases().fold(
+                onSuccess = { releases ->
+                    val matched = releases.flatMap { release ->
+                        release.assets
+                            .filter { it.name.endsWith(".apk", ignoreCase = true) }
+                            .map { asset ->
+                                ReleaseItem(
+                                    releaseName = release.name ?: release.tagName,
+                                    releaseTag = release.tagName,
+                                    releaseBody = release.body ?: "",
+                                    assetName = asset.name,
+                                    assetId = asset.id,
+                                    sizeInBytes = asset.size,
+                                    createdAt = asset.createdAt,
+                                    downloadUrl = asset.browserDownloadUrl,
+                                    downloadCount = asset.downloadCount
+                                )
+                            }
+                    }.firstOrNull()
+                    _state.update {
+                        it.copy(
+                            releaseForWorkflow = matched,
+                            isLoadingReleaseForWorkflow = false
+                        )
+                    }
+                },
+                onFailure = {
+                    _state.update { it.copy(isLoadingReleaseForWorkflow = false) }
+                }
+            )
+        }
+    }
+
     fun downloadArtifact(context: Context, artifactId: Long, name: String) {
         viewModelScope.launch {
             try {
