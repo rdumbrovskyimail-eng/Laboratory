@@ -184,11 +184,14 @@ fun WorkflowsScreen(
             isLoadingArtifacts = state.isLoadingArtifacts,
             onDismiss = { viewModel.clearSelection() },
             onLoadLogs = { viewModel.loadWorkflowLogs(workflow.id) },
-            onDownloadArtifact = { artifact ->
-                viewModel.downloadArtifact(context, artifact.id, artifact.name)
-            }
-        )
-    }
+        onDownloadArtifact = { artifact ->
+            viewModel.downloadArtifact(context, artifact.id, artifact.name)
+        },
+        releaseForWorkflow = state.releaseForWorkflow,
+        isLoadingReleaseForWorkflow = state.isLoadingReleaseForWorkflow,
+        onOpenReleaseApk = { viewModel.openReleaseUrl(context, it.downloadUrl) }
+    )
+}
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -709,7 +712,10 @@ private fun WorkflowDetailDialog(
     isLoadingArtifacts: Boolean,
     onDismiss: () -> Unit,
     onLoadLogs: () -> Unit,
-    onDownloadArtifact: (ArtifactItem) -> Unit
+    onDownloadArtifact: (ArtifactItem) -> Unit,
+    releaseForWorkflow: ReleaseItem?,
+    isLoadingReleaseForWorkflow: Boolean,
+    onOpenReleaseApk: (ReleaseItem) -> Unit
 ) {
     val context = LocalContext.current
     
@@ -799,18 +805,97 @@ private fun WorkflowDetailDialog(
                                     ) { CircularProgressIndicator(modifier = Modifier.size(24.dp)) }
                                 }
                                 artifacts.isEmpty() -> {
-                                    Card(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = CardDefaults.cardColors(
-                                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                                        )
-                                    ) {
-                                        Text(
-                                            text = "Нет артефактов",
-                                            modifier = Modifier.padding(16.dp),
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Card(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                                            )
+                                        ) {
+                                            Text(
+                                                text = "Нет артефактов (истекли или отсутствуют)",
+                                                modifier = Modifier.padding(16.dp),
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+
+                                        when {
+                                            isLoadingReleaseForWorkflow -> {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .height(60.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                                }
+                                            }
+                                            releaseForWorkflow != null -> {
+                                                Card(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    colors = CardDefaults.cardColors(
+                                                        containerColor = Color(0xFF3DDC84).copy(alpha = 0.1f)
+                                                    ),
+                                                    border = BorderStroke(
+                                                        1.dp, Color(0xFF3DDC84).copy(alpha = 0.5f)
+                                                    )
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(12.dp),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        Column(modifier = Modifier.weight(1f)) {
+                                                            Row(
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                Surface(
+                                                                    color = Color(0xFF3DDC84).copy(alpha = 0.2f),
+                                                                    shape = RoundedCornerShape(4.dp)
+                                                                ) {
+                                                                    Text(
+                                                                        text = "Release APK",
+                                                                        style = MaterialTheme.typography.labelSmall,
+                                                                        modifier = Modifier.padding(
+                                                                            horizontal = 6.dp, vertical = 2.dp
+                                                                        ),
+                                                                        color = Color(0xFF3DDC84)
+                                                                    )
+                                                                }
+                                                                Text(
+                                                                    text = releaseForWorkflow.releaseTag,
+                                                                    style = MaterialTheme.typography.labelSmall,
+                                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                )
+                                                            }
+                                                            Spacer(modifier = Modifier.height(4.dp))
+                                                            Text(
+                                                                text = releaseForWorkflow.assetName,
+                                                                style = MaterialTheme.typography.bodyMedium,
+                                                                fontWeight = FontWeight.Medium,
+                                                                fontFamily = FontFamily.Monospace
+                                                            )
+                                                            Text(
+                                                                text = formatFileSize(releaseForWorkflow.sizeInBytes),
+                                                                style = MaterialTheme.typography.bodySmall,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                            )
+                                                        }
+                                                        IconButton(onClick = { onOpenReleaseApk(releaseForWorkflow) }) {
+                                                            Icon(
+                                                                Icons.Default.Download,
+                                                                contentDescription = "Download Release APK",
+                                                                tint = Color(0xFF3DDC84)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 else -> {
