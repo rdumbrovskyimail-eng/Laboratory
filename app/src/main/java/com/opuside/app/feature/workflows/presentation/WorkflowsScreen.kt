@@ -145,7 +145,7 @@ fun WorkflowsScreen(
                     // Releases Tab
                     ReleasesTab(
                         state = state,
-                        onDownloadApk = { viewModel.openReleaseUrl(context, it.downloadUrl) },
+                        onDownloadApk = { viewModel.downloadReleaseAsset(context, it) },
                         onRefresh = { viewModel.loadReleases() }
                     )
                 }
@@ -189,7 +189,7 @@ fun WorkflowsScreen(
         },
         releaseForWorkflow = state.releaseForWorkflow,
         isLoadingReleaseForWorkflow = state.isLoadingReleaseForWorkflow,
-        onOpenReleaseApk = { viewModel.openReleaseUrl(context, it.downloadUrl) }
+        onOpenReleaseApk = { viewModel.downloadReleaseAsset(context, it) }
     )
 }
 }
