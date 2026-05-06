@@ -55,14 +55,29 @@ class WorkflowsViewModel @Inject constructor(
     }
 
     fun selectWorkflow(workflow: WorkflowRun) {
-        _state.update { it.copy(selectedWorkflow = workflow, jobLogs = null, artifacts = emptyList()) }
+        _state.update { 
+            it.copy(
+                selectedWorkflow = workflow,
+                jobLogs = null,
+                artifacts = emptyList(),
+                releaseForWorkflow = null,
+                isLoadingReleaseForWorkflow = false
+            ) 
+        }
         if (workflow.status == "completed") {
             loadArtifacts(workflow.id)
+            loadReleaseForWorkflow(workflow.headSha)
         }
     }
 
     fun clearSelection() {
-        _state.update { it.copy(selectedWorkflow = null, jobLogs = null) }
+        _state.update { 
+            it.copy(
+                selectedWorkflow = null,
+                jobLogs = null,
+                releaseForWorkflow = null
+            ) 
+        }
     }
 
     fun clearMessage() {
@@ -395,7 +410,9 @@ data class WorkflowsState(
     val isLoadingReleases: Boolean = false,
     val releasesError: String? = null,
     val artifacts: List<ArtifactItem> = emptyList(),
-    val isLoadingArtifacts: Boolean = false
+    val isLoadingArtifacts: Boolean = false,
+    val releaseForWorkflow: ReleaseItem? = null,
+    val isLoadingReleaseForWorkflow: Boolean = false
 )
 
 data class ReleaseItem(
