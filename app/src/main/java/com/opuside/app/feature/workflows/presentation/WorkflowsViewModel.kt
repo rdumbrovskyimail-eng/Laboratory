@@ -1,24 +1,19 @@
+// Путь: app/src/main/java/com/opuside/app/feature/workflows/presentation/WorkflowsViewModel.kt
 package com.opuside.app.feature.workflows.presentation
 
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import androidx.core.content.FileProvider
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.WorkflowRun
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
-import java.net.HttpURLConnection
-import java.net.URL
 import javax.inject.Inject
 
 /**
@@ -102,7 +97,7 @@ class WorkflowsViewModel @Inject constructor(
                 gitHubApiClient.cancelWorkflow(workflow.id)
                     .onSuccess { cancelled++ }
                     .onFailure { e ->
-                        android.util.Log.e("WorkflowsVM", "Failed to cancel ${workflow.id}", e)
+                        Log.e("WorkflowsVM", "Failed to cancel ${workflow.id}", e)
                     }
             }
             _state.update {
@@ -214,42 +209,63 @@ class WorkflowsViewModel @Inject constructor(
     }
 
     fun loadReleaseForWorkflow(headSha: String) {
-        // Если релизы уже загружены — берём из кеша
-        val cached = _state.value.releases
-        if (cached.isNotEmpty()) {
-            _state.update { it.copy(releaseForWorkflow = cached.firstOrNull()) }
-            return
-        }
-
         viewModelScope.launch {
             _state.update { it.copy(isLoadingReleaseForWorkflow = true) }
+            
+            // 1. Сначала пытаемся найти нужный релиз в кэше (по совпадению SHA в описании релиза)
+            val cached = _state.value.releases
+            val matchedInCache = cached.find { it.releaseBody.contains(headSha) }
+            
+            if (matchedInCache != null) {
+                _state.update { 
+                    it.copy(
+                        releaseForWorkflow = matchedInCache, 
+                        isLoadingReleaseForWorkflow = false
+                    ) 
+                }
+                return@launch
+            }
+
+            // 2. Если в кэше нет, загружаем с сервера и ищем по SHA
             gitHubApiClient.getReleases().fold(
                 onSuccess = { releases ->
-                    val matched = releases.flatMap { release ->
-                        release.assets
-                            .filter { it.name.endsWith(".apk", ignoreCase = true) }
-                            .map { asset ->
-                                ReleaseItem(
-                                    releaseName = release.name ?: release.tagName,
-                                    releaseTag = release.tagName,
-                                    releaseBody = release.body ?: "",
-                                    assetName = asset.name,
-                                    assetId = asset.id,
-                                    sizeInBytes = asset.size,
-                                    createdAt = asset.createdAt,
-                                    downloadUrl = asset.browserDownloadUrl,
-                                    downloadCount = asset.downloadCount
-                                )
+                    // Ищем релиз, который Github Action пометил этим же хэшем (headSha)
+                    val matchedRelease = releases.find { it.body?.contains(headSha) == true }
+                    
+                    if (matchedRelease != null) {
+                        val asset = matchedRelease.assets.find { it.name.endsWith(".apk", ignoreCase = true) }
+                        if (asset != null) {
+                            val releaseItem = ReleaseItem(
+                                releaseName = matchedRelease.name ?: matchedRelease.tagName,
+                                releaseTag = matchedRelease.tagName,
+                                releaseBody = matchedRelease.body ?: "",
+                                assetName = asset.name,
+                                assetId = asset.id,
+                                sizeInBytes = asset.size,
+                                createdAt = asset.createdAt,
+                                downloadUrl = asset.browserDownloadUrl,
+                                downloadCount = asset.downloadCount
+                            )
+                            _state.update { 
+                                it.copy(
+                                    releaseForWorkflow = releaseItem,
+                                    isLoadingReleaseForWorkflow = false
+                                ) 
                             }
-                    }.firstOrNull()
-                    _state.update {
+                            return@fold
+                        }
+                    }
+                    
+                    // Если релиз не найден
+                    _state.update { 
                         it.copy(
-                            releaseForWorkflow = matched,
+                            releaseForWorkflow = null,
                             isLoadingReleaseForWorkflow = false
-                        )
+                        ) 
                     }
                 },
-                onFailure = {
+                onFailure = { error ->
+                    Log.e("WorkflowsVM", "Failed to load specific release", error)
                     _state.update { it.copy(isLoadingReleaseForWorkflow = false) }
                 }
             )
@@ -298,14 +314,14 @@ class WorkflowsViewModel @Inject constructor(
                         it.copy(message = "Открываем браузер для скачивания ZIP...") 
                     }
                 } catch (e: Exception) {
-                    android.util.Log.e("WorkflowsVM", "Failed to open browser", e)
+                    Log.e("WorkflowsVM", "Failed to open browser", e)
                     _state.update { 
                         it.copy(message = "Ошибка: не удалось открыть браузер") 
                     }
                 }
                 
             } catch (e: Exception) {
-                android.util.Log.e("WorkflowsVM", "Download error", e)
+                Log.e("WorkflowsVM", "Download error", e)
                 _state.update { 
                     it.copy(message = "Ошибка: ${e.message}") 
                 }
@@ -351,6 +367,7 @@ class WorkflowsViewModel @Inject constructor(
                         }
                     },
                     onFailure = { error ->
+                        Log.e("WorkflowsVM", "Failed to load releases", error)
                         _state.update { 
                             it.copy(
                                 isLoadingReleases = false,
@@ -360,6 +377,7 @@ class WorkflowsViewModel @Inject constructor(
                     }
                 )
             } catch (e: Exception) {
+                Log.e("WorkflowsVM", "Crash while loading releases", e)
                 _state.update { 
                     it.copy(
                         isLoadingReleases = false,
