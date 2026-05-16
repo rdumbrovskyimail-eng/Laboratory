@@ -38,10 +38,13 @@ enum class PipelinePhase {
 data class PipelineState(
     val phase: PipelinePhase = PipelinePhase.IDLE,
     val tasks: List<FileTask> = emptyList(),
-    val currentTaskIndex: Int = -1,
+    val currentTaskIndex: Int = -1,           // последняя начатая задача (для backward compat UI)
+    val runningTaskIds: Set<String> = emptySet(), // все параллельно выполняющиеся задачи
     val finalReport: String? = null,
     val fatalError: String? = null,
-    val pipelineRunId: String = UUID.randomUUID().toString().take(8)
+    val pipelineRunId: String = UUID.randomUUID().toString().take(8),
+    val maxParallelTasks: Int = 3,            // сколько задач параллельно (1=последовательно)
+    val logFilterTaskId: String? = null       // фильтр логов по конкретной задаче (null = все)
 ) {
     val totalTasks: Int get() = tasks.size
     val completedTasks: Int get() = tasks.count { it.status.isTerminal }
@@ -51,6 +54,17 @@ data class PipelineState(
     val failedTasks: Int get() = tasks.count { it.status == TaskStatus.FAILED_FINAL }
     val deferredTasks: Int get() = tasks.count { it.status == TaskStatus.DEFERRED }
     val progress: Float get() = if (totalTasks == 0) 0f else completedTasks.toFloat() / totalTasks
+
+    /**
+     * Оценочная стоимость прогона (евро). Считается приблизительно:
+     *   MODIFY = ~€0.00002 (Gemini AI Edit call)
+     *   CREATE = €0 (нет AI вызова)
+     * Не включает стоимость планировщика и финального отчёта (~€0.00004 фиксировано).
+     */
+    val estimatedCost: Double get() {
+        val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
+        return modifyCount * 0.00002 + 0.00004
+    }
 
     val canStart: Boolean get() = phase == PipelinePhase.REVIEWING
     val canStop: Boolean get() = phase == PipelinePhase.EXECUTING ||
@@ -80,14 +94,36 @@ enum class OverallStatus {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TASK OPERATION (modify existing vs create new)
+// ═══════════════════════════════════════════════════════════════════════════
+
+enum class TaskOperation {
+    MODIFY,   // изменение существующего файла через AI Edit
+    CREATE;   // создание нового файла с готовым контентом
+
+    val emoji: String get() = when (this) {
+        MODIFY -> "✏️"
+        CREATE -> "➕"
+    }
+
+    val displayName: String get() = when (this) {
+        MODIFY -> "Изменить"
+        CREATE -> "Создать"
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // FILE TASK (одна задача = один файл)
 // ═══════════════════════════════════════════════════════════════════════════
 
 data class FileTask(
     val id: String = UUID.randomUUID().toString().take(8),
+    val operation: TaskOperation = TaskOperation.MODIFY,
     val filePath: String,                      // полный путь от планировщика, после fuzzy-resolve
     val originalPathFromAi: String,            // как AI его назвал изначально (для отчёта)
-    val instructions: String,                  // конкретные инструкции для AI Edit
+    val instructions: String,                  // для MODIFY: инструкции для AI Edit; для CREATE: пусто или описание
+    val newFileContent: String? = null,        // только для CREATE: готовый контент нового файла
+    val packageName: String? = null,           // только для CREATE: package (для валидации/отчёта)
     val status: TaskStatus = TaskStatus.PENDING,
     val attempts: Int = 0,                     // сколько попыток сделано
     val lastError: String? = null,             // последнее сообщение об ошибке
@@ -125,6 +161,7 @@ enum class TaskStatus {
 enum class TaskErrorCode(val displayName: String) {
     NOT_FOUND_BLOCKS("AI не смог найти блоки замены в файле"),
     FILE_NOT_FOUND("Файл не найден в репозитории"),
+    FILE_ALREADY_EXISTS("Файл уже существует (для создания)"),
     HTTP_409_UNRESOLVED("Конфликт версий не разрешён после retry"),
     HTTP_5XX_SERVER("Сервер GitHub/Gemini временно недоступен"),
     HTTP_429_RATE_LIMIT("Превышен лимит запросов API"),
@@ -132,6 +169,7 @@ enum class TaskErrorCode(val displayName: String) {
     AI_EMPTY_RESPONSE("AI вернул пустой ответ"),
     AI_INVALID_RESPONSE("AI вернул некорректный ответ"),
     PATH_RESOLVE_FAILED("Не удалось определить точный путь к файлу"),
+    INVALID_CREATE_CONTENT("Контент для создания файла не указан"),
     UNKNOWN("Неизвестная ошибка")
 }
 
@@ -216,8 +254,11 @@ data class PlannerOutput(
 )
 
 data class PlannedTask(
-    val file: String,                          // путь как его дал AI (может быть неполный)
-    val instructions: String                   // инструкции для AI Edit для этого файла
+    val operation: TaskOperation = TaskOperation.MODIFY,
+    val file: String,                          // путь как его дал AI (может быть неполный или сгенерированный для CREATE)
+    val instructions: String = "",             // для MODIFY: инструкции AI Edit; для CREATE: пусто
+    val content: String? = null,               // только для CREATE: полный контент нового файла
+    val packageName: String? = null            // только для CREATE: package declaration
 )
 
 // ═══════════════════════════════════════════════════════════════════════════
