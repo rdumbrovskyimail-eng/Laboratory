@@ -107,14 +107,16 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                 appendLine("Success: ${tasks.count { it.status == TaskStatus.SUCCESS }}")
                 appendLine("No changes: ${tasks.count { it.status == TaskStatus.NO_CHANGES_NEEDED }}")
                 appendLine("Failed: ${tasks.count { it.status == TaskStatus.FAILED_FINAL }}")
-                appendLine("Total cost: €${"%.4f".format(totalCostEur)}")
+                appendLine("Total cost: €${String.format(java.util.Locale.US, "%.4f", totalCostEur)}")
                 appendLine("Total tokens: $totalTokens")
                 appendLine()
                 appendLine("═══ TASK DETAILS ═══")
                 for ((idx, task) in tasks.withIndex()) {
                     appendLine()
                     appendLine("--- Task ${idx + 1} ---")
+                    appendLine("Operation: ${task.operation.name}")
                     appendLine("File: ${task.filePath}")
+                    task.packageName?.let { appendLine("Package: $it") }
                     appendLine("Status: ${task.status.name}")
                     appendLine("Attempts: ${task.attempts}")
                     task.commitSha?.let { appendLine("Commit: ${it.take(12)}") }
@@ -125,7 +127,11 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                     task.lastError?.let {
                         appendLine("Last error: ${it.take(200)}")
                     }
-                    appendLine("Instructions preview: ${task.instructions.take(150)}...")
+                    if (task.operation == TaskOperation.CREATE) {
+                        appendLine("Content size: ${task.newFileContent?.length ?: 0} characters")
+                    } else {
+                        appendLine("Instructions preview: ${task.instructions.take(150)}...")
+                    }
                 }
             }
 
@@ -223,17 +229,30 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         appendLine("$headline: ${success.size + noChanges.size}/${tasks.size} success, ${failed.size} failed")
         appendLine()
         appendLine("**Сводка**")
-        appendLine("Обработано файлов: ${tasks.size}")
-        appendLine("Успешно: ${success.size}")
-        appendLine("Без изменений: ${noChanges.size}")
-        appendLine("Провалено: ${failed.size}")
-        appendLine("Общая стоимость: €${"%.4f".format(totalCostEur)}")
+        appendLine("Обработано задач: ${tasks.size}")
+        appendLine("  • Создано новых файлов: ${tasks.count { it.operation == TaskOperation.CREATE && it.status == TaskStatus.SUCCESS }}")
+        appendLine("  • Изменено существующих: ${tasks.count { it.operation == TaskOperation.MODIFY && it.status == TaskStatus.SUCCESS }}")
+        appendLine("  • Без изменений: ${noChanges.size}")
+        appendLine("  • Провалено: ${failed.size}")
+        appendLine("Общая стоимость: €${String.format(java.util.Locale.US, "%.4f", totalCostEur)}")
         appendLine("Токенов потрачено: $totalTokens")
         appendLine()
 
-        if (success.isNotEmpty()) {
-            appendLine("**Успешно изменены**")
-            for (t in success) {
+        val createdSuccess = success.filter { it.operation == TaskOperation.CREATE }
+        val modifiedSuccess = success.filter { it.operation == TaskOperation.MODIFY }
+
+        if (createdSuccess.isNotEmpty()) {
+            appendLine("**➕ Созданы новые файлы**")
+            for (t in createdSuccess) {
+                val sha = t.commitSha?.take(8) ?: "—"
+                appendLine("• `${t.filePath}` → `$sha`")
+            }
+            appendLine()
+        }
+
+        if (modifiedSuccess.isNotEmpty()) {
+            appendLine("**✏️ Изменены существующие файлы**")
+            for (t in modifiedSuccess) {
                 val sha = t.commitSha?.take(8) ?: "—"
                 val conflict = if (t.resolvedConflict) " ⚠️ auto-resolved" else ""
                 appendLine("• `${t.filePath}` → `$sha`$conflict")
