@@ -545,6 +545,7 @@ class CreatorViewModel @Inject constructor(
                     branch  = _currentBranch.value
                 ).onSuccess {
                     android.util.Log.d("CreatorViewModel", "✅ Upload successful")
+                    repoIndexManager.invalidate()
                     refresh()
                 }.onFailure { e ->
                     _error.value = "Upload failed: ${e.message}"
