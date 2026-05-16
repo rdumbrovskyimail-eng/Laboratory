@@ -582,11 +582,11 @@ class CreatorViewModel @Inject constructor(
                         sha = file.sha,
                         branch = _currentBranch.value
                     )
-                    android.util.Log.d("CreatorViewModel", "✅ File renamed successfully")
-                    repoIndexManager.invalidate()
-                    refresh()
-                }
-            }.onFailure { e ->
+                        android.util.Log.d("CreatorViewModel", "✅ File renamed successfully")
+                        repoIndexManager.invalidate()
+                        refresh()
+                    }
+                }.onFailure { e ->
                 _error.value = "Failed to rename: ${e.message}"
                 android.util.Log.e("CreatorViewModel", "❌ Failed to rename file", e)
             }
