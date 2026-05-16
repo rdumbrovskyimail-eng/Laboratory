@@ -47,7 +47,7 @@ class PipelinePlanner @Inject constructor(
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
         private const val PLANNER_MODEL = "gemini-3.1-flash-lite-preview"
         private const val MAX_OUTPUT_TOKENS = 16384      // плана хватит
-        private const val MAX_TASKS_LIMIT = 30           // больше 30 файлов за раз — подозрительно
+        private const val MAX_TASKS_LIMIT = 100          // макс задач за один прогон
 
         // Системный промпт планировщика. Жёсткие правила, чтобы AI не "креативил".
         private val PLANNER_SYSTEM_PROMPT = """
@@ -59,49 +59,100 @@ The user will give you a large multi-file modification request. You receive:
 1. The full user prompt
 2. A list of all real file paths in the repository
 
-You MUST return a JSON array of tasks, where each task is ONE file with ONE
-clear set of instructions extracted from the user prompt.
+You MUST return a JSON object containing an array of tasks. Each task is
+ONE file with ONE operation extracted from the user prompt.
+
+═══ TASK TYPES ═══
+
+Each task has an "operation" field — either "modify" or "create".
+
+▸ MODIFY task (default):
+  - Modifies an existing file in the repository
+  - "operation": "modify"
+  - "file": EXACT path from the provided file list (no guessing!)
+  - "instructions": verbatim instructions from user prompt for THIS file
+  - "content": null
+  - "package": null
+
+▸ CREATE task:
+  - Creates a NEW file that does not yet exist in the repository
+  - "operation": "create"
+  - "file": full path to the new file IF user specified one; otherwise null
+  - "instructions": brief description (e.g. "New utility class") — optional
+  - "content": THE COMPLETE FILE CONTENT, character-for-character from user
+    prompt, including package declaration, imports, all code
+  - "package": Kotlin package name IF mentioned by user (e.g. "com.x.y.feature")
+    or extractable from content's package declaration; otherwise null
 
 ═══ STRICT RULES ═══
 
-RULE 1 — EXACT FILE PATHS:
-- The "file" field MUST be a path EXACTLY as it appears in the provided file list
-- NEVER invent paths. NEVER abbreviate. NEVER guess.
-- If the user wrote "DataRepositories.kt" but the real path is
-  "app/src/main/java/com/docs/scanner/data/repository/DataRepositories.kt" —
-  use the FULL real path.
-- If you cannot find a clear match for a file mentioned by the user, OMIT
-  that file from the output. Do NOT include it with a guessed path.
+RULE 1 — DETECT CREATE TASKS:
+Look for phrases like:
+- "Создать новый файл..."
+- "Создай файл по пути..."
+- "Создать XxxScreen.kt с этим кодом:"
+- "Новый файл в пакете com.x.y"
+- "Add a new file..."
+- "Create file..."
+These signal a CREATE task. If unsure, prefer MODIFY (safer).
 
-RULE 2 — ONE FILE = ONE TASK:
-- If the user describes 5 changes for 5 different files, return 5 tasks.
-- If the user describes 2 changes both in file X, MERGE them into ONE task
-  for file X with combined instructions.
-- NEVER create multiple tasks for the same file path.
+RULE 2 — CREATE PATH/PACKAGE HANDLING:
+- If user gave a FULL path like "app/src/main/java/com/x/Y.kt" → use it as "file"
+- If user gave only a package like "com.opuside.app.feature.x" → put it in
+  "package" field, leave "file" null (system will derive the path)
+- If user gave BOTH a path AND a package → include both; system will validate
+- If user gave NEITHER but provided content → leave both null;
+  system will derive from the content's package declaration
 
-RULE 3 — INSTRUCTIONS QUALITY:
-- The "instructions" field MUST be self-contained. The downstream AI editor
-  will see ONLY this instructions text and the file content. It will NOT
-  see the original user prompt.
-- Copy the relevant section of the user prompt VERBATIM, including code blocks,
-  line markers, "before/after" snippets, and explanatory text.
-- Do NOT summarize. Do NOT paraphrase. Do NOT "improve" the instructions.
-- If the user provided exact code to replace and exact code to insert, those
-  must appear in instructions character-for-character.
+RULE 3 — CREATE CONTENT IS VERBATIM:
+The "content" field MUST contain the EXACT content user provided.
+Do NOT clean up. Do NOT reformat. Do NOT remove blank lines.
+Include the package declaration if present.
+Include ALL imports.
+Include EVERY character verbatim.
 
-RULE 4 — ORDER PRESERVATION:
-- Keep tasks in the same order they appear in the user prompt.
-- Don't reorder for "logical" reasons.
+RULE 4 — MODIFY EXACT FILE PATHS:
+For MODIFY tasks, "file" MUST be a path EXACTLY as it appears in the file list.
+NEVER invent paths. NEVER abbreviate. NEVER guess.
+If user wrote "DataRepositories.kt" but the real path is
+"app/src/main/java/com/docs/scanner/data/repository/DataRepositories.kt" —
+use the FULL real path.
+If you cannot find a clear match for a MODIFY task, OMIT that task.
 
-RULE 5 — OUTPUT FORMAT (JSON only):
-Return ONLY this JSON structure, nothing else:
+RULE 5 — ONE FILE = ONE TASK:
+- If user describes 5 changes for 5 different files, return 5 tasks
+- If user describes 2 changes both in file X, MERGE them into ONE MODIFY task
+- NEVER create multiple tasks for the same file path
+
+RULE 6 — MODIFY INSTRUCTIONS VERBATIM:
+For MODIFY tasks, copy the relevant section of the user prompt verbatim,
+including code blocks, line markers, "before/after" snippets. Do NOT summarize.
+The downstream AI editor will see ONLY this instructions text + the file.
+
+RULE 7 — ORDER PRESERVATION:
+Keep tasks in the same order they appear in the user prompt.
+
+RULE 8 — OUTPUT FORMAT (JSON only):
 {
   "tasks": [
-    { "file": "exact/repo/path.kt", "instructions": "verbatim instructions block" }
+    {
+      "operation": "modify",
+      "file": "exact/repo/path.kt",
+      "instructions": "verbatim instructions",
+      "content": null,
+      "package": null
+    },
+    {
+      "operation": "create",
+      "file": "app/src/main/java/com/x/y/NewFile.kt",
+      "instructions": "Helper class for X",
+      "content": "package com.x.y\n\nclass NewFile { ... }",
+      "package": "com.x.y"
+    }
   ]
 }
 
-No markdown. No code fences. No commentary before or after. Pure JSON.
+No markdown. No code fences. No commentary. Pure JSON.
 """.trimIndent()
     }
 
@@ -117,16 +168,38 @@ No markdown. No code fences. No commentary before or after. Pure JSON.
                 put("items", buildJsonObject {
                     put("type", "object")
                     put("properties", buildJsonObject {
+                        put("operation", buildJsonObject {
+                            put("type", "string")
+                            put("enum", JsonArray(listOf(
+                                JsonPrimitive("modify"),
+                                JsonPrimitive("create")
+                            )))
+                            put("description", "Type of operation on the file")
+                        })
+                        // file, content, package — все просто string и НЕ обязательны.
+                        // Парсер трактует пустые/отсутствующие как null.
+                        // Это работает универсально и для responseJsonSchema, и для responseSchema.
                         put("file", buildJsonObject {
                             put("type", "string")
-                            put("description", "Full repository path to the file")
+                            put("description", "Full repository path (empty for create-by-package)")
                         })
                         put("instructions", buildJsonObject {
                             put("type", "string")
-                            put("description", "Verbatim modification instructions for this file")
+                            put("description", "Verbatim modification instructions (for modify) or short description (for create)")
+                        })
+                        put("content", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Full content for create task; empty for modify")
+                        })
+                        put("package", buildJsonObject {
+                            put("type", "string")
+                            put("description", "Kotlin package for create task; empty otherwise")
                         })
                     })
-                    put("required", JsonArray(listOf(JsonPrimitive("file"), JsonPrimitive("instructions"))))
+                    put("required", JsonArray(listOf(
+                        JsonPrimitive("operation"),
+                        JsonPrimitive("instructions")
+                    )))
                 })
             })
         })
@@ -207,7 +280,7 @@ No markdown. No code fences. No commentary before or after. Pure JSON.
             val cost = (inputTokens * 0.25 + outputTokens * 1.50) / 1_000_000.0 * 0.92
 
             Log.d(TAG, "✅ Planned ${resolvedTasks.size} tasks " +
-                    "(${inputTokens}in+${outputTokens}out, €${"%.5f".format(cost)})")
+                    "(${inputTokens}in+${outputTokens}out, €${String.format(java.util.Locale.US, "%.5f", cost)})")
 
             Result.success(
                 PlannerOutput(
@@ -242,68 +315,227 @@ No markdown. No code fences. No commentary before or after. Pure JSON.
     ): List<PlannedTask> {
         val seen = mutableSetOf<String>()
         val result = mutableListOf<PlannedTask>()
-        // Pre-build path index для O(1) lookup
+        // Pre-build path index для O(1) lookup точных совпадений
         val pathToNode = index.nodes.filter { it.isFile }.associateBy { it.path }
+        // Pre-build name index для O(1) fuzzy lookup
+        val nameToNodes = index.nodes
+            .filter { it.isFile }
+            .groupBy { it.path.substringAfterLast('/') }
+        // Source root (например "app/src/main/java/") — выводим из реальных путей
+        val sourceRoot = detectSourceRoot(index.nodes)
 
-        for (task in plannedTasks) {
-            val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim()
-            if (rawPath.isBlank()) continue
-
-            // Точное совпадение?
-            val exactMatch = pathToNode[rawPath]
-            val resolvedPath = if (exactMatch != null) {
-                rawPath
-            } else {
-                // Fuzzy: ищем по имени файла
-                val fileName = rawPath.substringAfterLast('/')
-                val candidates = try {
-                    index.findByName(fileName).filter { it.isFile }
-                } catch (e: Throwable) {
-                    // На случай если у пользователя findByName иначе называется
-                    index.nodes.filter { it.isFile && it.path.substringAfterLast('/') == fileName }
+        for ((idx, task) in plannedTasks.withIndex()) {
+            when (task.operation) {
+                TaskOperation.MODIFY -> {
+                    val resolved = resolveModifyPath(task, pathToNode, nameToNodes)
+                    addOrMerge(result, seen, resolved)
                 }
-
-                when {
-                    candidates.isEmpty() -> {
-                        Log.w(TAG, "⚠️ Path not found in index: $rawPath — keeping as-is")
-                        rawPath  // оставляем как есть, executor попробует прочитать
+                TaskOperation.CREATE -> {
+                    val resolved = resolveCreatePath(task, idx, sourceRoot, pathToNode)
+                    if (resolved == null) {
+                        Log.w(TAG, "Skipping CREATE task #$idx: cannot resolve path")
+                        continue
                     }
-                    candidates.size == 1 -> {
-                        Log.d(TAG, "🎯 Fuzzy-resolved: '$rawPath' → '${candidates[0].path}'")
-                        candidates[0].path
-                    }
-                    else -> {
-                        // Несколько кандидатов — берём тот у которого больше всего общих сегментов
-                        val rawSegments = rawPath.split('/').filter { it.isNotBlank() }.toSet()
-                        val best = candidates.maxByOrNull { candidate ->
-                            candidate.path.split('/').count { it in rawSegments }
-                        } ?: candidates[0]
-                        Log.d(TAG, "🎯 Best-match: '$rawPath' → '${best.path}' " +
-                                "(${candidates.size} candidates)")
-                        best.path
-                    }
+                    addOrMerge(result, seen, resolved)
                 }
             }
-
-            // Дедупликация: если две задачи на один файл, мерджим инструкции
-            if (resolvedPath in seen) {
-                val existing = result.indexOfFirst { it.file == resolvedPath }
-                if (existing >= 0) {
-                    val merged = result[existing].copy(
-                        instructions = result[existing].instructions +
-                                "\n\n--- ДОПОЛНИТЕЛЬНО ---\n\n" + task.instructions
-                    )
-                    result[existing] = merged
-                    Log.d(TAG, "🔀 Merged duplicate task for: $resolvedPath")
-                }
-                continue
-            }
-            seen.add(resolvedPath)
-
-            result.add(PlannedTask(file = resolvedPath, instructions = task.instructions))
         }
 
         return result
+    }
+
+    // ─── MODIFY resolve ────────────────────────────────────────────────────
+
+    private fun resolveModifyPath(
+        task: PlannedTask,
+        pathToNode: Map<String, RepoIndexManager.RepoNode>,
+        nameToNodes: Map<String, List<RepoIndexManager.RepoNode>>
+    ): PlannedTask {
+        val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim()
+        if (rawPath.isBlank()) return task
+
+        val resolvedPath = if (pathToNode.containsKey(rawPath)) {
+            rawPath
+        } else {
+            val fileName = rawPath.substringAfterLast('/')
+            val candidates = nameToNodes[fileName] ?: emptyList()
+            when {
+                candidates.isEmpty() -> {
+                    Log.w(TAG, "⚠️ Path not found in index: $rawPath — keeping as-is")
+                    rawPath
+                }
+                candidates.size == 1 -> {
+                    Log.d(TAG, "🎯 Fuzzy-resolved: '$rawPath' → '${candidates[0].path}'")
+                    candidates[0].path
+                }
+                else -> {
+                    val rawSegments = rawPath.split('/').filter { it.isNotBlank() }.toSet()
+                    val best = candidates.maxByOrNull { c ->
+                        c.path.split('/').count { it in rawSegments }
+                    } ?: candidates[0]
+                    Log.d(TAG, "🎯 Best-match: '$rawPath' → '${best.path}' (${candidates.size} candidates)")
+                    best.path
+                }
+            }
+        }
+        return task.copy(file = resolvedPath)
+    }
+
+    // ─── CREATE resolve ────────────────────────────────────────────────────
+
+    /**
+     * Резолвит путь для CREATE-задачи на основе данных от AI:
+     * - явный path → используется как есть (с warning если не соответствует package)
+     * - только package → выводим путь
+     * - только content → извлекаем package из content + имя из объявления
+     * - ничего → fallback на sourceRoot + сгенерированное имя
+     *
+     * Возвращает null если не удалось.
+     */
+    private fun resolveCreatePath(
+        task: PlannedTask,
+        index: Int,
+        sourceRoot: String,
+        existingPaths: Map<String, RepoIndexManager.RepoNode>
+    ): PlannedTask? {
+        val content = task.content ?: return null
+        val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim().ifBlank { null }
+        val providedPkg = task.packageName?.trim()?.ifBlank { null }
+
+        // Извлекаем package из самого контента (как fallback и для валидации)
+        val pkgFromContent = extractPackageFromContent(content)
+        val effectivePkg = providedPkg ?: pkgFromContent
+
+        // Имя файла
+        val nameFromPath = rawPath?.substringAfterLast('/')?.takeIf {
+            it.contains('.') && (it.endsWith(".kt") || it.endsWith(".xml") || it.endsWith(".java"))
+        }
+        val nameFromContent = deriveFileNameFromContent(content)
+        val finalName = nameFromPath ?: nameFromContent ?: "GeneratedFile${index + 1}.kt"
+
+        // Финальный путь
+        val finalPath: String = when {
+            // Полный путь предоставлен и валиден (имеет валидное расширение через nameFromPath)
+            rawPath != null && nameFromPath != null -> {
+                // Валидация: соответствует ли package пути?
+                if (effectivePkg != null && !pathMatchesPackage(rawPath, effectivePkg)) {
+                    Log.w(TAG, "⚠️ Path/package mismatch: path='$rawPath' vs package='$effectivePkg' — using path")
+                }
+                rawPath
+            }
+            // Только директория предоставлена
+            rawPath != null && rawPath.endsWith('/') -> "$rawPath$finalName"
+            rawPath != null -> "$rawPath/$finalName"
+            // Только package — выводим путь
+            effectivePkg != null -> "${sourceRoot}${effectivePkg.replace('.', '/')}/$finalName"
+            else -> {
+                Log.w(TAG, "⚠️ CREATE without path/package — using fallback location")
+                "${sourceRoot}generated/$finalName"
+            }
+        }
+
+        // Проверка: файл уже существует?
+        if (existingPaths.containsKey(finalPath)) {
+            Log.w(TAG, "⚠️ CREATE target already exists: $finalPath — keeping task, executor will fail with FILE_ALREADY_EXISTS")
+        }
+
+        return task.copy(
+            file = finalPath,
+            packageName = effectivePkg
+        )
+    }
+
+    /**
+     * Извлекает package declaration из контента Kotlin/Java файла.
+     * Возвращает null если не нашёл.
+     */
+    private fun extractPackageFromContent(content: String): String? {
+        // Multiline: ищем "package x.y.z" в начале строки (с возможными пробелами)
+        val regex = Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE)
+        return regex.find(content)?.groupValues?.get(1)?.trim()?.ifBlank { null }
+    }
+
+    /**
+     * Пытается извлечь имя файла из содержимого:
+     * первый класс / object / interface / @Composable fun / top-level fun.
+     */
+    private fun deriveFileNameFromContent(content: String): String? {
+        val patterns = listOf(
+            Regex("""(?:public\s+|internal\s+|private\s+)?(?:abstract\s+|sealed\s+|open\s+|data\s+|enum\s+)?class\s+(\w+)"""),
+            Regex("""(?:public\s+|internal\s+|private\s+)?object\s+(\w+)"""),
+            Regex("""(?:public\s+|internal\s+|private\s+)?interface\s+(\w+)"""),
+            Regex("""@Composable\s+(?:public\s+|internal\s+|private\s+)?fun\s+(\w+)\s*\("""),
+            Regex("""(?:public\s+|internal\s+)?fun\s+(\w+)\s*\(""")
+        )
+        for (pattern in patterns) {
+            val m = pattern.find(content)
+            if (m != null) {
+                val name = m.groupValues[1]
+                if (name.isNotBlank()) return "$name.kt"
+            }
+        }
+        return null
+    }
+
+    /**
+     * Проверяет соответствует ли путь package:
+     * package "com.opuside.x" должен присутствовать в пути как "com/opuside/x".
+     */
+    private fun pathMatchesPackage(path: String, packageName: String): Boolean {
+        val pkgAsPath = packageName.replace('.', '/')
+        return path.contains("/$pkgAsPath/")
+    }
+
+    /**
+     * Определяет source root репозитория (typical: "app/src/main/java/" или
+     * "app/src/main/kotlin/" или просто "src/main/java/" для library).
+     *
+     * Стратегия: берём первый .kt файл и обрезаем его путь до начала package
+     * (где сегмент совпадает с типичными package-roots: com, org, io, net, ru).
+     */
+    private fun detectSourceRoot(nodes: List<RepoIndexManager.RepoNode>): String {
+        val packageRoots = setOf("com", "org", "io", "net", "ru", "de", "tech")
+        for (node in nodes) {
+            if (!node.isFile || !node.path.endsWith(".kt")) continue
+            val parts = node.path.split('/')
+            val pkgStartIdx = parts.indexOfFirst { it in packageRoots }
+            if (pkgStartIdx > 0) {
+                return parts.take(pkgStartIdx).joinToString("/") + "/"
+            }
+        }
+        Log.w(TAG, "⚠️ Could not detect source root — falling back to default")
+        return "app/src/main/java/"
+    }
+
+    // ─── Dedup / merge ─────────────────────────────────────────────────────
+
+    private fun addOrMerge(
+        result: MutableList<PlannedTask>,
+        seen: MutableSet<String>,
+        task: PlannedTask
+    ) {
+        val path = task.file
+        if (path.isBlank()) return
+
+        if (path in seen) {
+            val existingIdx = result.indexOfFirst { it.file == path }
+            if (existingIdx >= 0) {
+                val existing = result[existingIdx]
+                // Merge только если оба MODIFY — для CREATE имеет смысл только первая задача
+                if (existing.operation == TaskOperation.MODIFY && task.operation == TaskOperation.MODIFY) {
+                    result[existingIdx] = existing.copy(
+                        instructions = existing.instructions +
+                                "\n\n--- ДОПОЛНИТЕЛЬНО ---\n\n" + task.instructions
+                    )
+                    Log.d(TAG, "🔀 Merged duplicate MODIFY task for: $path")
+                } else {
+                    Log.w(TAG, "⚠️ Duplicate task for $path with conflicting operations — keeping first")
+                }
+            }
+            return
+        }
+        seen.add(path)
+        result.add(task)
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -431,11 +663,55 @@ No markdown. No code fences. No commentary before or after. Pure JSON.
 
             val tasks = tasksArray.mapNotNull { element ->
                 val obj = element.jsonObject
+
+                // Operation: modify / create (default modify для backward-compat)
+                val opStr = obj["operation"]?.jsonPrimitive?.contentOrNull?.lowercase()
+                val operation = when (opStr) {
+                    "create" -> TaskOperation.CREATE
+                    "modify", null -> TaskOperation.MODIFY
+                    else -> {
+                        Log.w(TAG, "Unknown operation '$opStr', falling back to MODIFY")
+                        TaskOperation.MODIFY
+                    }
+                }
+
+                // File path может быть null для CREATE (когда только package)
                 val file = obj["file"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-                val instructions = obj["instructions"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-                if (file != null && instructions != null) {
-                    PlannedTask(file = file, instructions = instructions)
-                } else null
+                val instructions = obj["instructions"]?.jsonPrimitive?.contentOrNull ?: ""
+                val content = obj["content"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                val pkg = obj["package"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+
+                when (operation) {
+                    TaskOperation.MODIFY -> {
+                        // MODIFY требует file + instructions
+                        if (file == null || instructions.isBlank()) {
+                            Log.w(TAG, "Skipping invalid MODIFY task: file=$file, instr=${instructions.length}ch")
+                            null
+                        } else {
+                            PlannedTask(
+                                operation = TaskOperation.MODIFY,
+                                file = file,
+                                instructions = instructions
+                            )
+                        }
+                    }
+                    TaskOperation.CREATE -> {
+                        // CREATE требует content (file/package будет разрешён в resolveCreatePath)
+                        if (content == null) {
+                            Log.w(TAG, "Skipping CREATE task without content")
+                            null
+                        } else {
+                            // file может быть null — будет вычислен в resolvePaths
+                            PlannedTask(
+                                operation = TaskOperation.CREATE,
+                                file = file ?: "",   // пустой = нужно вычислить
+                                instructions = instructions,
+                                content = content,
+                                packageName = pkg
+                            )
+                        }
+                    }
+                }
             }
 
             Result.success(tasks)
