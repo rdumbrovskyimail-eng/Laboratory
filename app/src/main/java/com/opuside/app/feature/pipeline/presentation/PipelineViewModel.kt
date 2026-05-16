@@ -208,18 +208,18 @@ class PipelineViewModel @Inject constructor(
                     return@launch
                 }
 
-                val paths = fetchFilePaths()
-                if (paths.isEmpty()) {
-                    _userError.value = "Не удалось получить список файлов из GitHub. " +
-                            "Проверь токен, имя репо и ветку (Settings → GitHub)."
+                val fetch = fetchFilePathsDetailed()
+                if (fetch.paths.isEmpty()) {
+                    _userError.value = fetch.errorMessage
+                        ?: "Не удалось получить список файлов из GitHub."
                     return@launch
                 }
 
                 // Кэшируем для использования в plan() — избегаем повторных запросов
-                _filePathsCache.value = paths
+                _filePathsCache.value = fetch.paths
 
                 // Подсчёт по расширениям из путей
-                val byExt: Map<String, Int> = paths
+                val byExt: Map<String, Int> = fetch.paths
                     .mapNotNull { p ->
                         val dot = p.lastIndexOf('.')
                         if (dot < 0 || dot == p.length - 1) null
@@ -232,12 +232,12 @@ class PipelineViewModel @Inject constructor(
                     owner = cfg.owner,
                     repo = cfg.repo,
                     branch = cfg.branch,
-                    totalFiles = paths.size,
+                    totalFiles = fetch.paths.size,
                     totalDirectories = 0,
                     totalSizeBytes = 0L,
                     totalSizeFormatted = "—",
                     byExtension = byExt,
-                    maxDepth = paths.maxOfOrNull { it.count { c -> c == '/' } } ?: 0,
+                    maxDepth = fetch.paths.maxOfOrNull { it.count { c -> c == '/' } } ?: 0,
                     truncated = false,
                     loadedAtMs = System.currentTimeMillis()
                 )
@@ -246,6 +246,14 @@ class PipelineViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * Результат попытки получения списка файлов с диагностикой для пользователя.
+     */
+    private data class FetchResult(
+        val paths: List<String>,
+        val errorMessage: String? = null
+    )
 
     /**
      * ═══════════════════════════════════════════════════════════════════════
@@ -257,110 +265,203 @@ class PipelineViewModel @Inject constructor(
      * с авторизацией через GitHub PAT.
      *
      * Документация: https://docs.github.com/en/rest/git/trees
-     *
-     * Возвращает все пути файлов (type=blob), исключая директории (type=tree).
      */
-    private suspend fun fetchFilePaths(): List<String> = withContext(Dispatchers.IO) {
+    private suspend fun fetchFilePathsDetailed(): FetchResult = withContext(Dispatchers.IO) {
+        val cfg = try {
+            appSettings.gitHubConfig.first()
+        } catch (e: Exception) {
+            return@withContext FetchResult(
+                emptyList(),
+                "Не удалось прочитать настройки GitHub: ${e.message}"
+            )
+        }
+
+        if (cfg.owner.isBlank() || cfg.repo.isBlank()) {
+            return@withContext FetchResult(
+                emptyList(),
+                "В Settings → GitHub не задан owner или repo (сейчас: owner='${cfg.owner}', repo='${cfg.repo}')"
+            )
+        }
+
+        val branch = if (cfg.branch.isBlank()) "main" else cfg.branch
+        val token = tryGetGitHubToken()
+
+        val url = "https://api.github.com/repos/${cfg.owner}/${cfg.repo}" +
+                "/git/trees/${branch}?recursive=1"
+
+        android.util.Log.d(TAG, "fetchFilePaths → GET $url (tokenFound=${token.isNotBlank()})")
+
+        var connection: HttpURLConnection? = null
         try {
-            val cfg = appSettings.gitHubConfig.first()
-            if (cfg.owner.isBlank() || cfg.repo.isBlank()) {
-                android.util.Log.e(TAG, "fetchFilePaths: GitHub owner/repo not configured")
-                return@withContext emptyList()
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                setRequestProperty("Accept", "application/vnd.github+json")
+                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                setRequestProperty("User-Agent", "OpusIDE-Pipeline")
+                if (token.isNotBlank()) {
+                    setRequestProperty("Authorization", "Bearer $token")
+                }
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                doInput = true
             }
-            val branch = if (cfg.branch.isBlank()) "main" else cfg.branch
-            val token = tryGetGitHubToken()
 
-            val url = "https://api.github.com/repos/${cfg.owner}/${cfg.repo}" +
-                    "/git/trees/${branch}?recursive=1"
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                val errBody = connection.errorStream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8))
+                        .use { r -> r.readText() }
+                } ?: ""
+                android.util.Log.e(TAG, "GitHub tree API: HTTP $code — ${errBody.take(500)}")
 
-            android.util.Log.d(TAG, "fetchFilePaths → GET $url (token=${token.isNotBlank()})")
-
-            var connection: HttpURLConnection? = null
-            try {
-                connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-                    setRequestProperty("User-Agent", "OpusIDE-Pipeline")
-                    if (token.isNotBlank()) {
-                        setRequestProperty("Authorization", "Bearer $token")
-                    }
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                    doInput = true
+                val hint = when (code) {
+                    401 -> "401: токен не валиден или не найден. " +
+                            (if (token.isBlank())
+                                "tryGetGitHubToken() не смог достать токен из SecureSettingsDataStore. " +
+                                "Открой Settings → GitHub и проверь что токен сохранён."
+                            else "Токен передан, но GitHub его не принял. Возможно истёк или нет прав 'repo'.")
+                    403 -> "403: rate limit или нет прав на репо. " +
+                            "GitHub PAT нужен с правом 'repo' для приватных репозиториев."
+                    404 -> "404: репозиторий или ветка не найдены. " +
+                            "Проверь owner='${cfg.owner}', repo='${cfg.repo}', branch='$branch'."
+                    409 -> "409: репозиторий пустой (нет коммитов)"
+                    else -> "HTTP $code"
                 }
-
-                val code = connection.responseCode
-                if (code !in 200..299) {
-                    val errBody = connection.errorStream?.let {
-                        BufferedReader(InputStreamReader(it, Charsets.UTF_8))
-                            .use { r -> r.readText() }
-                    } ?: ""
-                    android.util.Log.e(TAG, "GitHub tree API: HTTP $code — ${errBody.take(200)}")
-                    return@withContext emptyList()
-                }
-
-                val body = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
-                    .use { it.readText() }
-                val json = Json.parseToJsonElement(body).jsonObject
-                val tree = json["tree"]?.jsonArray
-                if (tree == null) {
-                    android.util.Log.e(TAG, "GitHub tree response missing 'tree' field")
-                    return@withContext emptyList()
-                }
-                val truncated = json["truncated"]?.jsonPrimitive?.contentOrNull == "true"
-                if (truncated) {
-                    android.util.Log.w(TAG, "GitHub tree truncated — repo too large (>100k files)")
-                }
-
-                val paths = tree.mapNotNull { item ->
-                    val obj = item.jsonObject
-                    val type = obj["type"]?.jsonPrimitive?.contentOrNull
-                    if (type != "blob") return@mapNotNull null
-                    obj["path"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-                }
-                android.util.Log.d(TAG, "fetchFilePaths: got ${paths.size} files")
-                paths
-            } finally {
-                try { connection?.disconnect() } catch (_: Exception) {}
+                return@withContext FetchResult(
+                    emptyList(),
+                    "$hint\n\nURL: $url"
+                )
             }
+
+            val body = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
+                .use { it.readText() }
+            val json = Json.parseToJsonElement(body).jsonObject
+            val tree = json["tree"]?.jsonArray
+            if (tree == null) {
+                return@withContext FetchResult(
+                    emptyList(),
+                    "GitHub ответил 200, но в response нет поля 'tree'. Это очень странно."
+                )
+            }
+            val truncated = json["truncated"]?.jsonPrimitive?.contentOrNull == "true"
+            if (truncated) {
+                android.util.Log.w(TAG, "GitHub tree truncated — repo too large (>100k files)")
+            }
+
+            val paths = tree.mapNotNull { item ->
+                val obj = item.jsonObject
+                val type = obj["type"]?.jsonPrimitive?.contentOrNull
+                if (type != "blob") return@mapNotNull null
+                obj["path"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            }
+            android.util.Log.d(TAG, "fetchFilePaths: got ${paths.size} files")
+            FetchResult(paths)
         } catch (e: java.net.UnknownHostException) {
-            android.util.Log.e(TAG, "fetchFilePaths: no internet")
-            emptyList()
+            FetchResult(emptyList(), "Нет интернета")
+        } catch (e: java.net.SocketTimeoutException) {
+            FetchResult(emptyList(), "Таймаут запроса к GitHub")
         } catch (e: Exception) {
             android.util.Log.e(TAG, "fetchFilePaths failed", e)
-            emptyList()
+            FetchResult(emptyList(), "Ошибка: ${e.message?.take(200)}")
+        } finally {
+            try { connection?.disconnect() } catch (_: Exception) {}
         }
     }
 
+    /** Совместимость с предыдущим API */
+    private suspend fun fetchFilePaths(): List<String> = fetchFilePathsDetailed().paths
+
     /**
-     * Извлекает GitHub token из SecureSettingsDataStore через reflection.
-     * Пытается типичные имена: getGitHubToken, getGithubToken, getGitHubPat, getPat.
+     * Извлекает GitHub token. Пробует:
+     * 1. Reflection в SecureSettingsDataStore (много имён getter'ов)
+     * 2. Reflection в самом gitHubClient (он уже хранит токен внутри!)
      */
     private suspend fun tryGetGitHubToken(): String {
+        // ─── Попытка 1: через SecureSettingsDataStore ──────────────────────
         val candidates = listOf(
-            "getGitHubToken", "getGithubToken", "getGitHubPat",
-            "getGithubPat", "getPat", "getToken", "getAccessToken",
-            "getGhToken"
+            "getGitHubToken", "getGithubToken", "getGitHubPat", "getGithubPat",
+            "getPat", "getToken", "getAccessToken", "getGhToken",
+            "getApiKey", "getGitHubApiKey", "getGithubApiKey",
+            "getKey", "githubToken", "gitHubToken", "githubPat", "pat", "token"
         )
         val cls = secureSettings::class.java
         for (name in candidates) {
             try {
                 val method = cls.methods.firstOrNull { it.name == name } ?: continue
+                if (method.parameterCount != 0) continue
                 val result = method.invoke(secureSettings) ?: continue
-                @Suppress("UNCHECKED_CAST")
-                val flow = result as? kotlinx.coroutines.flow.Flow<String> ?: continue
-                val token = flow.first()
-                if (token.isNotBlank()) {
-                    android.util.Log.d(TAG, "tryGetGitHubToken: found via $name")
-                    return token
+                // Возможно вернуло Flow<String>
+                if (result is kotlinx.coroutines.flow.Flow<*>) {
+                    @Suppress("UNCHECKED_CAST")
+                    val flow = result as kotlinx.coroutines.flow.Flow<String>
+                    val token = flow.first()
+                    if (token.isNotBlank()) {
+                        android.util.Log.d(TAG, "tryGetGitHubToken: found via secureSettings.$name (Flow)")
+                        return token
+                    }
                 }
-            } catch (_: Exception) {
-                // try next candidate
-            }
+                // Может вернуло прямо строку
+                if (result is String && result.isNotBlank()) {
+                    android.util.Log.d(TAG, "tryGetGitHubToken: found via secureSettings.$name (String)")
+                    return result
+                }
+            } catch (_: Exception) { /* try next */ }
         }
-        android.util.Log.w(TAG, "tryGetGitHubToken: token not found via reflection — " +
-                "будем пробовать без токена (public repos only)")
+
+        // ─── Попытка 2: вытащить токен из gitHubClient (он его уже знает!) ─
+        try {
+            val clientCls: Class<*> = executor::class.java
+            // gitHubClient может быть полем у executor — найдём через reflection
+            val fields = clientCls.declaredFields
+            for (field in fields) {
+                if (field.name.contains("github", ignoreCase = true) ||
+                    field.name.contains("client", ignoreCase = true)) {
+                    field.isAccessible = true
+                    val client = field.get(executor) ?: continue
+                    val token = extractTokenFromObject(client)
+                    if (token.isNotBlank()) {
+                        android.util.Log.d(TAG, "tryGetGitHubToken: found in executor.${field.name}")
+                        return token
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "Token extraction from gitHubClient failed: ${e.message}")
+        }
+
+        android.util.Log.w(TAG, "tryGetGitHubToken: TOKEN NOT FOUND. " +
+                "Открой PipelineViewModel.kt, найди функцию tryGetGitHubToken() " +
+                "и добавь свой метод в список candidates.")
+        return ""
+    }
+
+    /**
+     * Пытается извлечь токен из произвольного объекта через reflection.
+     * Ищет поля или getter с именами содержащими "token", "pat", "auth".
+     */
+    private fun extractTokenFromObject(obj: Any): String {
+        try {
+            val cls: Class<*> = obj::class.java
+            // Поля
+            for (field in cls.declaredFields) {
+                val n = field.name.lowercase()
+                if (n.contains("token") || n.contains("pat") || n.contains("auth")) {
+                    field.isAccessible = true
+                    val value = field.get(obj)
+                    if (value is String && value.isNotBlank()) return value
+                }
+            }
+            // Методы (геттеры)
+            for (method in cls.methods) {
+                if (method.parameterCount != 0) continue
+                val n = method.name.lowercase()
+                if ((n.contains("token") || n.contains("pat") || n.contains("auth")) &&
+                    method.returnType == String::class.java) {
+                    val value = method.invoke(obj) as? String
+                    if (!value.isNullOrBlank()) return value
+                }
+            }
+        } catch (_: Exception) { /* ignore */ }
         return ""
     }
 
@@ -396,24 +497,23 @@ class PipelineViewModel @Inject constructor(
                 ))
 
                 // ─── Получаем список путей файлов через GitHub Trees API ──
-                // Используем кэш если он непустой (заполнен в loadRepoStats при
-                // открытии экрана), иначе делаем свежий запрос.
                 val filePaths: List<String> = run {
                     val cached = _filePathsCache.value
                     if (cached.isNotEmpty()) {
                         android.util.Log.d(TAG, "plan: using cached ${cached.size} paths")
                         cached
                     } else {
-                        val fresh = fetchFilePaths()
-                        if (fresh.isNotEmpty()) _filePathsCache.value = fresh
-                        fresh
+                        val fetch = fetchFilePathsDetailed()
+                        if (fetch.paths.isNotEmpty()) {
+                            _filePathsCache.value = fetch.paths
+                            fetch.paths
+                        } else {
+                            _userError.value = fetch.errorMessage
+                                ?: "Не удалось получить список файлов из GitHub."
+                            _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                            return@launch
+                        }
                     }
-                }
-                if (filePaths.isEmpty()) {
-                    _userError.value = "Не удалось получить список файлов из GitHub. " +
-                            "Проверь токен и настройки репо (Settings → GitHub)."
-                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
-                    return@launch
                 }
 
                 val plan = planner.plan(prompt, filePaths).getOrElse { e ->
