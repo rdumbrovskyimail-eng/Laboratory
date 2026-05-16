@@ -11,8 +11,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -96,35 +96,42 @@ You MUST:
     // PUBLIC API
     // ═══════════════════════════════════════════════════════════════════════
 
-    fun executeTask(task: FileTask, isRetryPass: Boolean): Flow<ExecutorEvent> = flow {
+    fun executeTask(task: FileTask, isRetryPass: Boolean): Flow<ExecutorEvent> = channelFlow {
         val startTime = System.currentTimeMillis()
         val taskId = task.id
 
-        emit(ExecutorEvent.Gemini(GeminiLogEvent(
+        send(ExecutorEvent.Gemini(GeminiLogEvent(
             type = GeminiEventType.TASK_START,
-            icon = "▶️",
-            message = "Старт: ${task.filePath.substringAfterLast('/')}" +
+            icon = task.operation.emoji,
+            message = "${task.operation.displayName}: ${task.filePath.substringAfterLast('/')}" +
                     if (isRetryPass) " (retry-pass)" else "",
             taskId = taskId
         )))
 
         try {
+            // ═══ CREATE BRANCH ════════════════════════════════════════════════
+            // Для CREATE-задачи пропускаем read + AI Edit, контент уже готов.
+            if (task.operation == TaskOperation.CREATE) {
+                executeCreateTask(task, taskId, startTime)
+                return@channelFlow
+            }
+
             // ═══ STEP 1: READ ════════════════════════════════════════════════
             val readOutcome = readFile(task.filePath)
             val originalContent: String
             val originalSha: String
             when (readOutcome) {
                 is ReadOutcome.FatalErr -> {
-                    emit(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                    send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
                         TaskErrorCode.UNKNOWN, readOutcome.message
                     )))
-                    return@flow
+                    return@channelFlow
                 }
                 is ReadOutcome.DeferrableErr -> {
-                    emit(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                    send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                         readOutcome.code, readOutcome.message
                     )))
-                    return@flow
+                    return@channelFlow
                 }
                 is ReadOutcome.Ok -> {
                     originalContent = readOutcome.content
@@ -132,7 +139,7 @@ You MUST:
                 }
             }
 
-            emit(ExecutorEvent.Repo(RepoLogEvent(
+            send(ExecutorEvent.Repo(RepoLogEvent(
                 type = RepoEventType.FILE_READ,
                 icon = "📄",
                 message = "Прочитан: ${task.filePath} (${originalContent.length / 1024}KB)",
@@ -146,7 +153,7 @@ You MUST:
                 task.instructions
             }
 
-            emit(ExecutorEvent.Gemini(GeminiLogEvent(
+            send(ExecutorEvent.Gemini(GeminiLogEvent(
                 type = GeminiEventType.AI_REQUEST,
                 icon = "📤",
                 message = "→ Gemini 3.1 Flash-Lite (${effectiveInstructions.length}ch)",
@@ -160,24 +167,24 @@ You MUST:
                 model = MODEL
             ).getOrElse { e ->
                 val code = classifyAiError(e)
-                emit(ExecutorEvent.Gemini(GeminiLogEvent(
+                send(ExecutorEvent.Gemini(GeminiLogEvent(
                     type = GeminiEventType.AI_APPLY_FAIL,
                     icon = "❌",
                     message = "AI ошибка: ${e.message?.take(100)}",
                     taskId = taskId
                 )))
-                emit(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                     code, e.message ?: "AI call failed"
                 )))
-                return@flow
+                return@channelFlow
             }
 
-            emit(ExecutorEvent.Gemini(GeminiLogEvent(
+            send(ExecutorEvent.Gemini(GeminiLogEvent(
                 type = GeminiEventType.AI_RESPONSE,
                 icon = "📥",
                 message = "AI: ${editResult.blocks.size} блок(ов), " +
                         "${editResult.inputTokens}in+${editResult.outputTokens}out, " +
-                        "€${"%.5f".format(editResult.costEUR)}",
+                        "€${String.format(java.util.Locale.US, "%.5f", editResult.costEUR)}",
                 taskId = taskId,
                 tokens = editResult.inputTokens + editResult.outputTokens,
                 costEur = editResult.costEUR
@@ -189,44 +196,44 @@ You MUST:
             if (editResult.blocks.isEmpty()) {
                 // 0 блоков → файл не требует изменений → НЕ коммитим вообще
                 // (GitHub отклонил бы PUT того же контента, плюс зря триггернули бы CI)
-                emit(ExecutorEvent.Gemini(GeminiLogEvent(
+                send(ExecutorEvent.Gemini(GeminiLogEvent(
                     type = GeminiEventType.INFO,
                     icon = "⚪",
                     message = "AI не нашёл изменений — пропускаем коммит, идём далее",
                     taskId = taskId
                 )))
-                emit(ExecutorEvent.Repo(RepoLogEvent(
+                send(ExecutorEvent.Repo(RepoLogEvent(
                     type = RepoEventType.INFO,
                     icon = "⚪",
                     message = "${task.filePath.substringAfterLast('/')}: без изменений (коммит не требуется)",
                     taskId = taskId
                 )))
-                emit(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
+                send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
                     commitSha = originalSha,    // используем существующий SHA как ссылку
                     tokensUsed = tokensTotal,
                     costEur = editResult.costEUR
                 )))
-                return@flow
+                return@channelFlow
             }
 
             // Применяем блоки локально
             val applyResult = aiEditService.applyEdits(originalContent, editResult.blocks)
                 .getOrElse { e ->
-                    emit(ExecutorEvent.Gemini(GeminiLogEvent(
+                    send(ExecutorEvent.Gemini(GeminiLogEvent(
                         type = GeminiEventType.AI_APPLY_FAIL,
                         icon = "❌",
                         message = "Локальное применение упало: ${e.message?.take(80)}",
                         taskId = taskId
                     )))
-                    emit(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                    send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                         TaskErrorCode.AI_INVALID_RESPONSE,
                         e.message ?: "Apply failed",
                         tokensTotal
                     )))
-                    return@flow
+                    return@channelFlow
                 }
 
-            emit(ExecutorEvent.Gemini(GeminiLogEvent(
+            send(ExecutorEvent.Gemini(GeminiLogEvent(
                 type = GeminiEventType.AI_BLOCKS_PARSED,
                 icon = "🔧",
                 message = "Применение: ${applyResult.totalApplied}/${editResult.blocks.size} блок(ов)" +
@@ -236,21 +243,21 @@ You MUST:
 
             // ВСЕ блоки не нашлись → откладываем
             if (applyResult.totalApplied == 0 && applyResult.totalFailed > 0) {
-                emit(ExecutorEvent.Gemini(GeminiLogEvent(
+                send(ExecutorEvent.Gemini(GeminiLogEvent(
                     type = GeminiEventType.AI_APPLY_FAIL,
                     icon = "⏸",
                     message = "Ни один блок не применился → отложено",
                     taskId = taskId
                 )))
-                emit(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                     TaskErrorCode.NOT_FOUND_BLOCKS,
                     "Ни один блок не применился (${applyResult.totalFailed} not found)",
                     tokensTotal
                 )))
-                return@flow
+                return@channelFlow
             }
 
-            emit(ExecutorEvent.Gemini(GeminiLogEvent(
+            send(ExecutorEvent.Gemini(GeminiLogEvent(
                 type = GeminiEventType.AI_APPLY_OK,
                 icon = "✏️",
                 message = "Готово к коммиту: ${applyResult.newContent.length / 1024}KB",
@@ -264,14 +271,14 @@ You MUST:
                 initialSha = originalSha,
                 commitMessage = "[Pipeline] ${task.filePath.substringAfterLast('/')}",
                 taskId = taskId
-            ) { event -> emit(event) }
+            ) { event -> send(event) }
 
             when (outcome) {
                 is CommitOutcome.Ok -> {
                     val durationMs = System.currentTimeMillis() - startTime
                     repoIndexManager.invalidate()
 
-                    emit(ExecutorEvent.Repo(RepoLogEvent(
+                    send(ExecutorEvent.Repo(RepoLogEvent(
                         type = RepoEventType.FILE_COMMITTED,
                         icon = "💾",
                         message = "Коммит: ${outcome.sha.take(8)} (${durationMs}ms)" +
@@ -280,7 +287,7 @@ You MUST:
                         commitSha = outcome.sha
                     )))
 
-                    emit(ExecutorEvent.Final(TaskExecutionResult.Success(
+                    send(ExecutorEvent.Final(TaskExecutionResult.Success(
                         commitSha = outcome.sha,
                         resolvedConflict = outcome.resolvedConflict,
                         tokensUsed = tokensTotal,
@@ -289,12 +296,12 @@ You MUST:
                     )))
                 }
                 is CommitOutcome.FatalErr -> {
-                    emit(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                    send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
                         TaskErrorCode.UNKNOWN, outcome.message
                     )))
                 }
                 is CommitOutcome.DeferrableErr -> {
-                    emit(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                    send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                         outcome.code, outcome.message, tokensTotal
                     )))
                 }
@@ -307,15 +314,162 @@ You MUST:
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error in task ${task.filePath}", e)
-            emit(ExecutorEvent.Gemini(GeminiLogEvent(
+            send(ExecutorEvent.Gemini(GeminiLogEvent(
                 type = GeminiEventType.ERROR,
                 icon = "💥",
                 message = "Неожиданная ошибка: ${e.message?.take(100)}",
                 taskId = taskId
             )))
-            emit(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                 TaskErrorCode.UNKNOWN, e.message ?: "Unknown error"
             )))
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CREATE TASK BRANCH
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Обрабатывает CREATE-задачу: проверяет что файл ещё не существует,
+     * затем коммитит готовый контент (sha=null означает создание нового файла).
+     *
+     * Extension на ProducerScope чтобы можно было вызывать send() из channelFlow.
+     */
+    private suspend fun kotlinx.coroutines.channels.ProducerScope<ExecutorEvent>.executeCreateTask(
+        task: FileTask,
+        taskId: String,
+        startTime: Long
+    ) {
+        val content = task.newFileContent
+        if (content.isNullOrBlank()) {
+            send(ExecutorEvent.Gemini(GeminiLogEvent(
+                type = GeminiEventType.ERROR,
+                icon = "❌",
+                message = "CREATE задача без контента",
+                taskId = taskId
+            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                TaskErrorCode.INVALID_CREATE_CONTENT,
+                "CREATE task '${task.filePath}' has no content"
+            )))
+            return
+        }
+
+        send(ExecutorEvent.Gemini(GeminiLogEvent(
+            type = GeminiEventType.INFO,
+            icon = "➕",
+            message = "Создание нового файла: ${task.filePath} (${content.length} ch)",
+            taskId = taskId
+        )))
+
+        // Проверим что файл не существует (защита от случайной перезаписи)
+        val existsCheck = checkFileExists(task.filePath)
+        if (existsCheck.exists) {
+            send(ExecutorEvent.Repo(RepoLogEvent(
+                type = RepoEventType.ERROR,
+                icon = "⚠️",
+                message = "Файл уже существует: ${task.filePath} — пропускаем создание",
+                taskId = taskId
+            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                errorCode = TaskErrorCode.FILE_ALREADY_EXISTS,
+                message = "Файл ${task.filePath} уже существует, создание пропущено"
+            )))
+            return
+        }
+        if (existsCheck.fatalError != null) {
+            send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                TaskErrorCode.UNKNOWN, existsCheck.fatalError
+            )))
+            return
+        }
+
+        send(ExecutorEvent.Repo(RepoLogEvent(
+            type = RepoEventType.INFO,
+            icon = "✓",
+            message = "Путь свободен: ${task.filePath}",
+            taskId = taskId
+        )))
+
+        // Коммитим новый файл (sha=null означает CREATE для GitHub API)
+        val outcome = commit(
+            path = task.filePath,
+            content = content,
+            initialSha = null,
+            commitMessage = "[Pipeline] CREATE ${task.filePath.substringAfterLast('/')}",
+            taskId = taskId
+        ) { event -> send(event) }
+
+        when (outcome) {
+            is CommitOutcome.Ok -> {
+                val durationMs = System.currentTimeMillis() - startTime
+                repoIndexManager.invalidate()
+
+                send(ExecutorEvent.Repo(RepoLogEvent(
+                    type = RepoEventType.FILE_COMMITTED,
+                    icon = "💾",
+                    message = "Создан: ${outcome.sha.take(8)} (${durationMs}ms)",
+                    taskId = taskId,
+                    commitSha = outcome.sha
+                )))
+                send(ExecutorEvent.Final(TaskExecutionResult.Success(
+                    commitSha = outcome.sha,
+                    resolvedConflict = false,
+                    tokensUsed = 0,        // CREATE не тратит токенов Gemini
+                    costEur = 0.0,
+                    editResult = null
+                )))
+            }
+            is CommitOutcome.FatalErr -> {
+                send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                    TaskErrorCode.UNKNOWN, outcome.message
+                )))
+            }
+            is CommitOutcome.DeferrableErr -> {
+                send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                    outcome.code, outcome.message
+                )))
+            }
+        }
+    }
+
+    /**
+     * Результат проверки существования файла.
+     */
+    private data class ExistsCheckResult(
+        val exists: Boolean,
+        val fatalError: String? = null
+    )
+
+    private suspend fun checkFileExists(path: String): ExistsCheckResult = withContext(Dispatchers.IO) {
+        val branch = try {
+            appSettings.gitHubConfig.first().branch
+        } catch (e: Exception) {
+            return@withContext ExistsCheckResult(false, "Не удалось получить настройки: ${e.message}")
+        }
+        try {
+            // getOrThrow вместо getOrNull — иначе catch ниже мёртв, и 401/403 будут
+            // тихо интерпретироваться как exists=false, что приведёт к попытке create
+            // и провалу позже на коммите без понятной диагностики.
+            gitHubClient.getFileContent(path, branch).getOrThrow()
+            ExistsCheckResult(exists = true)
+        } catch (e: GitHubApiException) {
+            when {
+                e.isNotFound -> ExistsCheckResult(exists = false)
+                e.isUnauthorized -> ExistsCheckResult(false, "401 Unauthorized")
+                e.isForbidden -> ExistsCheckResult(false, "403 Forbidden")
+                else -> {
+                    // Сетевая ошибка — считаем что не существует, попытаемся создать
+                    Log.w(TAG, "checkFileExists для '$path': ${e.message}")
+                    ExistsCheckResult(exists = false)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "checkFileExists для '$path': ${e.message}")
+            ExistsCheckResult(exists = false)
         }
     }
 
@@ -349,7 +503,7 @@ You MUST:
                 } else {
                     try {
                         String(
-                            Base64.decode(cleanedB64, Base64.DEFAULT),
+                            Base64.decode(cleanedB64, Base64.NO_WRAP),
                             Charsets.UTF_8
                         )
                     } catch (e: IllegalArgumentException) {
@@ -414,10 +568,10 @@ You MUST:
     private suspend fun commit(
         path: String,
         content: String,
-        initialSha: String,
+        initialSha: String?,
         commitMessage: String,
         taskId: String,
-        emit: suspend (ExecutorEvent) -> Unit
+        notify: suspend (ExecutorEvent) -> Unit
     ): CommitOutcome = withContext(Dispatchers.IO) {
         var currentSha = initialSha
         var resolvedConflict = false
@@ -433,6 +587,7 @@ You MUST:
         var attempt = 0
         var rate429Retries = 0
         val max429Retries = 3
+        val isCreate = initialSha == null
 
         while (attempt < CONFLICT_RETRY_MAX) {
             try {
@@ -449,9 +604,23 @@ You MUST:
             } catch (e: GitHubApiException) {
                 lastMsg = e.message
                 when {
+                    // 422 для CREATE — обычно означает что файл уже существует (race condition)
+                    e.statusCode == 422 && isCreate -> {
+                        return@withContext CommitOutcome.DeferrableErr(
+                            TaskErrorCode.FILE_ALREADY_EXISTS,
+                            "GitHub: 422 — файл уже существует или контент некорректен"
+                        )
+                    }
                     e.statusCode == 409 ||
                             e.message.contains("does not match", ignoreCase = true) -> {
-                        emit(ExecutorEvent.Repo(RepoLogEvent(
+                        // 409 в CREATE-режиме не должен случаться (sha=null), но обрабатываем
+                        if (isCreate) {
+                            return@withContext CommitOutcome.DeferrableErr(
+                                TaskErrorCode.FILE_ALREADY_EXISTS,
+                                "GitHub: конфликт при создании — файл, возможно, уже существует"
+                            )
+                        }
+                        notify(ExecutorEvent.Repo(RepoLogEvent(
                             type = RepoEventType.COMMIT_CONFLICT,
                             icon = "⚠️",
                             message = "409 Conflict (попытка ${attempt + 1}/$CONFLICT_RETRY_MAX) — auto KEEP_MINE",
@@ -481,7 +650,7 @@ You MUST:
                         // 429 НЕ ест попытку retry, но имеет свой лимит
                         if (rate429Retries < max429Retries) {
                             rate429Retries++
-                            emit(ExecutorEvent.Repo(RepoLogEvent(
+                            notify(ExecutorEvent.Repo(RepoLogEvent(
                                 type = RepoEventType.INFO,
                                 icon = "⏱",
                                 message = "Rate limit (${rate429Retries}/$max429Retries) — ждём 15с",
