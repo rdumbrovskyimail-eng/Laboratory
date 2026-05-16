@@ -12,6 +12,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -174,37 +175,126 @@ class PipelineViewModel @Inject constructor(
 
     /**
      * Обновить статистику репо (для шапки экрана).
+     * Использует extractFilePaths() + AppSettings — не зависит от внутренней
+     * структуры RepoIndex.
      */
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
+                val cfg = appSettings.gitHubConfig.first()
                 val index = repoIndexManager.getOrRefresh()
-                if (index != null) {
-                    val byExt = index.nodes
-                        .filter { it.isFile && it.extension.isNotBlank() }
-                        .groupingBy { it.extension.lowercase() }
-                        .eachCount()
-
-                    _repoStats.value = RepoStats(
-                        owner = index.owner,
-                        repo = index.repo,
-                        branch = index.branch,
-                        totalFiles = index.totalFiles,
-                        totalDirectories = index.totalDirectories,
-                        totalSizeBytes = index.totalSize,
-                        totalSizeFormatted = index.totalSizeFormatted,
-                        byExtension = byExt,
-                        maxDepth = index.maxDepth,
-                        truncated = index.truncated,
-                        loadedAtMs = index.loadedAt
-                    )
-                } else {
+                if (index == null) {
                     _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
+                    return@launch
                 }
+                val paths = extractFilePaths(index)
+                if (paths.isEmpty()) {
+                    _userError.value = "Индекс репозитория пуст или не удалось извлечь пути. " +
+                            "Проверь функцию extractFilePaths() в PipelineViewModel.kt."
+                    return@launch
+                }
+                // Подсчёт по расширениям из путей
+                val byExt: Map<String, Int> = paths
+                    .mapNotNull { p ->
+                        val dot = p.lastIndexOf('.')
+                        if (dot < 0 || dot == p.length - 1) null
+                        else p.substring(dot + 1).lowercase()
+                    }
+                    .groupingBy { it }
+                    .eachCount()
+
+                _repoStats.value = RepoStats(
+                    owner = cfg.owner,
+                    repo = cfg.repo,
+                    branch = cfg.branch,
+                    totalFiles = paths.size,
+                    totalDirectories = 0,           // не вычисляем — некритично
+                    totalSizeBytes = 0L,            // нет данных без доступа к индексу
+                    totalSizeFormatted = "—",
+                    byExtension = byExt,
+                    maxDepth = paths.maxOfOrNull { it.count { c -> c == '/' } } ?: 0,
+                    truncated = false,
+                    loadedAtMs = System.currentTimeMillis()
+                )
             } catch (e: Exception) {
                 _userError.value = "Ошибка загрузки репо: ${e.message}"
             }
         }
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════════
+     * АДАПТЕР ДЛЯ ТВОЕГО RepoIndexManager.
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * Цель: вернуть List<String> со ВСЕМИ путями файлов в репозитории.
+     * Например: ["app/src/main/java/com/x/A.kt", "app/src/main/java/com/x/B.kt", ...]
+     *
+     * Использует reflection как FALLBACK — пытается найти getter с типичными
+     * именами (getNodes/getFiles/getPaths/getEntries) и извлечь поле path или filePath.
+     *
+     * Если хочешь оптимизировать или твоя структура нестандартна — ЗАМЕНИ
+     * тело функции на прямой вызов:
+     *
+     *   return (index as RepoIndexManager.RepoIndex).nodes
+     *       .filter { it.isFile }
+     *       .map { it.path }
+     *
+     * (точные имена методов/полей — смотри в своём RepoIndexManager.kt)
+     */
+    private fun extractFilePaths(index: Any): List<String> {
+        // Список возможных getter-имён для коллекции файлов
+        val collectionGetters = listOf(
+            "getNodes", "getFiles", "getPaths", "getEntries",
+            "getAllPaths", "getFileList", "getAllFiles"
+        )
+        // Возможные getter-имена для пути одного элемента
+        val pathGetters = listOf("getPath", "getFilePath", "getName", "getFullPath")
+        // Возможные getter-имена для is-file флага
+        val isFileGetters = listOf("isFile", "getFile", "isRegularFile")
+
+        val cls = index::class.java
+        for (getterName in collectionGetters) {
+            try {
+                val method = cls.methods.firstOrNull { it.name == getterName } ?: continue
+                val result = method.invoke(index) ?: continue
+                val list = (result as? List<*>) ?: continue
+                if (list.isEmpty()) continue
+
+                val first = list.first() ?: continue
+                // Если элементы — String (paths напрямую)
+                if (first is String) {
+                    @Suppress("UNCHECKED_CAST")
+                    return (list as List<String>).filter { it.isNotBlank() }
+                }
+                // Иначе ищем getter для path
+                val elemCls = first::class.java
+                val pathMethod = pathGetters
+                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
+                    ?: continue
+                val isFileMethod = isFileGetters
+                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
+
+                val paths = list.mapNotNull { node ->
+                    if (node == null) return@mapNotNull null
+                    if (isFileMethod != null) {
+                        val isFile = isFileMethod.invoke(node) as? Boolean
+                        if (isFile == false) return@mapNotNull null
+                    }
+                    (pathMethod.invoke(node) as? String)?.takeIf { it.isNotBlank() }
+                }
+                if (paths.isNotEmpty()) return paths
+            } catch (e: Exception) {
+                android.util.Log.w("PipelineViewModel",
+                    "extractFilePaths via $getterName failed: ${e.message}")
+            }
+        }
+
+        android.util.Log.e("PipelineViewModel",
+            "Could not extract file paths from RepoIndex via reflection. " +
+                    "Open PipelineViewModel.kt and replace extractFilePaths() body " +
+                    "with a direct call to your RepoIndex API.")
+        return emptyList()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -238,7 +328,29 @@ class PipelineViewModel @Inject constructor(
                     message = "Планировщик: анализ промпта (${prompt.length}ch)..."
                 ))
 
-                val plan = planner.plan(prompt).getOrElse { e ->
+                // ─── Загружаем индекс репозитория и извлекаем список путей ──
+                // Это единственное место связи с твоим RepoIndexManager API.
+                // Если у тебя структура RepoIndex отличается — адаптируй extractFilePaths() ниже.
+                val index = try {
+                    repoIndexManager.getOrRefresh()
+                } catch (e: Exception) {
+                    _userError.value = "Ошибка загрузки индекса: ${e.message}"
+                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                    return@launch
+                }
+                if (index == null) {
+                    _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
+                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                    return@launch
+                }
+                val filePaths = extractFilePaths(index)
+                if (filePaths.isEmpty()) {
+                    _userError.value = "Репозиторий пуст или индекс не содержит файлов"
+                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                    return@launch
+                }
+
+                val plan = planner.plan(prompt, filePaths).getOrElse { e ->
                     appendGeminiLog(GeminiLogEvent(
                         type = GeminiEventType.ERROR,
                         icon = "❌",
