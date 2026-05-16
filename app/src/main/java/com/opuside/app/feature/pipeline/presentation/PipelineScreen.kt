@@ -44,6 +44,15 @@ import java.util.Date
 import java.util.Locale
 
 /**
+ * Глобальный форматтер времени для логов. SimpleDateFormat не thread-safe,
+ * но Compose composables вызываются на main thread.
+ */
+private val LOG_TIME_FORMATTER = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+private fun formatLogTime(timestamp: Long): String =
+    synchronized(LOG_TIME_FORMATTER) { LOG_TIME_FORMATTER.format(Date(timestamp)) }
+
+/**
  * ═══════════════════════════════════════════════════════════════════════════
  * PIPELINE SCREEN — UI для G-конвейера
  * ═══════════════════════════════════════════════════════════════════════════
@@ -96,12 +105,15 @@ private object PipelineColors {
 
 @Composable
 fun PipelineScreen(
+    modifier: Modifier = Modifier,
     viewModel: PipelineViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val userPrompt by viewModel.userPrompt.collectAsStateWithLifecycle()
-    val geminiLog by viewModel.geminiLog.collectAsStateWithLifecycle()
-    val repoLog by viewModel.repoLog.collectAsStateWithLifecycle()
+    val geminiLog by viewModel.visibleGeminiLog.collectAsStateWithLifecycle()
+    val repoLog by viewModel.visibleRepoLog.collectAsStateWithLifecycle()
+    val rawGeminiSize by viewModel.geminiLog.collectAsStateWithLifecycle()
+    val rawRepoSize by viewModel.repoLog.collectAsStateWithLifecycle()
     val repoStats by viewModel.repoStats.collectAsStateWithLifecycle()
     val totalCost by viewModel.totalCostEur.collectAsStateWithLifecycle()
     val totalTokens by viewModel.totalTokens.collectAsStateWithLifecycle()
@@ -126,6 +138,7 @@ fun PipelineScreen(
     }
 
     Scaffold(
+        modifier = modifier,
         snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = PipelineColors.backgroundDark
     ) { padding ->
@@ -164,13 +177,28 @@ fun PipelineScreen(
                 Spacer(Modifier.height(8.dp))
                 ProgressSection(
                     state = state,
-                    onRemoveTask = { taskId -> viewModel.removeTask(taskId) }
+                    onRemoveTask = { taskId -> viewModel.removeTask(taskId) },
+                    onTaskChipClick = { taskId ->
+                        // Toggle log filter: same chip -> clear, different -> set
+                        viewModel.setLogFilter(
+                            if (state.logFilterTaskId == taskId) null else taskId
+                        )
+                    },
+                    onChangeMaxParallel = viewModel::setMaxParallel
                 )
             }
 
             // ═══ LIVE LOGS (Gemini + Repo) ═══════════════════════════════
-            if (geminiLog.isNotEmpty() || repoLog.isNotEmpty()) {
+            // geminiLog/repoLog уже отфильтрованы во ViewModel через combine+stateIn
+            if (rawGeminiSize.isNotEmpty() || rawRepoSize.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
+                if (state.logFilterTaskId != null) {
+                    LogFilterBanner(
+                        taskId = state.logFilterTaskId!!,
+                        tasks = state.tasks,
+                        onClear = { viewModel.setLogFilter(null) }
+                    )
+                }
                 LiveLogsSection(geminiLog = geminiLog, repoLog = repoLog)
             }
 
@@ -436,9 +464,16 @@ private fun StatusBar(
             val (actionLabel, actionEnabled, actionHandler) = when (state.phase) {
                 PipelinePhase.IDLE -> Triple("📋 Спланировать", true, onPlan)
                 PipelinePhase.PLANNING -> Triple("⏳ Планируется...", false, {})
-                PipelinePhase.REVIEWING -> Triple("▶️ Старт (${state.tasks.size} задач)", true, onStart)
+                PipelinePhase.REVIEWING -> {
+                    val costStr = if (state.estimatedCost >= 0.0001) {
+                        " · ~€${String.format(Locale.US, "%.4f", state.estimatedCost)}"
+                    } else ""
+                    Triple("▶️ Старт (${state.tasks.size}${costStr})", true, onStart)
+                }
                 PipelinePhase.EXECUTING -> Triple(
-                    "⚡ Выполняется ${state.completedTasks}/${state.totalTasks}", false, {}
+                    "⚡ Выполняется ${state.completedTasks}/${state.totalTasks}" +
+                            if (state.runningTaskIds.size > 1) " (×${state.runningTaskIds.size})" else "",
+                    false, {}
                 )
                 PipelinePhase.DEFERRED_PASS -> Triple(
                     "🔄 Retry-проход ${state.completedTasks}/${state.totalTasks}", false, {}
@@ -492,7 +527,7 @@ private fun StatusBar(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "💰 €${"%.4f".format(totalCost)}",
+                    text = "💰 €${String.format(Locale.US, "%.4f", totalCost)}",
                     color = PipelineColors.textSecondary,
                     fontSize = 11.sp,
                     fontFamily = FontFamily.Monospace
@@ -523,8 +558,12 @@ private fun StatusBar(
 @Composable
 private fun ProgressSection(
     state: PipelineState,
-    onRemoveTask: (String) -> Unit
+    onRemoveTask: (String) -> Unit,
+    onTaskChipClick: (String) -> Unit,
+    onChangeMaxParallel: (Int) -> Unit
 ) {
+    var statusFilter by remember { mutableStateOf<TaskStatus?>(null) }
+
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
         val animatedProgress by animateFloatAsState(
             targetValue = state.progress,
@@ -541,19 +580,95 @@ private fun ProgressSection(
             drawStopIndicator = {}
         )
 
+        // ── Parallelism slider — только в IDLE/REVIEWING ──────────────────
+        if (state.phase == PipelinePhase.REVIEWING || state.phase == PipelinePhase.IDLE) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = "Параллельно: ${state.maxParallelTasks}",
+                    color = PipelineColors.textSecondary,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(end = 8.dp).widthIn(min = 120.dp)
+                )
+                Slider(
+                    value = state.maxParallelTasks.toFloat(),
+                    onValueChange = { onChangeMaxParallel(it.toInt()) },
+                    valueRange = 1f..8f,
+                    steps = 6,    // discrete: 1,2,3,4,5,6,7,8
+                    modifier = Modifier.weight(1f).height(28.dp),
+                    colors = SliderDefaults.colors(
+                        thumbColor = PipelineColors.accentBlue,
+                        activeTrackColor = PipelineColors.accentBlue,
+                        inactiveTrackColor = PipelineColors.surfaceElevated
+                    )
+                )
+            }
+        }
+
+        // ── Status filter pills — только если задач >= 10 ─────────────────
+        if (state.tasks.size >= 10 && state.phase != PipelinePhase.IDLE) {
+            Spacer(Modifier.height(6.dp))
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                FilterPill("Все · ${state.tasks.size}",
+                    selected = statusFilter == null) { statusFilter = null }
+                val processingCount = state.tasks.count {
+                    it.status == TaskStatus.PROCESSING || it.status == TaskStatus.PENDING
+                }
+                if (processingCount > 0) {
+                    FilterPill("⏳ $processingCount",
+                        selected = statusFilter == TaskStatus.PROCESSING) {
+                        statusFilter = if (statusFilter == TaskStatus.PROCESSING) null else TaskStatus.PROCESSING
+                    }
+                }
+                if (state.successfulTasks > 0) {
+                    FilterPill("✅ ${state.successfulTasks}",
+                        selected = statusFilter == TaskStatus.SUCCESS) {
+                        statusFilter = if (statusFilter == TaskStatus.SUCCESS) null else TaskStatus.SUCCESS
+                    }
+                }
+                if (state.failedTasks > 0) {
+                    FilterPill("❌ ${state.failedTasks}",
+                        selected = statusFilter == TaskStatus.FAILED_FINAL) {
+                        statusFilter = if (statusFilter == TaskStatus.FAILED_FINAL) null else TaskStatus.FAILED_FINAL
+                    }
+                }
+                if (state.deferredTasks > 0) {
+                    FilterPill("🔄 ${state.deferredTasks}",
+                        selected = statusFilter == TaskStatus.DEFERRED) {
+                        statusFilter = if (statusFilter == TaskStatus.DEFERRED) null else TaskStatus.DEFERRED
+                    }
+                }
+            }
+        }
+
         Spacer(Modifier.height(8.dp))
 
-        // Task chips
+        // ── Task chips ─────────────────────────────────────────────────────
+        val visibleTasks = remember(state.tasks, statusFilter) {
+            if (statusFilter == null) state.tasks
+            else if (statusFilter == TaskStatus.PROCESSING)
+                state.tasks.filter { it.status == TaskStatus.PROCESSING || it.status == TaskStatus.PENDING }
+            else state.tasks.filter { it.status == statusFilter }
+        }
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            items(state.tasks, key = { it.id }) { task ->
+            items(visibleTasks, key = { it.id }) { task ->
                 TaskChip(
                     task = task,
-                    isCurrent = state.tasks.indexOf(task) == state.currentTaskIndex,
+                    isCurrent = task.id in state.runningTaskIds,
+                    isFilterActive = state.logFilterTaskId == task.id,
                     canRemove = state.phase == PipelinePhase.REVIEWING,
-                    onRemove = { onRemoveTask(task.id) }
+                    onRemove = { onRemoveTask(task.id) },
+                    onClick = { onTaskChipClick(task.id) }
                 )
             }
         }
@@ -561,11 +676,78 @@ private fun ProgressSection(
 }
 
 @Composable
+private fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(
+                if (selected) PipelineColors.accentBlue.copy(alpha = 0.35f)
+                else PipelineColors.surfaceElevated
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 4.dp)
+    ) {
+        Text(
+            text = label,
+            color = if (selected) PipelineColors.textPrimary else PipelineColors.textSecondary,
+            fontSize = 10.sp,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+@Composable
+private fun LogFilterBanner(
+    taskId: String,
+    tasks: List<FileTask>,
+    onClear: () -> Unit
+) {
+    val task = remember(taskId, tasks) { tasks.firstOrNull { it.id == taskId } }
+    val fileName = task?.filePath?.substringAfterLast('/') ?: taskId
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(PipelineColors.accentPurple.copy(alpha = 0.15f))
+            .border(0.5.dp, PipelineColors.accentPurple.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "🔍 Фильтр: ",
+            color = PipelineColors.textSecondary,
+            fontSize = 11.sp
+        )
+        Text(
+            text = fileName,
+            color = PipelineColors.textPrimary,
+            fontSize = 11.sp,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Icon(
+            Icons.Default.Close,
+            contentDescription = "Сбросить фильтр",
+            tint = PipelineColors.accentPurple,
+            modifier = Modifier
+                .size(16.dp)
+                .clickable(onClick = onClear)
+        )
+    }
+}
+
+@Composable
 private fun TaskChip(
     task: FileTask,
     isCurrent: Boolean,
+    isFilterActive: Boolean,
     canRemove: Boolean,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    onClick: () -> Unit
 ) {
     val bgColor = when (task.status) {
         TaskStatus.PENDING -> PipelineColors.surfaceElevated
@@ -575,22 +757,41 @@ private fun TaskChip(
         TaskStatus.DEFERRED -> PipelineColors.accentYellow.copy(alpha = 0.25f)
         TaskStatus.FAILED_FINAL -> PipelineColors.accentRed.copy(alpha = 0.3f)
     }
-    val borderColor = if (isCurrent) PipelineColors.accentBlue else PipelineColors.borderSubtle
+    val borderColor = when {
+        isFilterActive -> PipelineColors.accentPurple
+        isCurrent -> PipelineColors.accentBlue
+        else -> PipelineColors.borderSubtle
+    }
+    val borderWidth = when {
+        isFilterActive -> 2.dp
+        isCurrent -> 1.5.dp
+        else -> 0.5.dp
+    }
     val fileName = task.filePath.substringAfterLast('/')
 
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(8.dp))
             .background(bgColor)
-            .border(if (isCurrent) 1.5.dp else 0.5.dp, borderColor, RoundedCornerShape(8.dp))
+            .border(borderWidth, borderColor, RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Иконка статуса (⏸/⏳/✅/❌/...)
         Text(
             text = task.status.emoji,
             fontSize = 14.sp
         )
-        Spacer(Modifier.width(6.dp))
+        Spacer(Modifier.width(4.dp))
+        // Иконка операции (✏️ MODIFY / ➕ CREATE) — показываем только если PENDING/PROCESSING
+        if (task.status == TaskStatus.PENDING || task.status == TaskStatus.PROCESSING) {
+            Text(
+                text = task.operation.emoji,
+                fontSize = 12.sp
+            )
+            Spacer(Modifier.width(4.dp))
+        }
         Text(
             text = fileName,
             color = PipelineColors.textPrimary,
@@ -754,9 +955,7 @@ private fun LogLine(
     timestamp: Long,
     accentColor: Color
 ) {
-    val timeStr = remember(timestamp) {
-        SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(timestamp))
-    }
+    val timeStr = remember(timestamp) { formatLogTime(timestamp) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
