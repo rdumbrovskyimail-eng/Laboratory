@@ -244,58 +244,18 @@ class PipelineViewModel @Inject constructor(
      * (точные имена методов/полей — смотри в своём RepoIndexManager.kt)
      */
     private fun extractFilePaths(index: Any): List<String> {
-        // Список возможных getter-имён для коллекции файлов
-        val collectionGetters = listOf(
-            "getNodes", "getFiles", "getPaths", "getEntries",
-            "getAllPaths", "getFileList", "getAllFiles"
-        )
-        // Возможные getter-имена для пути одного элемента
-        val pathGetters = listOf("getPath", "getFilePath", "getName", "getFullPath")
-        // Возможные getter-имена для is-file флага
-        val isFileGetters = listOf("isFile", "getFile", "isRegularFile")
-
-        val cls = index::class.java
-        for (getterName in collectionGetters) {
-            try {
-                val method = cls.methods.firstOrNull { it.name == getterName } ?: continue
-                val result = method.invoke(index) ?: continue
-                val list = (result as? List<*>) ?: continue
-                if (list.isEmpty()) continue
-
-                val first = list.first() ?: continue
-                // Если элементы — String (paths напрямую)
-                if (first is String) {
-                    @Suppress("UNCHECKED_CAST")
-                    return (list as List<String>).filter { it.isNotBlank() }
-                }
-                // Иначе ищем getter для path
-                val elemCls = first::class.java
-                val pathMethod = pathGetters
-                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
-                    ?: continue
-                val isFileMethod = isFileGetters
-                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
-
-                val paths = list.mapNotNull { node ->
-                    if (node == null) return@mapNotNull null
-                    if (isFileMethod != null) {
-                        val isFile = isFileMethod.invoke(node) as? Boolean
-                        if (isFile == false) return@mapNotNull null
-                    }
-                    (pathMethod.invoke(node) as? String)?.takeIf { it.isNotBlank() }
-                }
-                if (paths.isNotEmpty()) return paths
-            } catch (e: Exception) {
-                android.util.Log.w("PipelineViewModel",
-                    "extractFilePaths via $getterName failed: ${e.message}")
-            }
+        // Безопасно кастуем объект к нашему реальному типу RepoIndex
+        val repoIndex = index as? RepoIndexManager.RepoIndex 
+        
+        if (repoIndex == null) {
+            android.util.Log.e("PipelineViewModel", "extractFilePaths: получен объект неверного типа")
+            return emptyList()
         }
 
-        android.util.Log.e("PipelineViewModel",
-            "Could not extract file paths from RepoIndex via reflection. " +
-                    "Open PipelineViewModel.kt and replace extractFilePaths() body " +
-                    "with a direct call to your RepoIndex API.")
-        return emptyList()
+        // Возвращаем пути только для файлов (исключая директории)
+        return repoIndex.nodes
+            .filter { it.isFile }
+            .map { it.path }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
