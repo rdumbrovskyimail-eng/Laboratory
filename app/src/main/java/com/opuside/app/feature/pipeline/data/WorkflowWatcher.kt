@@ -59,13 +59,26 @@ class WorkflowWatcher @Inject constructor(
         // Initial delay — GitHub нужно время чтобы зарегистрировать workflow
         delay(INITIAL_DELAY_MS)
 
+        // Читаем ветку один раз — она не меняется во время watching
+        val branch = try {
+            appSettings.gitHubConfig.first().branch
+        } catch (e: Exception) {
+            emit(RepoLogEvent(
+                type = RepoEventType.ERROR,
+                icon = "⚠️",
+                message = "Watcher: не удалось получить настройки GitHub: ${e.message?.take(80)}",
+                taskId = taskId,
+                commitSha = commitSha
+            ))
+            return@flow
+        }
+
         var foundRun: WorkflowRun? = null
         var lastStatus: String? = null
         var lastConclusion: String? = null
 
         repeat(MAX_POLL_ITERATIONS) { iteration ->
             try {
-                val branch = appSettings.gitHubConfig.first().branch
                 val runs = fetchRunsForCommit(commitSha, branch)
 
                 val match = if (workflowFilterName != null) {
