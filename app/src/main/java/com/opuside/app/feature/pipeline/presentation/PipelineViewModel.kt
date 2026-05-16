@@ -1,3 +1,4 @@
+
 package com.opuside.app.feature.pipeline.presentation
 
 import androidx.lifecycle.ViewModel
@@ -9,26 +10,36 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
-import kotlin.random.Random
 
+/**
+ * ═══════════════════════════════════════════════════════════════════════════
+ * PIPELINE VIEW MODEL v1.0
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * Оркестратор всего G-конвейера. Управляет state machine, агрегирует
+ * события из двух источников (Gemini + Repo), управляет жизненным циклом
+ * watcher'ов workflows.
+ *
+ * Главный цикл:
+ *   1. plan(userPrompt) — Gemini-планировщик возвращает список задач
+ *   2. REVIEWING — пользователь видит план, может удалить лишнее
+ *   3. start() — главный проход по задачам (executeTask × N)
+ *   4. После основного прохода — второй проход по DEFERRED задачам с retry
+ *   5. summarize() — финальный AI-отчёт
+ *   6. DONE
+ *
+ * Stop handling: cancel главного Job → текущая задача доделывается через
+ * structured concurrency, остальные не запускаются.
+ *
+ * Workflow watchers запускаются параллельно после каждого успешного коммита
+ * и эмитят события в repoLog независимо от основного цикла.
+ */
 @HiltViewModel
 class PipelineViewModel @Inject constructor(
     private val planner: PipelinePlanner,
@@ -55,28 +66,6 @@ class PipelineViewModel @Inject constructor(
     private val _repoLog = MutableStateFlow<List<RepoLogEvent>>(emptyList())
     val repoLog: StateFlow<List<RepoLogEvent>> = _repoLog.asStateFlow()
 
-    val visibleGeminiLog: StateFlow<List<GeminiLogEvent>> = combine(
-        _geminiLog, _state
-    ) { logs, st ->
-        val fid = st.logFilterTaskId
-        if (fid == null) logs else logs.filter { it.taskId == fid }
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = emptyList()
-    )
-
-    val visibleRepoLog: StateFlow<List<RepoLogEvent>> = combine(
-        _repoLog, _state
-    ) { logs, st ->
-        val fid = st.logFilterTaskId
-        if (fid == null) logs else logs.filter { it.taskId == fid }
-    }.stateIn(
-        scope = viewModelScope,
-        started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = emptyList()
-    )
-
     private val _repoStats = MutableStateFlow<RepoStats?>(null)
     val repoStats: StateFlow<RepoStats?> = _repoStats.asStateFlow()
 
@@ -89,19 +78,12 @@ class PipelineViewModel @Inject constructor(
     private val _userError = MutableStateFlow<String?>(null)
     val userError: StateFlow<String?> = _userError.asStateFlow()
 
+    /** Главный job выполнения (для cancel) */
     private var pipelineJob: Job? = null
 
-    /** Кэш путей файлов для fallback'а, если getOrRefresh вернёт null */
-    private var cachedFilePaths: List<String> = emptyList()
-
-    companion object {
-        private const val LOG_CAP = 2500
-        private const val LOG_DROP_BATCH = 250
-        const val MIN_PARALLEL = 1
-        const val MAX_PARALLEL = 8
-        private const val JITTER_MIN_MS = 400L
-        private const val JITTER_MAX_MS = 1200L
-    }
+    // ═══════════════════════════════════════════════════════════════════════
+    // INIT
+    // ═══════════════════════════════════════════════════════════════════════
 
     init {
         loadRepoStats()
@@ -119,29 +101,14 @@ class PipelineViewModel @Inject constructor(
         _userError.value = null
     }
 
-    fun setMaxParallel(value: Int) {
-        if (_state.value.isRunning) return
-        val clamped = value.coerceIn(MIN_PARALLEL, MAX_PARALLEL)
-        _state.update { it.copy(maxParallelTasks = clamped) }
-    }
-
-    fun setLogFilter(taskId: String?) {
-        _state.update { it.copy(logFilterTaskId = taskId) }
-    }
-
     /**
      * Обновить статистику репо (для шапки экрана).
-     * Использует прямую работу с RepoIndexManager.
      */
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
                 val index = repoIndexManager.getOrRefresh()
                 if (index != null) {
-                    // 1. Сохраняем пути в кэш для планировщика
-                    cachedFilePaths = index.nodes.filter { it.isFile }.map { it.path }
-
-                    // 2. Считаем статистику для UI
                     val byExt = index.nodes
                         .filter { it.isFile && it.extension.isNotBlank() }
                         .groupingBy { it.extension.lowercase() }
@@ -173,6 +140,10 @@ class PipelineViewModel @Inject constructor(
     // STEP 1: PLAN
     // ═══════════════════════════════════════════════════════════════════════
 
+    /**
+     * Запустить планировщик. После успеха — переход в REVIEWING.
+     * Можно нажать Plan повторно — переплан перетирает старый.
+     */
     fun plan() {
         val prompt = _userPrompt.value.trim()
         if (prompt.isBlank()) {
@@ -196,37 +167,7 @@ class PipelineViewModel @Inject constructor(
                     message = "Планировщик: анализ промпта (${prompt.length}ch)..."
                 ))
 
-                // Пытаемся получить свежий индекс
-                val index = try {
-                    repoIndexManager.getOrRefresh()
-                } catch (e: Exception) {
-                    null
-                }
-                
-                var filePaths = index?.nodes?.filter { it.isFile }?.map { it.path } ?: emptyList()
-                
-                // Если удалось получить свежие пути — обновляем кэш.
-                // Иначе — берём из кэша (fallback).
-                if (filePaths.isNotEmpty()) {
-                    cachedFilePaths = filePaths
-                } else {
-                    filePaths = cachedFilePaths
-                    if (filePaths.isNotEmpty()) {
-                        appendGeminiLog(GeminiLogEvent(
-                            type = GeminiEventType.INFO,
-                            icon = "🗂",
-                            message = "Используется кэшированный список файлов (${filePaths.size})"
-                        ))
-                    }
-                }
-
-                if (filePaths.isEmpty()) {
-                    _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
-                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
-                    return@launch
-                }
-
-                val plan = planner.plan(prompt, filePaths).getOrElse { e ->
+                val plan = planner.plan(prompt).getOrElse { e ->
                     appendGeminiLog(GeminiLogEvent(
                         type = GeminiEventType.ERROR,
                         icon = "❌",
@@ -241,7 +182,7 @@ class PipelineViewModel @Inject constructor(
                     type = GeminiEventType.PLANNER_DONE,
                     icon = "✅",
                     message = "План готов: ${plan.tasks.size} задач(а), " +
-                            "${plan.tokensUsed} токенов, €${String.format(java.util.Locale.US, "%.5f", plan.costEur)}",
+                            "${plan.tokensUsed} токенов, €${"%.5f".format(plan.costEur)}",
                     tokens = plan.tokensUsed,
                     costEur = plan.costEur
                 ))
@@ -249,14 +190,12 @@ class PipelineViewModel @Inject constructor(
                 _totalCostEur.update { it + plan.costEur }
                 _totalTokens.update { it + plan.tokensUsed }
 
+                // Конвертим PlannedTask → FileTask
                 val tasks = plan.tasks.mapIndexed { idx, planned ->
                     FileTask(
-                        operation = planned.operation,
                         filePath = planned.file,
                         originalPathFromAi = planned.file,
                         instructions = planned.instructions,
-                        newFileContent = planned.content,
-                        packageName = planned.packageName,
                         status = TaskStatus.PENDING
                     )
                 }
@@ -279,6 +218,9 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Удалить задачу из плана (пользователь решил не трогать этот файл).
+     */
     fun removeTask(taskId: String) {
         if (_state.value.phase != PipelinePhase.REVIEWING) return
         _state.update { state ->
@@ -302,34 +244,30 @@ class PipelineViewModel @Inject constructor(
 
         pipelineJob?.cancel()
         pipelineJob = viewModelScope.launch {
-            val watcherScope = CoroutineScope(coroutineContext + SupervisorJob(coroutineContext[Job]))
             try {
-                val maxParallel = _state.value.maxParallelTasks
                 _state.update { it.copy(phase = PipelinePhase.EXECUTING) }
 
                 appendGeminiLog(GeminiLogEvent(
                     type = GeminiEventType.INFO,
                     icon = "▶️",
-                    message = "Старт конвейера: ${_state.value.tasks.size} задач(а), " +
-                            "параллелизм=$maxParallel"
+                    message = "Старт конвейера: ${_state.value.tasks.size} задач(а)"
                 ))
 
+                // ═══ ПЕРВЫЙ ПРОХОД ═══════════════════════════════════════════
                 val initialTasks = _state.value.tasks.toList()
-                val fatalRef = AtomicBoolean(false)
+                var fatalEncountered = false
 
-                runTasksInParallel(
-                    tasks = initialTasks,
-                    maxParallel = maxParallel,
-                    fatalRef = fatalRef,
-                    isRetryPass = false,
-                    watcherScope = watcherScope
-                )
+                for ((idx, task) in initialTasks.withIndex()) {
+                    if (fatalEncountered) break
+                    fatalEncountered = runOneTask(idx, task, isRetryPass = false)
+                }
 
-                if (fatalRef.get()) {
+                if (fatalEncountered) {
                     _state.update { it.copy(phase = PipelinePhase.FATAL) }
                     return@launch
                 }
 
+                // ═══ ВТОРОЙ ПРОХОД (DEFERRED tasks) ══════════════════════════
                 val deferredTasks = _state.value.tasks.filter { it.status == TaskStatus.DEFERRED }
                 if (deferredTasks.isNotEmpty()) {
                     _state.update { it.copy(phase = PipelinePhase.DEFERRED_PASS) }
@@ -340,22 +278,21 @@ class PipelineViewModel @Inject constructor(
                     ))
 
                     for (task in deferredTasks) {
-                        updateTask(task.id) { it.copy(status = TaskStatus.PENDING) }
+                        if (fatalEncountered) break
+                        val idx = _state.value.tasks.indexOfFirst { it.id == task.id }
+                        if (idx < 0) continue
+
+                        // Сбросим статус для retry
+                        updateTask(task.id) { it.copy(status = TaskStatus.PROCESSING) }
+                        fatalEncountered = runOneTask(idx, task, isRetryPass = true)
                     }
 
-                    runTasksInParallel(
-                        tasks = deferredTasks,
-                        maxParallel = maxParallel,
-                        fatalRef = fatalRef,
-                        isRetryPass = true,
-                        watcherScope = watcherScope
-                    )
-
-                    if (fatalRef.get()) {
+                    if (fatalEncountered) {
                         _state.update { it.copy(phase = PipelinePhase.FATAL) }
                         return@launch
                     }
 
+                    // Всё что осталось DEFERRED → FAILED_FINAL
                     val stillDeferred = _state.value.tasks.filter { it.status == TaskStatus.DEFERRED }
                     for (task in stillDeferred) {
                         updateTask(task.id) {
@@ -364,6 +301,7 @@ class PipelineViewModel @Inject constructor(
                     }
                 }
 
+                // ═══ ФИНАЛЬНЫЙ ОТЧЁТ ═══════════════════════════════════════
                 _state.update { it.copy(phase = PipelinePhase.FINALIZING) }
                 appendGeminiLog(GeminiLogEvent(
                     type = GeminiEventType.SUMMARY_START,
@@ -412,64 +350,21 @@ class PipelineViewModel @Inject constructor(
                         fatalError = e.message
                     )
                 }
-            } finally {
-                watcherScope.cancel()
             }
         }
     }
 
-    private suspend fun CoroutineScope.runTasksInParallel(
-        tasks: List<FileTask>,
-        maxParallel: Int,
-        fatalRef: AtomicBoolean,
-        isRetryPass: Boolean,
-        watcherScope: CoroutineScope
-    ) {
-        if (tasks.isEmpty()) return
-        val semaphore = Semaphore(maxParallel.coerceIn(MIN_PARALLEL, MAX_PARALLEL))
-
-        coroutineScope {
-            tasks.mapIndexed { localIdx, task ->
-                async {
-                    if (fatalRef.get()) return@async
-
-                    semaphore.withPermit {
-                        if (fatalRef.get()) return@withPermit
-
-                        if (localIdx > 0) {
-                            val jitter = Random.nextLong(JITTER_MIN_MS, JITTER_MAX_MS)
-                            delay(jitter)
-                        }
-
-                        _state.update {
-                            val realIdx = it.tasks.indexOfFirst { t -> t.id == task.id }
-                            it.copy(
-                                currentTaskIndex = realIdx,
-                                runningTaskIds = it.runningTaskIds + task.id
-                            )
-                        }
-
-                        try {
-                            val realIdx = _state.value.tasks.indexOfFirst { it.id == task.id }
-                            if (realIdx < 0) return@withPermit
-                            val isFatal = runOneTask(realIdx, task, isRetryPass, watcherScope)
-                            if (isFatal) fatalRef.set(true)
-                        } finally {
-                            _state.update {
-                                it.copy(runningTaskIds = it.runningTaskIds - task.id)
-                            }
-                        }
-                    }
-                }
-            }.awaitAll()
-        }
-    }
-
-    private suspend fun runOneTask(
+    /**
+     * Выполнить одну задачу и обновить state.
+     * Возвращает true если получили FATAL (надо остановить конвейер).
+     *
+     * Принимает CoroutineScope (от pipelineJob) чтобы watcher'ы были его детьми
+     * и отменялись вместе с pipelineJob при stop.
+     */
+    private suspend fun CoroutineScope.runOneTask(
         idx: Int,
         task: FileTask,
-        isRetryPass: Boolean,
-        watcherScope: CoroutineScope
+        isRetryPass: Boolean
     ): Boolean {
         _state.update { it.copy(currentTaskIndex = idx) }
         updateTask(task.id) {
@@ -491,9 +386,11 @@ class PipelineViewModel @Inject constructor(
                     }
                     is PipelineExecutor.ExecutorEvent.Repo -> {
                         appendRepoLog(event.log)
+                        // Если был commit — запускаем watcher как ребёнок pipelineJob
                         val commitSha = event.log.commitSha
                         if (event.log.type == RepoEventType.FILE_COMMITTED && commitSha != null) {
-                            watcherScope.launch {
+                            // launch без viewModelScope — дочерний к pipelineJob
+                            launch {
                                 try {
                                     workflowWatcher.watch(commitSha, task.id).collect { evt ->
                                         appendRepoLog(evt)
@@ -525,6 +422,7 @@ class PipelineViewModel @Inject constructor(
                 }
             }
         } catch (e: CancellationException) {
+            // Если задача была отменена в середине — пометим как DEFERRED
             if (!receivedFinal) {
                 updateTask(task.id) {
                     it.copy(
@@ -550,7 +448,7 @@ class PipelineViewModel @Inject constructor(
                         status = TaskStatus.SUCCESS,
                         commitSha = result.commitSha,
                         resolvedConflict = result.resolvedConflict,
-                        tokensUsed = it.tokensUsed + result.tokensUsed,
+                        tokensUsed = result.tokensUsed,
                         durationMs = duration
                     )
                 }
@@ -562,7 +460,7 @@ class PipelineViewModel @Inject constructor(
                     it.copy(
                         status = TaskStatus.NO_CHANGES_NEEDED,
                         commitSha = result.commitSha,
-                        tokensUsed = it.tokensUsed + result.tokensUsed,
+                        tokensUsed = result.tokensUsed,
                         durationMs = duration
                     )
                 }
@@ -612,11 +510,13 @@ class PipelineViewModel @Inject constructor(
         _state.update { it.copy(phase = PipelinePhase.CANCELLED) }
     }
 
+    /**
+     * Полный сброс конвейера в IDLE. Промпт сохраняется.
+     */
     fun reset() {
         pipelineJob?.cancel()
         pipelineJob = null
-        val savedParallel = _state.value.maxParallelTasks
-        _state.value = PipelineState(maxParallelTasks = savedParallel)
+        _state.value = PipelineState()
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
         _totalCostEur.value = 0.0
@@ -625,8 +525,7 @@ class PipelineViewModel @Inject constructor(
     }
 
     private fun resetForNewRun() {
-        val savedParallel = _state.value.maxParallelTasks
-        _state.value = PipelineState(maxParallelTasks = savedParallel)
+        _state.value = PipelineState()
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
         _totalCostEur.value = 0.0
@@ -640,14 +539,15 @@ class PipelineViewModel @Inject constructor(
 
     private fun appendGeminiLog(event: GeminiLogEvent) {
         _geminiLog.update { current ->
-            if (current.size >= LOG_CAP) (current.drop(LOG_DROP_BATCH) + event)
+            // Ограничиваем размер лога (FIFO)
+            if (current.size >= 500) (current.drop(50) + event)
             else (current + event)
         }
     }
 
     private fun appendRepoLog(event: RepoLogEvent) {
         _repoLog.update { current ->
-            if (current.size >= LOG_CAP) (current.drop(LOG_DROP_BATCH) + event)
+            if (current.size >= 500) (current.drop(50) + event)
             else (current + event)
         }
     }
