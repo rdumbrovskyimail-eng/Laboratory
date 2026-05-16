@@ -10,6 +10,7 @@ import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.git.ConflictResult
 import com.opuside.app.core.git.ConflictStrategy
 import com.opuside.app.core.git.GitConflictResolver
+import com.opuside.app.core.index.RepoIndexManager
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
 import com.opuside.app.core.network.github.model.GitHubBranch
@@ -26,7 +27,8 @@ class CreatorViewModel @Inject constructor(
     private val graphQLClient: GitHubGraphQLClient,
     private val appSettings: AppSettings,
     private val conflictResolver: GitConflictResolver,
-    private val aiEditService: CreatorAIEditService
+    private val aiEditService: CreatorAIEditService,
+    private val repoIndexManager: RepoIndexManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -429,6 +431,7 @@ class CreatorViewModel @Inject constructor(
             )
                 .onSuccess {
                     android.util.Log.d("CreatorViewModel", "✅ File created successfully")
+                    repoIndexManager.invalidate()
                     refresh()
                 }
                 .onFailure { e ->
@@ -456,6 +459,7 @@ class CreatorViewModel @Inject constructor(
                 .onSuccess {
                     if (_selectedFile.value?.path == file.path) closeFile()
                     android.util.Log.d("CreatorViewModel", "✅ File deleted successfully")
+                    repoIndexManager.invalidate()
                     refresh()
                 }
                 .onFailure { e ->
@@ -477,6 +481,7 @@ class CreatorViewModel @Inject constructor(
             try {
                 val deleted = deleteFolderRecursive(folder.path)
                 android.util.Log.d("CreatorViewModel", "✅ Folder deleted: $deleted files")
+                repoIndexManager.invalidate()
                 refresh()
             } catch (e: Exception) {
                 _error.value = "Failed to delete folder: ${e.message}"
@@ -577,6 +582,7 @@ class CreatorViewModel @Inject constructor(
                         branch = _currentBranch.value
                     )
                     android.util.Log.d("CreatorViewModel", "✅ File renamed successfully")
+                    repoIndexManager.invalidate()
                     refresh()
                 }
             }.onFailure { e ->
@@ -788,6 +794,7 @@ class CreatorViewModel @Inject constructor(
             }
 
             _moveStatus.value = if (errors.isEmpty()) {
+                repoIndexManager.invalidate()
                 MoveStatus.Done(done)
             } else {
                 MoveStatus.Err("Перемещено $done/${plan.size}. Ошибки:\n${errors.take(3).joinToString("\n")}")
