@@ -511,7 +511,7 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 secureSettings.setGitHubToken(_githubTokenInput.value)
-                secureSettings.setGitHubConfig(
+                appSettings.setGitHubConfig(
                     owner = _githubOwnerInput.value,
                     repo = _githubRepoInput.value,
                     branch = _githubBranchInput.value
@@ -630,7 +630,7 @@ class SettingsViewModel @Inject constructor(
                 }
 
                 secureSettings.setGitHubToken(_githubTokenInput.value)
-                secureSettings.setGitHubConfig(
+                appSettings.setGitHubConfig(
                     owner = _githubOwnerInput.value,
                     repo = _githubRepoInput.value,
                     branch = _githubBranchInput.value
