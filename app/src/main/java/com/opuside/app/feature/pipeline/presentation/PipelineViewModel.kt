@@ -284,7 +284,7 @@ class PipelineViewModel @Inject constructor(
         }
 
         val branch = if (cfg.branch.isBlank()) "main" else cfg.branch
-        val token = tryGetGitHubToken()
+        val token = cfg.token // ✅ ПРОСТО ВЗЯТЬ ТОКЕН ИЗ КОНФИГА
 
         val url = "https://api.github.com/repos/${cfg.owner}/${cfg.repo}" +
                 "/git/trees/${branch}?recursive=1"
@@ -317,8 +317,7 @@ class PipelineViewModel @Inject constructor(
                 val hint = when (code) {
                     401 -> "401: токен не валиден или не найден. " +
                             (if (token.isBlank())
-                                "tryGetGitHubToken() не смог достать токен из SecureSettingsDataStore. " +
-                                "Открой Settings → GitHub и проверь что токен сохранён."
+                                "cfg.token is blank. Открой Settings → GitHub и проверь что токен сохранён."
                             else "Токен передан, но GitHub его не принял. Возможно истёк или нет прав 'repo'.")
                     403 -> "403: rate limit или нет прав на репо. " +
                             "GitHub PAT нужен с правом 'repo' для приватных репозиториев."
@@ -370,100 +369,6 @@ class PipelineViewModel @Inject constructor(
 
     /** Совместимость с предыдущим API */
     private suspend fun fetchFilePaths(): List<String> = fetchFilePathsDetailed().paths
-
-    /**
-     * Извлекает GitHub token. Пробует:
-     * 1. Reflection в SecureSettingsDataStore (много имён getter'ов)
-     * 2. Reflection в самом gitHubClient (он уже хранит токен внутри!)
-     */
-    private suspend fun tryGetGitHubToken(): String {
-        // ─── Попытка 1: через SecureSettingsDataStore ──────────────────────
-        val candidates = listOf(
-            "getGitHubToken", "getGithubToken", "getGitHubPat", "getGithubPat",
-            "getPat", "getToken", "getAccessToken", "getGhToken",
-            "getApiKey", "getGitHubApiKey", "getGithubApiKey",
-            "getKey", "githubToken", "gitHubToken", "githubPat", "pat", "token"
-        )
-        val cls = secureSettings::class.java
-        for (name in candidates) {
-            try {
-                val method = cls.methods.firstOrNull { it.name == name } ?: continue
-                if (method.parameterCount != 0) continue
-                val result = method.invoke(secureSettings) ?: continue
-                // Возможно вернуло Flow<String>
-                if (result is kotlinx.coroutines.flow.Flow<*>) {
-                    @Suppress("UNCHECKED_CAST")
-                    val flow = result as kotlinx.coroutines.flow.Flow<String>
-                    val token = flow.first()
-                    if (token.isNotBlank()) {
-                        android.util.Log.d(TAG, "tryGetGitHubToken: found via secureSettings.$name (Flow)")
-                        return token
-                    }
-                }
-                // Может вернуло прямо строку
-                if (result is String && result.isNotBlank()) {
-                    android.util.Log.d(TAG, "tryGetGitHubToken: found via secureSettings.$name (String)")
-                    return result
-                }
-            } catch (_: Exception) { /* try next */ }
-        }
-
-        // ─── Попытка 2: вытащить токен из gitHubClient (он его уже знает!) ─
-        try {
-            val clientCls: Class<*> = executor::class.java
-            // gitHubClient может быть полем у executor — найдём через reflection
-            val fields = clientCls.declaredFields
-            for (field in fields) {
-                if (field.name.contains("github", ignoreCase = true) ||
-                    field.name.contains("client", ignoreCase = true)) {
-                    field.isAccessible = true
-                    val client = field.get(executor) ?: continue
-                    val token = extractTokenFromObject(client)
-                    if (token.isNotBlank()) {
-                        android.util.Log.d(TAG, "tryGetGitHubToken: found in executor.${field.name}")
-                        return token
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            android.util.Log.w(TAG, "Token extraction from gitHubClient failed: ${e.message}")
-        }
-
-        android.util.Log.w(TAG, "tryGetGitHubToken: TOKEN NOT FOUND. " +
-                "Открой PipelineViewModel.kt, найди функцию tryGetGitHubToken() " +
-                "и добавь свой метод в список candidates.")
-        return ""
-    }
-
-    /**
-     * Пытается извлечь токен из произвольного объекта через reflection.
-     * Ищет поля или getter с именами содержащими "token", "pat", "auth".
-     */
-    private fun extractTokenFromObject(obj: Any): String {
-        try {
-            val cls: Class<*> = obj::class.java
-            // Поля
-            for (field in cls.declaredFields) {
-                val n = field.name.lowercase()
-                if (n.contains("token") || n.contains("pat") || n.contains("auth")) {
-                    field.isAccessible = true
-                    val value = field.get(obj)
-                    if (value is String && value.isNotBlank()) return value
-                }
-            }
-            // Методы (геттеры)
-            for (method in cls.methods) {
-                if (method.parameterCount != 0) continue
-                val n = method.name.lowercase()
-                if ((n.contains("token") || n.contains("pat") || n.contains("auth")) &&
-                    method.returnType == String::class.java) {
-                    val value = method.invoke(obj) as? String
-                    if (!value.isNullOrBlank()) return value
-                }
-            }
-        } catch (_: Exception) { /* ignore */ }
-        return ""
-    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // STEP 1: PLAN
