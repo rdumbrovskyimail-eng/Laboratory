@@ -1,4 +1,3 @@
-
 package com.opuside.app.feature.pipeline.presentation
 
 import androidx.lifecycle.ViewModel
@@ -10,12 +9,26 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
+import kotlin.random.Random
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -66,6 +79,33 @@ class PipelineViewModel @Inject constructor(
     private val _repoLog = MutableStateFlow<List<RepoLogEvent>>(emptyList())
     val repoLog: StateFlow<List<RepoLogEvent>> = _repoLog.asStateFlow()
 
+    /**
+     * Логи, отфильтрованные по logFilterTaskId. Фильтрация выполняется
+     * в фоновом виде (не на Main Thread) через combine + stateIn.
+     * UI подписывается на это, а не делает remember{ filter() }.
+     */
+    val visibleGeminiLog: StateFlow<List<GeminiLogEvent>> = combine(
+        _geminiLog, _state
+    ) { logs, st ->
+        val fid = st.logFilterTaskId
+        if (fid == null) logs else logs.filter { it.taskId == fid }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = emptyList()
+    )
+
+    val visibleRepoLog: StateFlow<List<RepoLogEvent>> = combine(
+        _repoLog, _state
+    ) { logs, st ->
+        val fid = st.logFilterTaskId
+        if (fid == null) logs else logs.filter { it.taskId == fid }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = emptyList()
+    )
+
     private val _repoStats = MutableStateFlow<RepoStats?>(null)
     val repoStats: StateFlow<RepoStats?> = _repoStats.asStateFlow()
 
@@ -80,6 +120,21 @@ class PipelineViewModel @Inject constructor(
 
     /** Главный job выполнения (для cancel) */
     private var pipelineJob: Job? = null
+
+    companion object {
+        /** Максимум событий в каждом логе (FIFO) */
+        private const val LOG_CAP = 2500
+        /** Сколько событий сбрасывать когда достигнут CAP */
+        private const val LOG_DROP_BATCH = 250
+        /** Default параллелизм. Можно поменять через setMaxParallel(). */
+        private const val DEFAULT_MAX_PARALLEL = 3
+        /** Минимальная и максимальная допустимая параллельность */
+        const val MIN_PARALLEL = 1
+        const val MAX_PARALLEL = 8
+        /** Jitter delay между задачами (анти-flake GitHub) */
+        private const val JITTER_MIN_MS = 400L
+        private const val JITTER_MAX_MS = 1200L
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // INIT
@@ -102,38 +157,145 @@ class PipelineViewModel @Inject constructor(
     }
 
     /**
+     * Изменить параллелизм (количество одновременных задач).
+     * Можно вызывать только в IDLE или REVIEWING. Во время выполнения игнорируется.
+     */
+    fun setMaxParallel(value: Int) {
+        if (_state.value.isRunning) return
+        val clamped = value.coerceIn(MIN_PARALLEL, MAX_PARALLEL)
+        _state.update { it.copy(maxParallelTasks = clamped) }
+    }
+
+    /**
+     * Фильтрует логи по конкретной задаче (null = показать все).
+     * UI вызывает при клике на task chip.
+     */
+    fun setLogFilter(taskId: String?) {
+        _state.update { it.copy(logFilterTaskId = taskId) }
+    }
+
+    /**
      * Обновить статистику репо (для шапки экрана).
+     * Использует extractFilePaths() + AppSettings — не зависит от внутренней
+     * структуры RepoIndex.
      */
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
+                val cfg = appSettings.gitHubConfig.first()
                 val index = repoIndexManager.getOrRefresh()
-                if (index != null) {
-                    val byExt = index.nodes
-                        .filter { it.isFile && it.extension.isNotBlank() }
-                        .groupingBy { it.extension.lowercase() }
-                        .eachCount()
-
-                    _repoStats.value = RepoStats(
-                        owner = index.owner,
-                        repo = index.repo,
-                        branch = index.branch,
-                        totalFiles = index.totalFiles,
-                        totalDirectories = index.totalDirectories,
-                        totalSizeBytes = index.totalSize,
-                        totalSizeFormatted = index.totalSizeFormatted,
-                        byExtension = byExt,
-                        maxDepth = index.maxDepth,
-                        truncated = index.truncated,
-                        loadedAtMs = index.loadedAt
-                    )
-                } else {
+                if (index == null) {
                     _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
+                    return@launch
                 }
+                val paths = extractFilePaths(index)
+                if (paths.isEmpty()) {
+                    _userError.value = "Индекс репозитория пуст или не удалось извлечь пути. " +
+                            "Проверь функцию extractFilePaths() в PipelineViewModel.kt."
+                    return@launch
+                }
+                // Подсчёт по расширениям из путей
+                val byExt: Map<String, Int> = paths
+                    .mapNotNull { p ->
+                        val dot = p.lastIndexOf('.')
+                        if (dot < 0 || dot == p.length - 1) null
+                        else p.substring(dot + 1).lowercase()
+                    }
+                    .groupingBy { it }
+                    .eachCount()
+
+                _repoStats.value = RepoStats(
+                    owner = cfg.owner,
+                    repo = cfg.repo,
+                    branch = cfg.branch,
+                    totalFiles = paths.size,
+                    totalDirectories = 0,           // не вычисляем — некритично
+                    totalSizeBytes = 0L,            // нет данных без доступа к индексу
+                    totalSizeFormatted = "—",
+                    byExtension = byExt,
+                    maxDepth = paths.maxOfOrNull { it.count { c -> c == '/' } } ?: 0,
+                    truncated = false,
+                    loadedAtMs = System.currentTimeMillis()
+                )
             } catch (e: Exception) {
                 _userError.value = "Ошибка загрузки репо: ${e.message}"
             }
         }
+    }
+
+    /**
+     * ═══════════════════════════════════════════════════════════════════════
+     * АДАПТЕР ДЛЯ ТВОЕГО RepoIndexManager.
+     * ═══════════════════════════════════════════════════════════════════════
+     *
+     * Цель: вернуть List<String> со ВСЕМИ путями файлов в репозитории.
+     * Например: ["app/src/main/java/com/x/A.kt", "app/src/main/java/com/x/B.kt", ...]
+     *
+     * Использует reflection как FALLBACK — пытается найти getter с типичными
+     * именами (getNodes/getFiles/getPaths/getEntries) и извлечь поле path или filePath.
+     *
+     * Если хочешь оптимизировать или твоя структура нестандартна — ЗАМЕНИ
+     * тело функции на прямой вызов:
+     *
+     *   return (index as RepoIndexManager.RepoIndex).nodes
+     *       .filter { it.isFile }
+     *       .map { it.path }
+     *
+     * (точные имена методов/полей — смотри в своём RepoIndexManager.kt)
+     */
+    private fun extractFilePaths(index: Any): List<String> {
+        // Список возможных getter-имён для коллекции файлов
+        val collectionGetters = listOf(
+            "getNodes", "getFiles", "getPaths", "getEntries",
+            "getAllPaths", "getFileList", "getAllFiles"
+        )
+        // Возможные getter-имена для пути одного элемента
+        val pathGetters = listOf("getPath", "getFilePath", "getName", "getFullPath")
+        // Возможные getter-имена для is-file флага
+        val isFileGetters = listOf("isFile", "getFile", "isRegularFile")
+
+        val cls = index::class.java
+        for (getterName in collectionGetters) {
+            try {
+                val method = cls.methods.firstOrNull { it.name == getterName } ?: continue
+                val result = method.invoke(index) ?: continue
+                val list = (result as? List<*>) ?: continue
+                if (list.isEmpty()) continue
+
+                val first = list.first() ?: continue
+                // Если элементы — String (paths напрямую)
+                if (first is String) {
+                    @Suppress("UNCHECKED_CAST")
+                    return (list as List<String>).filter { it.isNotBlank() }
+                }
+                // Иначе ищем getter для path
+                val elemCls = first::class.java
+                val pathMethod = pathGetters
+                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
+                    ?: continue
+                val isFileMethod = isFileGetters
+                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
+
+                val paths = list.mapNotNull { node ->
+                    if (node == null) return@mapNotNull null
+                    if (isFileMethod != null) {
+                        val isFile = isFileMethod.invoke(node) as? Boolean
+                        if (isFile == false) return@mapNotNull null
+                    }
+                    (pathMethod.invoke(node) as? String)?.takeIf { it.isNotBlank() }
+                }
+                if (paths.isNotEmpty()) return paths
+            } catch (e: Exception) {
+                android.util.Log.w("PipelineViewModel",
+                    "extractFilePaths via $getterName failed: ${e.message}")
+            }
+        }
+
+        android.util.Log.e("PipelineViewModel",
+            "Could not extract file paths from RepoIndex via reflection. " +
+                    "Open PipelineViewModel.kt and replace extractFilePaths() body " +
+                    "with a direct call to your RepoIndex API.")
+        return emptyList()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -167,7 +329,29 @@ class PipelineViewModel @Inject constructor(
                     message = "Планировщик: анализ промпта (${prompt.length}ch)..."
                 ))
 
-                val plan = planner.plan(prompt).getOrElse { e ->
+                // ─── Загружаем индекс репозитория и извлекаем список путей ──
+                // Это единственное место связи с твоим RepoIndexManager API.
+                // Если у тебя структура RepoIndex отличается — адаптируй extractFilePaths() ниже.
+                val index = try {
+                    repoIndexManager.getOrRefresh()
+                } catch (e: Exception) {
+                    _userError.value = "Ошибка загрузки индекса: ${e.message}"
+                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                    return@launch
+                }
+                if (index == null) {
+                    _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
+                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                    return@launch
+                }
+                val filePaths = extractFilePaths(index)
+                if (filePaths.isEmpty()) {
+                    _userError.value = "Репозиторий пуст или индекс не содержит файлов"
+                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                    return@launch
+                }
+
+                val plan = planner.plan(prompt, filePaths).getOrElse { e ->
                     appendGeminiLog(GeminiLogEvent(
                         type = GeminiEventType.ERROR,
                         icon = "❌",
@@ -182,7 +366,7 @@ class PipelineViewModel @Inject constructor(
                     type = GeminiEventType.PLANNER_DONE,
                     icon = "✅",
                     message = "План готов: ${plan.tasks.size} задач(а), " +
-                            "${plan.tokensUsed} токенов, €${"%.5f".format(plan.costEur)}",
+                            "${plan.tokensUsed} токенов, €${String.format(java.util.Locale.US, "%.5f", plan.costEur)}",
                     tokens = plan.tokensUsed,
                     costEur = plan.costEur
                 ))
@@ -190,12 +374,15 @@ class PipelineViewModel @Inject constructor(
                 _totalCostEur.update { it + plan.costEur }
                 _totalTokens.update { it + plan.tokensUsed }
 
-                // Конвертим PlannedTask → FileTask
+                // Конвертим PlannedTask → FileTask (включая operation и content для CREATE)
                 val tasks = plan.tasks.mapIndexed { idx, planned ->
                     FileTask(
+                        operation = planned.operation,
                         filePath = planned.file,
                         originalPathFromAi = planned.file,
                         instructions = planned.instructions,
+                        newFileContent = planned.content,
+                        packageName = planned.packageName,
                         status = TaskStatus.PENDING
                     )
                 }
@@ -244,30 +431,39 @@ class PipelineViewModel @Inject constructor(
 
         pipelineJob?.cancel()
         pipelineJob = viewModelScope.launch {
+            // SupervisorJob с parent = текущий job (pipelineJob)
+            // Watcher'ы будут детьми этого scope, а не async-задач
+            // → не блокируют awaitAll, но отменяются при stop pipelineJob
+            val watcherScope = CoroutineScope(coroutineContext + SupervisorJob(coroutineContext[Job]))
             try {
+                val maxParallel = _state.value.maxParallelTasks
                 _state.update { it.copy(phase = PipelinePhase.EXECUTING) }
 
                 appendGeminiLog(GeminiLogEvent(
                     type = GeminiEventType.INFO,
                     icon = "▶️",
-                    message = "Старт конвейера: ${_state.value.tasks.size} задач(а)"
+                    message = "Старт конвейера: ${_state.value.tasks.size} задач(а), " +
+                            "параллелизм=$maxParallel"
                 ))
 
-                // ═══ ПЕРВЫЙ ПРОХОД ═══════════════════════════════════════════
+                // ═══ ПЕРВЫЙ ПРОХОД (параллельно) ════════════════════════════
                 val initialTasks = _state.value.tasks.toList()
-                var fatalEncountered = false
+                val fatalRef = AtomicBoolean(false)
 
-                for ((idx, task) in initialTasks.withIndex()) {
-                    if (fatalEncountered) break
-                    fatalEncountered = runOneTask(idx, task, isRetryPass = false)
-                }
+                runTasksInParallel(
+                    tasks = initialTasks,
+                    maxParallel = maxParallel,
+                    fatalRef = fatalRef,
+                    isRetryPass = false,
+                    watcherScope = watcherScope
+                )
 
-                if (fatalEncountered) {
+                if (fatalRef.get()) {
                     _state.update { it.copy(phase = PipelinePhase.FATAL) }
                     return@launch
                 }
 
-                // ═══ ВТОРОЙ ПРОХОД (DEFERRED tasks) ══════════════════════════
+                // ═══ ВТОРОЙ ПРОХОД (DEFERRED tasks, тоже параллельно) ═══════
                 val deferredTasks = _state.value.tasks.filter { it.status == TaskStatus.DEFERRED }
                 if (deferredTasks.isNotEmpty()) {
                     _state.update { it.copy(phase = PipelinePhase.DEFERRED_PASS) }
@@ -277,17 +473,20 @@ class PipelineViewModel @Inject constructor(
                         message = "Второй проход: ${deferredTasks.size} отложенных задач(а)"
                     ))
 
+                    // Сброс статусов перед retry
                     for (task in deferredTasks) {
-                        if (fatalEncountered) break
-                        val idx = _state.value.tasks.indexOfFirst { it.id == task.id }
-                        if (idx < 0) continue
-
-                        // Сбросим статус для retry
-                        updateTask(task.id) { it.copy(status = TaskStatus.PROCESSING) }
-                        fatalEncountered = runOneTask(idx, task, isRetryPass = true)
+                        updateTask(task.id) { it.copy(status = TaskStatus.PENDING) }
                     }
 
-                    if (fatalEncountered) {
+                    runTasksInParallel(
+                        tasks = deferredTasks,
+                        maxParallel = maxParallel,
+                        fatalRef = fatalRef,
+                        isRetryPass = true,
+                        watcherScope = watcherScope
+                    )
+
+                    if (fatalRef.get()) {
                         _state.update { it.copy(phase = PipelinePhase.FATAL) }
                         return@launch
                     }
@@ -350,7 +549,74 @@ class PipelineViewModel @Inject constructor(
                         fatalError = e.message
                     )
                 }
+            } finally {
+                // Отменяем все висящие watcher'ы — мы уже завершились
+                watcherScope.cancel()
             }
+        }
+    }
+
+    /**
+     * Параллельный планировщик задач через Semaphore.
+     *
+     * Запускает все task'и одновременно как async-корутины, но каждая ждёт
+     * пермит из Semaphore(maxParallel). Это обеспечивает что в каждый момент
+     * времени выполняется не более maxParallel задач.
+     *
+     * Особенности:
+     * - Каждая задача делает jitter delay перед стартом — анти-flake GitHub
+     * - При FATAL ставится fatalRef=true, оставшиеся задачи тихо завершаются
+     * - currentTaskIndex обновляется на индекс последней начатой задачи (для UI)
+     * - runningTaskIds содержит ID всех текущих параллельных задач
+     */
+    private suspend fun CoroutineScope.runTasksInParallel(
+        tasks: List<FileTask>,
+        maxParallel: Int,
+        fatalRef: AtomicBoolean,
+        isRetryPass: Boolean,
+        watcherScope: CoroutineScope
+    ) {
+        if (tasks.isEmpty()) return
+        val semaphore = Semaphore(maxParallel.coerceIn(MIN_PARALLEL, MAX_PARALLEL))
+
+        coroutineScope {
+            tasks.mapIndexed { localIdx, task ->
+                async {
+                    // Если уже был FATAL — пропускаем
+                    if (fatalRef.get()) return@async
+
+                    semaphore.withPermit {
+                        // Re-check после ожидания пермита
+                        if (fatalRef.get()) return@withPermit
+
+                        // Jitter delay — без него GitHub может ответить 409 на быстрые PUT
+                        if (localIdx > 0) {
+                            val jitter = Random.nextLong(JITTER_MIN_MS, JITTER_MAX_MS)
+                            delay(jitter)
+                        }
+
+                        // Mark as running
+                        _state.update {
+                            val realIdx = it.tasks.indexOfFirst { t -> t.id == task.id }
+                            it.copy(
+                                currentTaskIndex = realIdx,
+                                runningTaskIds = it.runningTaskIds + task.id
+                            )
+                        }
+
+                        try {
+                            val realIdx = _state.value.tasks.indexOfFirst { it.id == task.id }
+                            if (realIdx < 0) return@withPermit  // была удалена
+                            val isFatal = runOneTask(realIdx, task, isRetryPass, watcherScope)
+                            if (isFatal) fatalRef.set(true)
+                        } finally {
+                            _state.update {
+                                it.copy(runningTaskIds = it.runningTaskIds - task.id)
+                            }
+                        }
+                    }
+                }
+            }.awaitAll()
         }
     }
 
@@ -358,13 +624,15 @@ class PipelineViewModel @Inject constructor(
      * Выполнить одну задачу и обновить state.
      * Возвращает true если получили FATAL (надо остановить конвейер).
      *
-     * Принимает CoroutineScope (от pipelineJob) чтобы watcher'ы были его детьми
-     * и отменялись вместе с pipelineJob при stop.
+     * watcherScope — отдельный scope для запуска WorkflowWatcher'ов.
+     * Они НЕ должны быть детьми async-задачи, иначе awaitAll будет ждать
+     * watcher 3 минуты после завершения задачи.
      */
-    private suspend fun CoroutineScope.runOneTask(
+    private suspend fun runOneTask(
         idx: Int,
         task: FileTask,
-        isRetryPass: Boolean
+        isRetryPass: Boolean,
+        watcherScope: CoroutineScope
     ): Boolean {
         _state.update { it.copy(currentTaskIndex = idx) }
         updateTask(task.id) {
@@ -386,11 +654,11 @@ class PipelineViewModel @Inject constructor(
                     }
                     is PipelineExecutor.ExecutorEvent.Repo -> {
                         appendRepoLog(event.log)
-                        // Если был commit — запускаем watcher как ребёнок pipelineJob
+                        // Если был commit — запускаем watcher как ребёнок watcherScope
+                        // (не текущей async-задачи, иначе awaitAll будет ждать watcher 3 мин)
                         val commitSha = event.log.commitSha
                         if (event.log.type == RepoEventType.FILE_COMMITTED && commitSha != null) {
-                            // launch без viewModelScope — дочерний к pipelineJob
-                            launch {
+                            watcherScope.launch {
                                 try {
                                     workflowWatcher.watch(commitSha, task.id).collect { evt ->
                                         appendRepoLog(evt)
@@ -448,7 +716,9 @@ class PipelineViewModel @Inject constructor(
                         status = TaskStatus.SUCCESS,
                         commitSha = result.commitSha,
                         resolvedConflict = result.resolvedConflict,
-                        tokensUsed = result.tokensUsed,
+                        // Накапливаем токены: если в первом проходе было DEFERRED с токенами,
+                        // и затем retry-pass завершился SUCCESS — суммируем оба.
+                        tokensUsed = it.tokensUsed + result.tokensUsed,
                         durationMs = duration
                     )
                 }
@@ -460,7 +730,7 @@ class PipelineViewModel @Inject constructor(
                     it.copy(
                         status = TaskStatus.NO_CHANGES_NEEDED,
                         commitSha = result.commitSha,
-                        tokensUsed = result.tokensUsed,
+                        tokensUsed = it.tokensUsed + result.tokensUsed,
                         durationMs = duration
                     )
                 }
@@ -511,12 +781,13 @@ class PipelineViewModel @Inject constructor(
     }
 
     /**
-     * Полный сброс конвейера в IDLE. Промпт сохраняется.
+     * Полный сброс конвейера в IDLE. Промпт сохраняется. Сохраняется и параллелизм.
      */
     fun reset() {
         pipelineJob?.cancel()
         pipelineJob = null
-        _state.value = PipelineState()
+        val savedParallel = _state.value.maxParallelTasks
+        _state.value = PipelineState(maxParallelTasks = savedParallel)
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
         _totalCostEur.value = 0.0
@@ -525,7 +796,8 @@ class PipelineViewModel @Inject constructor(
     }
 
     private fun resetForNewRun() {
-        _state.value = PipelineState()
+        val savedParallel = _state.value.maxParallelTasks
+        _state.value = PipelineState(maxParallelTasks = savedParallel)
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
         _totalCostEur.value = 0.0
@@ -539,15 +811,15 @@ class PipelineViewModel @Inject constructor(
 
     private fun appendGeminiLog(event: GeminiLogEvent) {
         _geminiLog.update { current ->
-            // Ограничиваем размер лога (FIFO)
-            if (current.size >= 500) (current.drop(50) + event)
+            // Ограничиваем размер лога (FIFO) — поднято до 2500 для 50+ задач
+            if (current.size >= LOG_CAP) (current.drop(LOG_DROP_BATCH) + event)
             else (current + event)
         }
     }
 
     private fun appendRepoLog(event: RepoLogEvent) {
         _repoLog.update { current ->
-            if (current.size >= 500) (current.drop(50) + event)
+            if (current.size >= LOG_CAP) (current.drop(LOG_DROP_BATCH) + event)
             else (current + event)
         }
     }
