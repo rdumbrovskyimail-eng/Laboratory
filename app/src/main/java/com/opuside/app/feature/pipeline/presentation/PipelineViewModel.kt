@@ -20,7 +20,6 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -30,15 +29,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlin.random.Random
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * PIPELINE VIEW MODEL v1.0
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Оркестратор всего G-конвейера. Управляет state machine, агрегирует
- * события из двух источников (Gemini + Repo), управляет жизненным циклом
- * watcher'ов workflows.
- */
 @HiltViewModel
 class PipelineViewModel @Inject constructor(
     private val planner: PipelinePlanner,
@@ -65,10 +55,6 @@ class PipelineViewModel @Inject constructor(
     private val _repoLog = MutableStateFlow<List<RepoLogEvent>>(emptyList())
     val repoLog: StateFlow<List<RepoLogEvent>> = _repoLog.asStateFlow()
 
-    /**
-     * Логи, отфильтрованные по logFilterTaskId. Фильтрация выполняется
-     * в фоновом виде (не на Main Thread) через combine + stateIn.
-     */
     val visibleGeminiLog: StateFlow<List<GeminiLogEvent>> = combine(
         _geminiLog, _state
     ) { logs, st ->
@@ -103,30 +89,19 @@ class PipelineViewModel @Inject constructor(
     private val _userError = MutableStateFlow<String?>(null)
     val userError: StateFlow<String?> = _userError.asStateFlow()
 
-    /** Главный job выполнения (для cancel) */
     private var pipelineJob: Job? = null
 
     /** Кэш путей файлов для fallback'а, если getOrRefresh вернёт null */
     private var cachedFilePaths: List<String> = emptyList()
 
     companion object {
-        /** Максимум событий в каждом логе (FIFO) */
         private const val LOG_CAP = 2500
-        /** Сколько событий сбрасывать когда достигнут CAP */
         private const val LOG_DROP_BATCH = 250
-        /** Default параллелизм. Можно поменять через setMaxParallel(). */
-        private const val DEFAULT_MAX_PARALLEL = 3
-        /** Минимальная и максимальная допустимая параллельность */
         const val MIN_PARALLEL = 1
         const val MAX_PARALLEL = 8
-        /** Jitter delay между задачами (анти-flake GitHub) */
         private const val JITTER_MIN_MS = 400L
         private const val JITTER_MAX_MS = 1200L
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // INIT
-    // ═══════════════════════════════════════════════════════════════════════
 
     init {
         loadRepoStats()
@@ -156,103 +131,42 @@ class PipelineViewModel @Inject constructor(
 
     /**
      * Обновить статистику репо (для шапки экрана).
+     * Использует прямую работу с RepoIndexManager.
      */
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
-                val cfg = appSettings.gitHubConfig.first()
                 val index = repoIndexManager.getOrRefresh()
-                if (index == null) {
+                if (index != null) {
+                    // 1. Сохраняем пути в кэш для планировщика
+                    cachedFilePaths = index.nodes.filter { it.isFile }.map { it.path }
+
+                    // 2. Считаем статистику для UI
+                    val byExt = index.nodes
+                        .filter { it.isFile && it.extension.isNotBlank() }
+                        .groupingBy { it.extension.lowercase() }
+                        .eachCount()
+
+                    _repoStats.value = RepoStats(
+                        owner = index.owner,
+                        repo = index.repo,
+                        branch = index.branch,
+                        totalFiles = index.totalFiles,
+                        totalDirectories = index.totalDirectories,
+                        totalSizeBytes = index.totalSize,
+                        totalSizeFormatted = index.totalSizeFormatted,
+                        byExtension = byExt,
+                        maxDepth = index.maxDepth,
+                        truncated = index.truncated,
+                        loadedAtMs = index.loadedAt
+                    )
+                } else {
                     _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
-                    return@launch
                 }
-                val paths = extractFilePaths(index)
-                if (paths.isEmpty()) {
-                    _userError.value = "Индекс репозитория пуст или не удалось извлечь пути. " +
-                            "Проверь функцию extractFilePaths() в PipelineViewModel.kt."
-                    return@launch
-                }
-                
-                // Сохраняем в кэш для использования в plan()
-                cachedFilePaths = paths
-
-                // Подсчёт по расширениям из путей
-                val byExt: Map<String, Int> = paths
-                    .mapNotNull { p ->
-                        val dot = p.lastIndexOf('.')
-                        if (dot < 0 || dot == p.length - 1) null
-                        else p.substring(dot + 1).lowercase()
-                    }
-                    .groupingBy { it }
-                    .eachCount()
-
-                _repoStats.value = RepoStats(
-                    owner = cfg.owner,
-                    repo = cfg.repo,
-                    branch = cfg.branch,
-                    totalFiles = paths.size,
-                    totalDirectories = 0,
-                    totalSizeBytes = 0L,
-                    totalSizeFormatted = "—",
-                    byExtension = byExt,
-                    maxDepth = paths.maxOfOrNull { it.count { c -> c == '/' } } ?: 0,
-                    truncated = false,
-                    loadedAtMs = System.currentTimeMillis()
-                )
             } catch (e: Exception) {
                 _userError.value = "Ошибка загрузки репо: ${e.message}"
             }
         }
-    }
-
-    private fun extractFilePaths(index: Any): List<String> {
-        val collectionGetters = listOf(
-            "getNodes", "getFiles", "getPaths", "getEntries",
-            "getAllPaths", "getFileList", "getAllFiles"
-        )
-        val pathGetters = listOf("getPath", "getFilePath", "getName", "getFullPath")
-        val isFileGetters = listOf("isFile", "getFile", "isRegularFile")
-
-        val cls = index::class.java
-        for (getterName in collectionGetters) {
-            try {
-                val method = cls.methods.firstOrNull { it.name == getterName } ?: continue
-                val result = method.invoke(index) ?: continue
-                val list = (result as? List<*>) ?: continue
-                if (list.isEmpty()) continue
-
-                val first = list.first() ?: continue
-                if (first is String) {
-                    @Suppress("UNCHECKED_CAST")
-                    return (list as List<String>).filter { it.isNotBlank() }
-                }
-                val elemCls = first::class.java
-                val pathMethod = pathGetters
-                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
-                    ?: continue
-                val isFileMethod = isFileGetters
-                    .firstNotNullOfOrNull { name -> elemCls.methods.firstOrNull { it.name == name } }
-
-                val paths = list.mapNotNull { node ->
-                    if (node == null) return@mapNotNull null
-                    if (isFileMethod != null) {
-                        val isFile = isFileMethod.invoke(node) as? Boolean
-                        if (isFile == false) return@mapNotNull null
-                    }
-                    (pathMethod.invoke(node) as? String)?.takeIf { it.isNotBlank() }
-                }
-                if (paths.isNotEmpty()) return paths
-            } catch (e: Exception) {
-                android.util.Log.w("PipelineViewModel",
-                    "extractFilePaths via $getterName failed: ${e.message}")
-            }
-        }
-
-        android.util.Log.e("PipelineViewModel",
-            "Could not extract file paths from RepoIndex via reflection. " +
-                    "Open PipelineViewModel.kt and replace extractFilePaths() body " +
-                    "with a direct call to your RepoIndex API.")
-        return emptyList()
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -282,14 +196,14 @@ class PipelineViewModel @Inject constructor(
                     message = "Планировщик: анализ промпта (${prompt.length}ch)..."
                 ))
 
-                // ─── Загружаем индекс репозитория и извлекаем список путей ──
+                // Пытаемся получить свежий индекс
                 val index = try {
                     repoIndexManager.getOrRefresh()
                 } catch (e: Exception) {
                     null
                 }
                 
-                var filePaths = if (index != null) extractFilePaths(index) else emptyList()
+                var filePaths = index?.nodes?.filter { it.isFile }?.map { it.path } ?: emptyList()
                 
                 // Если удалось получить свежие пути — обновляем кэш.
                 // Иначе — берём из кэша (fallback).
