@@ -1,7 +1,6 @@
 package com.opuside.app.feature.pipeline.data
 
 import android.util.Log
-import com.opuside.app.core.ai.RepoIndexManager
 import com.opuside.app.core.security.SecureSettingsDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -38,8 +37,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class PipelinePlanner @Inject constructor(
-    private val secureSettings: SecureSettingsDataStore,
-    private val repoIndexManager: RepoIndexManager
+    private val secureSettings: SecureSettingsDataStore
 ) {
 
     companion object {
@@ -210,7 +208,18 @@ No markdown. No code fences. No commentary. Pure JSON.
     // MAIN ENTRY
     // ═══════════════════════════════════════════════════════════════════════
 
-    suspend fun plan(userPrompt: String): Result<PlannerOutput> = withContext(Dispatchers.IO) {
+    /**
+     * Запускает планирование.
+     *
+     * @param userPrompt сам промпт от пользователя
+     * @param filePaths полный список путей файлов в репозитории.
+     *                  ViewModel извлекает его из своего RepoIndexManager
+     *                  (этим избегаем зависимости Planner от внутренней структуры RepoIndex).
+     */
+    suspend fun plan(
+        userPrompt: String,
+        filePaths: List<String>
+    ): Result<PlannerOutput> = withContext(Dispatchers.IO) {
         try {
             if (userPrompt.isBlank()) {
                 return@withContext Result.failure(
@@ -218,15 +227,10 @@ No markdown. No code fences. No commentary. Pure JSON.
                 )
             }
 
-            // 1. Получаем индекс репозитория (список всех путей)
-            val index = repoIndexManager.getOrRefresh()
-                ?: return@withContext Result.failure(
-                    IllegalStateException("Не удалось загрузить индекс репозитория. Проверь настройки GitHub.")
-                )
-
-            if (!index.nodes.any { it.isFile }) {
+            // 1. Проверяем что список путей не пуст
+            if (filePaths.isEmpty()) {
                 return@withContext Result.failure(
-                    IllegalStateException("Репозиторий пуст или содержит только директории")
+                    IllegalStateException("Репозиторий пуст или индекс ещё не загружен")
                 )
             }
 
@@ -238,22 +242,19 @@ No markdown. No code fences. No commentary. Pure JSON.
                 )
             }
 
-            // 3. Строим компактный список путей файлов (только файлы, без директорий)
-            //    Это даст планировщику возможность точно сопоставить упоминания
-            val pathsText = index.nodes
-                .filter { it.isFile }
-                .joinToString("\n") { it.path }
+            // 3. Строим компактный список путей для AI
+            val pathsText = filePaths.joinToString("\n")
 
             // 4. Формируем user message для планировщика
             val userMessage = buildString {
                 appendLine("═══ USER PROMPT (verbatim) ═══")
                 appendLine(userPrompt)
                 appendLine()
-                appendLine("═══ AVAILABLE FILES IN REPOSITORY (${index.totalFiles} total) ═══")
+                appendLine("═══ AVAILABLE FILES IN REPOSITORY (${filePaths.size} total) ═══")
                 appendLine(pathsText)
             }
 
-            Log.d(TAG, "📤 Planning: prompt=${userPrompt.length}ch, files=${index.totalFiles}")
+            Log.d(TAG, "📤 Planning: prompt=${userPrompt.length}ch, files=${filePaths.size}")
 
             // 5. Вызов Gemini API
             val (rawJson, inputTokens, outputTokens) = callGemini(apiKey, userMessage)
@@ -273,8 +274,8 @@ No markdown. No code fences. No commentary. Pure JSON.
                 Log.w(TAG, "⚠️ Planner returned ${plannedTasks.size} tasks (limit=$MAX_TASKS_LIMIT)")
             }
 
-            // 7. Fuzzy-resolve путей через индекс репо
-            val resolvedTasks = resolvePaths(plannedTasks, index)
+            // 7. Резолвинг путей через локальный индекс из filePaths
+            val resolvedTasks = resolvePaths(plannedTasks, filePaths)
 
             // 8. Расчёт стоимости
             val cost = (inputTokens * 0.25 + outputTokens * 1.50) / 1_000_000.0 * 0.92
@@ -311,27 +312,27 @@ No markdown. No code fences. No commentary. Pure JSON.
      */
     private fun resolvePaths(
         plannedTasks: List<PlannedTask>,
-        index: RepoIndexManager.RepoIndex
+        filePaths: List<String>
     ): List<PlannedTask> {
         val seen = mutableSetOf<String>()
         val result = mutableListOf<PlannedTask>()
-        // Pre-build path index для O(1) lookup точных совпадений
-        val pathToNode = index.nodes.filter { it.isFile }.associateBy { it.path }
+        // Pre-build path set для O(1) lookup точных совпадений
+        val pathSet: Set<String> = filePaths.toSet()
         // Pre-build name index для O(1) fuzzy lookup
-        val nameToNodes = index.nodes
-            .filter { it.isFile }
-            .groupBy { it.path.substringAfterLast('/') }
+        val nameToFullPaths: Map<String, List<String>> = filePaths.groupBy {
+            it.substringAfterLast('/')
+        }
         // Source root (например "app/src/main/java/") — выводим из реальных путей
-        val sourceRoot = detectSourceRoot(index.nodes)
+        val sourceRoot = detectSourceRoot(filePaths)
 
         for ((idx, task) in plannedTasks.withIndex()) {
             when (task.operation) {
                 TaskOperation.MODIFY -> {
-                    val resolved = resolveModifyPath(task, pathToNode, nameToNodes)
+                    val resolved = resolveModifyPath(task, pathSet, nameToFullPaths)
                     addOrMerge(result, seen, resolved)
                 }
                 TaskOperation.CREATE -> {
-                    val resolved = resolveCreatePath(task, idx, sourceRoot, pathToNode)
+                    val resolved = resolveCreatePath(task, idx, sourceRoot, pathSet)
                     if (resolved == null) {
                         Log.w(TAG, "Skipping CREATE task #$idx: cannot resolve path")
                         continue
@@ -348,33 +349,33 @@ No markdown. No code fences. No commentary. Pure JSON.
 
     private fun resolveModifyPath(
         task: PlannedTask,
-        pathToNode: Map<String, RepoIndexManager.RepoNode>,
-        nameToNodes: Map<String, List<RepoIndexManager.RepoNode>>
+        pathSet: Set<String>,
+        nameToFullPaths: Map<String, List<String>>
     ): PlannedTask {
         val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim()
         if (rawPath.isBlank()) return task
 
-        val resolvedPath = if (pathToNode.containsKey(rawPath)) {
+        val resolvedPath = if (pathSet.contains(rawPath)) {
             rawPath
         } else {
             val fileName = rawPath.substringAfterLast('/')
-            val candidates = nameToNodes[fileName] ?: emptyList()
+            val candidates = nameToFullPaths[fileName] ?: emptyList()
             when {
                 candidates.isEmpty() -> {
                     Log.w(TAG, "⚠️ Path not found in index: $rawPath — keeping as-is")
                     rawPath
                 }
                 candidates.size == 1 -> {
-                    Log.d(TAG, "🎯 Fuzzy-resolved: '$rawPath' → '${candidates[0].path}'")
-                    candidates[0].path
+                    Log.d(TAG, "🎯 Fuzzy-resolved: '$rawPath' → '${candidates[0]}'")
+                    candidates[0]
                 }
                 else -> {
                     val rawSegments = rawPath.split('/').filter { it.isNotBlank() }.toSet()
-                    val best = candidates.maxByOrNull { c ->
-                        c.path.split('/').count { it in rawSegments }
+                    val best = candidates.maxByOrNull { candidatePath ->
+                        candidatePath.split('/').count { it in rawSegments }
                     } ?: candidates[0]
-                    Log.d(TAG, "🎯 Best-match: '$rawPath' → '${best.path}' (${candidates.size} candidates)")
-                    best.path
+                    Log.d(TAG, "🎯 Best-match: '$rawPath' → '$best' (${candidates.size} candidates)")
+                    best
                 }
             }
         }
@@ -389,14 +390,12 @@ No markdown. No code fences. No commentary. Pure JSON.
      * - только package → выводим путь
      * - только content → извлекаем package из content + имя из объявления
      * - ничего → fallback на sourceRoot + сгенерированное имя
-     *
-     * Возвращает null если не удалось.
      */
     private fun resolveCreatePath(
         task: PlannedTask,
         index: Int,
         sourceRoot: String,
-        existingPaths: Map<String, RepoIndexManager.RepoNode>
+        existingPaths: Set<String>
     ): PlannedTask? {
         val content = task.content ?: return null
         val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim().ifBlank { null }
@@ -415,18 +414,15 @@ No markdown. No code fences. No commentary. Pure JSON.
 
         // Финальный путь
         val finalPath: String = when {
-            // Полный путь предоставлен и валиден (имеет валидное расширение через nameFromPath)
+            // Полный путь предоставлен и валиден
             rawPath != null && nameFromPath != null -> {
-                // Валидация: соответствует ли package пути?
                 if (effectivePkg != null && !pathMatchesPackage(rawPath, effectivePkg)) {
                     Log.w(TAG, "⚠️ Path/package mismatch: path='$rawPath' vs package='$effectivePkg' — using path")
                 }
                 rawPath
             }
-            // Только директория предоставлена
             rawPath != null && rawPath.endsWith('/') -> "$rawPath$finalName"
             rawPath != null -> "$rawPath/$finalName"
-            // Только package — выводим путь
             effectivePkg != null -> "${sourceRoot}${effectivePkg.replace('.', '/')}/$finalName"
             else -> {
                 Log.w(TAG, "⚠️ CREATE without path/package — using fallback location")
@@ -434,8 +430,7 @@ No markdown. No code fences. No commentary. Pure JSON.
             }
         }
 
-        // Проверка: файл уже существует?
-        if (existingPaths.containsKey(finalPath)) {
+        if (existingPaths.contains(finalPath)) {
             Log.w(TAG, "⚠️ CREATE target already exists: $finalPath — keeping task, executor will fail with FILE_ALREADY_EXISTS")
         }
 
@@ -447,10 +442,8 @@ No markdown. No code fences. No commentary. Pure JSON.
 
     /**
      * Извлекает package declaration из контента Kotlin/Java файла.
-     * Возвращает null если не нашёл.
      */
     private fun extractPackageFromContent(content: String): String? {
-        // Multiline: ищем "package x.y.z" в начале строки (с возможными пробелами)
         val regex = Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE)
         return regex.find(content)?.groupValues?.get(1)?.trim()?.ifBlank { null }
     }
@@ -478,8 +471,7 @@ No markdown. No code fences. No commentary. Pure JSON.
     }
 
     /**
-     * Проверяет соответствует ли путь package:
-     * package "com.opuside.x" должен присутствовать в пути как "com/opuside/x".
+     * Проверяет соответствует ли путь package.
      */
     private fun pathMatchesPackage(path: String, packageName: String): Boolean {
         val pkgAsPath = packageName.replace('.', '/')
@@ -487,17 +479,14 @@ No markdown. No code fences. No commentary. Pure JSON.
     }
 
     /**
-     * Определяет source root репозитория (typical: "app/src/main/java/" или
-     * "app/src/main/kotlin/" или просто "src/main/java/" для library).
-     *
-     * Стратегия: берём первый .kt файл и обрезаем его путь до начала package
-     * (где сегмент совпадает с типичными package-roots: com, org, io, net, ru).
+     * Определяет source root репозитория из списка путей.
+     * Стратегия: берём первый .kt файл и обрезаем его путь до начала package.
      */
-    private fun detectSourceRoot(nodes: List<RepoIndexManager.RepoNode>): String {
+    private fun detectSourceRoot(filePaths: List<String>): String {
         val packageRoots = setOf("com", "org", "io", "net", "ru", "de", "tech")
-        for (node in nodes) {
-            if (!node.isFile || !node.path.endsWith(".kt")) continue
-            val parts = node.path.split('/')
+        for (path in filePaths) {
+            if (!path.endsWith(".kt")) continue
+            val parts = path.split('/')
             val pkgStartIdx = parts.indexOfFirst { it in packageRoots }
             if (pkgStartIdx > 0) {
                 return parts.take(pkgStartIdx).joinToString("/") + "/"
@@ -521,7 +510,6 @@ No markdown. No code fences. No commentary. Pure JSON.
             val existingIdx = result.indexOfFirst { it.file == path }
             if (existingIdx >= 0) {
                 val existing = result[existingIdx]
-                // Merge только если оба MODIFY — для CREATE имеет смысл только первая задача
                 if (existing.operation == TaskOperation.MODIFY && task.operation == TaskOperation.MODIFY) {
                     result[existingIdx] = existing.copy(
                         instructions = existing.instructions +
