@@ -10,16 +10,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Analytics
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Code
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
@@ -44,6 +50,7 @@ import androidx.navigation.compose.rememberNavController
 import com.opuside.app.feature.analyzer.presentation.AnalyzerScreen
 import com.opuside.app.feature.creator.presentation.CreatorScreen
 import com.opuside.app.feature.creator.presentation.CreatorViewModel
+import com.opuside.app.feature.pipeline.presentation.PipelineScreen
 import com.opuside.app.feature.scratch.presentation.ScratchScreen
 import com.opuside.app.feature.settings.presentation.SettingsScreen
 import com.opuside.app.feature.workflows.presentation.WorkflowsScreen
@@ -89,6 +96,13 @@ sealed class Screen(
         unselectedIcon = Icons.Outlined.PlayCircle
     )
 
+    data object Pipeline : Screen(
+        route = "pipeline",
+        title = "G",
+        selectedIcon = Icons.Filled.AutoAwesome,
+        unselectedIcon = Icons.Outlined.AutoAwesome
+    )
+
     data object Settings : Screen(
         route = "settings",
         title = "Settings",
@@ -101,6 +115,7 @@ val bottomNavItems = listOf(
     Screen.Creator,
     Screen.Analyzer,
     Screen.Workflows,
+    Screen.Pipeline,
     Screen.Scratch,
     Screen.Settings
 )
@@ -147,58 +162,43 @@ fun OpusIDENavigation(
                             }
                         }
 
-                        if (screen == Screen.Creator) {
-                            NavigationBarItem(
-                                modifier = Modifier.pointerInput(Unit) {
-                                    awaitEachGesture {
-                                        // Ждём finger down, не потребляем — onClick работает
-                                        awaitFirstDown(requireUnconsumed = false)
-
-                                        // Запускаем Job в обычном scope (не restricted)
-                                        // Через longPressTimeout он откроет QuickNav
-                                        var longPressTriggered = false
-                                        val job: Job = scope.launch {
-                                            delay(viewConfiguration.longPressTimeoutMillis)
-                                            longPressTriggered = true
-                                            showQuickNav = true
-                                        }
-
-                                        // waitForUpOrCancellation возвращает:
-                                        //   - UP event → обычный тап
-                                        //   - null → жест потреблён NavigationBarItem
-                                        // В ОБОИХ случаях это означает "палец поднят раньше таймаута"
-                                        // → отменяем Job, QuickNav не открывается
-                                        waitForUpOrCancellation()
-                                        if (!longPressTriggered) {
-                                            job.cancel()
-                                        }
+                        NavigationBarItem(
+                            modifier = if (screen == Screen.Creator) Modifier.pointerInput(Unit) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    var longPressTriggered = false
+                                    val job: Job = scope.launch {
+                                        delay(viewConfiguration.longPressTimeoutMillis)
+                                        longPressTriggered = true
+                                        showQuickNav = true
                                     }
-                                },
-                                icon = {
+                                    waitForUpOrCancellation()
+                                    if (!longPressTriggered) {
+                                        job.cancel()
+                                    }
+                                }
+                            } else Modifier,
+                            icon = {
+                                if (screen is Screen.Pipeline) {
+                                    Text(
+                                        text = "G",
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 20.sp,
+                                        color = if (selected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
                                     Icon(
                                         imageVector = if (selected) screen.selectedIcon
-                                                      else screen.unselectedIcon,
+                                        else screen.unselectedIcon,
                                         contentDescription = screen.title
                                     )
-                                },
-                                label = { Text(screen.title) },
-                                selected = selected,
-                                onClick = navigateToScreen   // тап работает как обычно
-                            )
-                        } else {
-                            NavigationBarItem(
-                                icon = {
-                                    Icon(
-                                        imageVector = if (selected) screen.selectedIcon
-                                                      else screen.unselectedIcon,
-                                        contentDescription = screen.title
-                                    )
-                                },
-                                label = { Text(screen.title) },
-                                selected = selected,
-                                onClick = navigateToScreen
-                            )
-                        }
+                                }
+                            },
+                            label = { Text(screen.title) },
+                            selected = selected,
+                            onClick = navigateToScreen
+                        )
                     }
                 }
             }
@@ -214,6 +214,7 @@ fun OpusIDENavigation(
                     AnalyzerScreen(selectedTheme = selectedTheme, onThemeChange = onThemeChange)
                 }
                 composable(Screen.Workflows.route) { WorkflowsScreen() }
+                composable(Screen.Pipeline.route) { PipelineScreen() }
                 composable(Screen.Settings.route) {
                     SettingsScreen(
                         sensitiveFeatureDisabled = sensitiveFeatureDisabled,
