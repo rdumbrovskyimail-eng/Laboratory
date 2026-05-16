@@ -10,7 +10,7 @@ import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.git.ConflictResult
 import com.opuside.app.core.git.ConflictStrategy
 import com.opuside.app.core.git.GitConflictResolver
-import com.opuside.app.core.index.RepoIndexManager
+import com.opuside.app.core.ai.RepoIndexManager
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
 import com.opuside.app.core.network.github.model.GitHubBranch
