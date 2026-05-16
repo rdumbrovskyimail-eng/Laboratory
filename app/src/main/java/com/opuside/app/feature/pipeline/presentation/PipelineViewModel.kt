@@ -26,6 +26,17 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlin.random.Random
@@ -60,7 +71,8 @@ class PipelineViewModel @Inject constructor(
     private val summarizer: PipelineSummarizer,
     private val workflowWatcher: WorkflowWatcher,
     private val repoIndexManager: RepoIndexManager,
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val secureSettings: com.opuside.app.core.security.SecureSettingsDataStore
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -118,6 +130,13 @@ class PipelineViewModel @Inject constructor(
     private val _userError = MutableStateFlow<String?>(null)
     val userError: StateFlow<String?> = _userError.asStateFlow()
 
+    /**
+     * Кэш путей файлов из репозитория. Заполняется в loadRepoStats() и
+     * переиспользуется в plan(), если getOrRefresh() вернёт null
+     * (race / cache expiry на стороне RepoIndexManager).
+     */
+    private val _filePathsCache = MutableStateFlow<List<String>>(emptyList())
+
     /** Главный job выполнения (для cancel) */
     private var pipelineJob: Job? = null
 
@@ -134,6 +153,8 @@ class PipelineViewModel @Inject constructor(
         /** Jitter delay между задачами (анти-flake GitHub) */
         private const val JITTER_MIN_MS = 400L
         private const val JITTER_MAX_MS = 1200L
+        /** Tag for logs */
+        private const val TAG = "PipelineViewModel"
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -176,24 +197,27 @@ class PipelineViewModel @Inject constructor(
 
     /**
      * Обновить статистику репо (для шапки экрана).
-     * Использует extractFilePaths() + AppSettings — не зависит от внутренней
-     * структуры RepoIndex.
+     * Использует GitHub Trees API напрямую — независимо от RepoIndexManager.
      */
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
                 val cfg = appSettings.gitHubConfig.first()
-                val index = repoIndexManager.getOrRefresh()
-                if (index == null) {
-                    _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
+                if (cfg.owner.isBlank() || cfg.repo.isBlank()) {
+                    _userError.value = "GitHub не настроен. Зайди в Settings → GitHub."
                     return@launch
                 }
-                val paths = extractFilePaths(index)
+
+                val paths = fetchFilePaths()
                 if (paths.isEmpty()) {
-                    _userError.value = "Индекс репозитория пуст или не удалось извлечь пути. " +
-                            "Проверь функцию extractFilePaths() в PipelineViewModel.kt."
+                    _userError.value = "Не удалось получить список файлов из GitHub. " +
+                            "Проверь токен, имя репо и ветку (Settings → GitHub)."
                     return@launch
                 }
+
+                // Кэшируем для использования в plan() — избегаем повторных запросов
+                _filePathsCache.value = paths
+
                 // Подсчёт по расширениям из путей
                 val byExt: Map<String, Int> = paths
                     .mapNotNull { p ->
@@ -209,8 +233,8 @@ class PipelineViewModel @Inject constructor(
                     repo = cfg.repo,
                     branch = cfg.branch,
                     totalFiles = paths.size,
-                    totalDirectories = 0,           // не вычисляем — некритично
-                    totalSizeBytes = 0L,            // нет данных без доступа к индексу
+                    totalDirectories = 0,
+                    totalSizeBytes = 0L,
                     totalSizeFormatted = "—",
                     byExtension = byExt,
                     maxDepth = paths.maxOfOrNull { it.count { c -> c == '/' } } ?: 0,
@@ -225,37 +249,119 @@ class PipelineViewModel @Inject constructor(
 
     /**
      * ═══════════════════════════════════════════════════════════════════════
-     * АДАПТЕР ДЛЯ ТВОЕГО RepoIndexManager.
+     * Получение списка путей файлов в репозитории через GitHub Trees API.
      * ═══════════════════════════════════════════════════════════════════════
      *
-     * Цель: вернуть List<String> со ВСЕМИ путями файлов в репозитории.
-     * Например: ["app/src/main/java/com/x/A.kt", "app/src/main/java/com/x/B.kt", ...]
+     * НЕ ЗАВИСИТ от пользовательского RepoIndexManager API. Делает прямой
+     * HTTP вызов на GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
+     * с авторизацией через GitHub PAT.
      *
-     * Использует reflection как FALLBACK — пытается найти getter с типичными
-     * именами (getNodes/getFiles/getPaths/getEntries) и извлечь поле path или filePath.
+     * Документация: https://docs.github.com/en/rest/git/trees
      *
-     * Если хочешь оптимизировать или твоя структура нестандартна — ЗАМЕНИ
-     * тело функции на прямой вызов:
-     *
-     *   return (index as RepoIndexManager.RepoIndex).nodes
-     *       .filter { it.isFile }
-     *       .map { it.path }
-     *
-     * (точные имена методов/полей — смотри в своём RepoIndexManager.kt)
+     * Возвращает все пути файлов (type=blob), исключая директории (type=tree).
      */
-    private fun extractFilePaths(index: Any): List<String> {
-        // Безопасно кастуем объект к нашему реальному типу RepoIndex
-        val repoIndex = index as? RepoIndexManager.RepoIndex 
-        
-        if (repoIndex == null) {
-            android.util.Log.e("PipelineViewModel", "extractFilePaths: получен объект неверного типа")
-            return emptyList()
-        }
+    private suspend fun fetchFilePaths(): List<String> = withContext(Dispatchers.IO) {
+        try {
+            val cfg = appSettings.gitHubConfig.first()
+            if (cfg.owner.isBlank() || cfg.repo.isBlank()) {
+                android.util.Log.e(TAG, "fetchFilePaths: GitHub owner/repo not configured")
+                return@withContext emptyList()
+            }
+            val branch = if (cfg.branch.isBlank()) "main" else cfg.branch
+            val token = tryGetGitHubToken()
 
-        // Возвращаем пути только для файлов (исключая директории)
-        return repoIndex.nodes
-            .filter { it.isFile }
-            .map { it.path }
+            val url = "https://api.github.com/repos/${cfg.owner}/${cfg.repo}" +
+                    "/git/trees/${branch}?recursive=1"
+
+            android.util.Log.d(TAG, "fetchFilePaths → GET $url (token=${token.isNotBlank()})")
+
+            var connection: HttpURLConnection? = null
+            try {
+                connection = (URL(url).openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+                    setRequestProperty("User-Agent", "OpusIDE-Pipeline")
+                    if (token.isNotBlank()) {
+                        setRequestProperty("Authorization", "Bearer $token")
+                    }
+                    connectTimeout = 15_000
+                    readTimeout = 30_000
+                    doInput = true
+                }
+
+                val code = connection.responseCode
+                if (code !in 200..299) {
+                    val errBody = connection.errorStream?.let {
+                        BufferedReader(InputStreamReader(it, Charsets.UTF_8))
+                            .use { r -> r.readText() }
+                    } ?: ""
+                    android.util.Log.e(TAG, "GitHub tree API: HTTP $code — ${errBody.take(200)}")
+                    return@withContext emptyList()
+                }
+
+                val body = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
+                    .use { it.readText() }
+                val json = Json.parseToJsonElement(body).jsonObject
+                val tree = json["tree"]?.jsonArray
+                if (tree == null) {
+                    android.util.Log.e(TAG, "GitHub tree response missing 'tree' field")
+                    return@withContext emptyList()
+                }
+                val truncated = json["truncated"]?.jsonPrimitive?.contentOrNull == "true"
+                if (truncated) {
+                    android.util.Log.w(TAG, "GitHub tree truncated — repo too large (>100k files)")
+                }
+
+                val paths = tree.mapNotNull { item ->
+                    val obj = item.jsonObject
+                    val type = obj["type"]?.jsonPrimitive?.contentOrNull
+                    if (type != "blob") return@mapNotNull null
+                    obj["path"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                }
+                android.util.Log.d(TAG, "fetchFilePaths: got ${paths.size} files")
+                paths
+            } finally {
+                try { connection?.disconnect() } catch (_: Exception) {}
+            }
+        } catch (e: java.net.UnknownHostException) {
+            android.util.Log.e(TAG, "fetchFilePaths: no internet")
+            emptyList()
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "fetchFilePaths failed", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Извлекает GitHub token из SecureSettingsDataStore через reflection.
+     * Пытается типичные имена: getGitHubToken, getGithubToken, getGitHubPat, getPat.
+     */
+    private suspend fun tryGetGitHubToken(): String {
+        val candidates = listOf(
+            "getGitHubToken", "getGithubToken", "getGitHubPat",
+            "getGithubPat", "getPat", "getToken", "getAccessToken",
+            "getGhToken"
+        )
+        val cls = secureSettings::class.java
+        for (name in candidates) {
+            try {
+                val method = cls.methods.firstOrNull { it.name == name } ?: continue
+                val result = method.invoke(secureSettings) ?: continue
+                @Suppress("UNCHECKED_CAST")
+                val flow = result as? kotlinx.coroutines.flow.Flow<String> ?: continue
+                val token = flow.first()
+                if (token.isNotBlank()) {
+                    android.util.Log.d(TAG, "tryGetGitHubToken: found via $name")
+                    return token
+                }
+            } catch (_: Exception) {
+                // try next candidate
+            }
+        }
+        android.util.Log.w(TAG, "tryGetGitHubToken: token not found via reflection — " +
+                "будем пробовать без токена (public repos only)")
+        return ""
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -289,24 +395,23 @@ class PipelineViewModel @Inject constructor(
                     message = "Планировщик: анализ промпта (${prompt.length}ch)..."
                 ))
 
-                // ─── Загружаем индекс репозитория и извлекаем список путей ──
-                // Это единственное место связи с твоим RepoIndexManager API.
-                // Если у тебя структура RepoIndex отличается — адаптируй extractFilePaths() ниже.
-                val index = try {
-                    repoIndexManager.getOrRefresh()
-                } catch (e: Exception) {
-                    _userError.value = "Ошибка загрузки индекса: ${e.message}"
-                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
-                    return@launch
+                // ─── Получаем список путей файлов через GitHub Trees API ──
+                // Используем кэш если он непустой (заполнен в loadRepoStats при
+                // открытии экрана), иначе делаем свежий запрос.
+                val filePaths: List<String> = run {
+                    val cached = _filePathsCache.value
+                    if (cached.isNotEmpty()) {
+                        android.util.Log.d(TAG, "plan: using cached ${cached.size} paths")
+                        cached
+                    } else {
+                        val fresh = fetchFilePaths()
+                        if (fresh.isNotEmpty()) _filePathsCache.value = fresh
+                        fresh
+                    }
                 }
-                if (index == null) {
-                    _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
-                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
-                    return@launch
-                }
-                val filePaths = extractFilePaths(index)
                 if (filePaths.isEmpty()) {
-                    _userError.value = "Репозиторий пуст или индекс не содержит файлов"
+                    _userError.value = "Не удалось получить список файлов из GitHub. " +
+                            "Проверь токен и настройки репо (Settings → GitHub)."
                     _state.update { it.copy(phase = PipelinePhase.IDLE) }
                     return@launch
                 }
@@ -753,6 +858,7 @@ class PipelineViewModel @Inject constructor(
         _totalCostEur.value = 0.0
         _totalTokens.value = 0
         _userError.value = null
+        _filePathsCache.value = emptyList()  // сбрасываем кэш на случай смены настроек
     }
 
     private fun resetForNewRun() {
@@ -763,6 +869,7 @@ class PipelineViewModel @Inject constructor(
         _totalCostEur.value = 0.0
         _totalTokens.value = 0
         _userError.value = null
+        // _filePathsCache НЕ сбрасываем — переиспользуем в новом прогоне
     }
 
     // ═══════════════════════════════════════════════════════════════════════
