@@ -430,45 +430,6 @@ You MUST:
         }
     }
 
-    /**
-     * Результат проверки существования файла.
-     */
-    private data class ExistsCheckResult(
-        val exists: Boolean,
-        val fatalError: String? = null
-    )
-
-    private suspend fun checkFileExists(path: String): ExistsCheckResult = withContext(Dispatchers.IO) {
-        val branch = try {
-            appSettings.gitHubConfig.first().branch
-        } catch (e: Exception) {
-            return@withContext ExistsCheckResult(false, "Не удалось получить настройки: ${e.message}")
-        }
-        try {
-            // getOrThrow вместо getOrNull — иначе catch ниже мёртв, и 401/403 будут
-            // тихо интерпретироваться как exists=false, что приведёт к попытке create
-            // и провалу позже на коммите без понятной диагностики.
-            gitHubClient.getFileContent(path, branch).getOrThrow()
-            ExistsCheckResult(exists = true)
-        } catch (e: GitHubApiException) {
-            when {
-                e.isNotFound -> ExistsCheckResult(exists = false)
-                e.isUnauthorized -> ExistsCheckResult(false, "401 Unauthorized")
-                e.isForbidden -> ExistsCheckResult(false, "403 Forbidden")
-                else -> {
-                    // Сетевая ошибка — считаем что не существует, попытаемся создать
-                    Log.w(TAG, "checkFileExists для '$path': ${e.message}")
-                    ExistsCheckResult(exists = false)
-                }
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "checkFileExists для '$path': ${e.message}")
-            ExistsCheckResult(exists = false)
-        }
-    }
-
     // ═══════════════════════════════════════════════════════════════════════
     // READ FILE
     // ═══════════════════════════════════════════════════════════════════════
