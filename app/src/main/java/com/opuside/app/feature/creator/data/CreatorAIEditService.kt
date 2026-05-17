@@ -198,60 +198,71 @@ Example 2 — Delete a function:
         fileName: String,
         instructions: String,
         model: AiModel = AiModel.GEMINI_3_1_FLASH_LITE,
-        usePipelineKeys: Boolean = false
+        usePipelineKeys: Boolean = false,
+        customModelApiId: String? = null
     ): Result<EditResult> = withContext(Dispatchers.IO) {
         try {
             val lineCount = fileContent.lines().size
             val useLineNumbers = lineCount > LINE_NUMBER_THRESHOLD
-            Log.d(TAG, "📤 Edit request: $fileName ($lineCount lines, model=${model.apiId})")
+            val effectiveApiId = customModelApiId?.trim()?.ifBlank { null } ?: model.apiId
+            Log.d(TAG, "📤 Edit: $fileName ($lineCount lines, model=$effectiveApiId)")
 
             val systemPrompt = buildSystemPrompt(useLineNumbers)
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
-            val (apiKey, keyIdx) = if (usePipelineKeys) {
-                pipelineKeyRotator.currentKey()
-                    ?: return@withContext Result.failure(Exception("Добавьте Gemini API ключ на экране Pipeline"))
+            // Определяем источник ключа
+            var currentApiKey: String
+            var currentKeyIdx: Int
+            if (usePipelineKeys) {
+                val info = pipelineKeyRotator.currentKey()
+                    ?: return@withContext Result.failure(
+                        Exception("Добавьте Gemini API ключ на экране Pipeline")
+                    )
+                currentApiKey = info.first
+                currentKeyIdx = info.second
             } else {
-                val k = try { secureSettings.getGeminiApiKey().first() } catch (_: Exception) { "" }
-                if (k.isBlank()) return@withContext Result.failure(Exception("Gemini API key не настроен"))
-                k to -1
+                currentApiKey = try { secureSettings.getGeminiApiKey().first() } catch (_: Exception) { "" }
+                currentKeyIdx = -1
+                if (currentApiKey.isBlank()) {
+                    return@withContext Result.failure(Exception("Gemini API key не настроен"))
+                }
             }
 
-            var rawResponse: Result<Triple<String, Int, Int>>
+            // Цикл с ротацией при 429 (только если usePipelineKeys)
+            var rawResponse: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
-            do {
-                rawResponse = callGeminiApi(systemPrompt, userMessage, model, apiKey)
-                if (rawResponse.isFailure && usePipelineKeys && attempts < 3) {
-                    val error = rawResponse.exceptionOrNull()?.message ?: ""
-                    if (error.contains("429")) {
-                        pipelineKeyRotator.burnAndRotate(keyIdx)
-                        attempts++
-                        continue
-                    }
-                }
-                break
-            } while (true)
+            while (true) {
+                rawResponse = callGeminiApi(systemPrompt, userMessage, effectiveApiId, currentApiKey)
+                if (rawResponse.isSuccess) break
+                if (!usePipelineKeys || attempts >= 2) break
+                val errMsg = rawResponse.exceptionOrNull()?.message?.lowercase() ?: ""
+                val isQuota = "429" in errMsg || "rate limit" in errMsg ||
+                              "quota" in errMsg || "exceeded" in errMsg
+                if (!isQuota) break
+                Log.w(TAG, "⚠️ Quota на ключе #$currentKeyIdx, переключаемся...")
+                val next = pipelineKeyRotator.burnAndRotate(currentKeyIdx) ?: break
+                currentApiKey = next.first
+                currentKeyIdx = next.second
+                attempts++
+            }
 
-            val (content, inputTokens, outputTokens) = rawResponse.getOrElse { return@withContext Result.failure(it) }
+            val (content, inputTokens, outputTokens) = rawResponse.getOrElse {
+                return@withContext Result.failure(it)
+            }
 
-            val content = rawResponse.first
-            val inputTokens = rawResponse.second
-            val outputTokens = rawResponse.third
-
-            val costUSD = (inputTokens * model.costPerMInputUsd + outputTokens * model.costPerMOutputUsd) / 1_000_000.0
+            val costUSD = (inputTokens * model.costPerMInputUsd +
+                          outputTokens * model.costPerMOutputUsd) / 1_000_000.0
             val costEUR = costUSD * 0.92
 
-            Log.d(TAG, "✅ ${model.displayName}: ${inputTokens}in + ${outputTokens}out = €${String.format("%.5f", costEUR)}")
+            Log.d(TAG, "✅ $effectiveApiId: ${inputTokens}in + ${outputTokens}out = €${String.format("%.5f", costEUR)}")
 
             val result = parseEditResponse(content, inputTokens, outputTokens, costEUR, model)
             if (result.blocks.isEmpty()) Log.w(TAG, "⚠️ No blocks parsed. Summary: ${result.summary}")
-
             Result.success(result)
-
         } catch (e: java.net.SocketTimeoutException) {
             Result.failure(Exception("Таймаут. Попробуйте ещё раз."))
         } catch (e: java.net.UnknownHostException) {
-            Result.failure(Exception("Нет подключения к интернету."))
+            Result.failure(Exception("Нет интернета."))
         } catch (e: Exception) {
             Log.e(TAG, "❌ processEdit failed", e)
             Result.failure(e)
@@ -265,10 +276,10 @@ Example 2 — Delete a function:
     private suspend fun callGeminiApi(
         systemPrompt: String,
         userMessage: String,
-        model: AiModel,
+        modelApiId: String,
         apiKey: String
     ): Result<Triple<String, Int, Int>> {
-        val url = "$GEMINI_API_BASE_URL/${model.apiId}:generateContent?key=$apiKey"
+        val url = "$GEMINI_API_BASE_URL/$modelApiId:generateContent?key=$apiKey"
 
         val requestBody = JSONObject().apply {
             put("system_instruction", JSONObject().apply {
