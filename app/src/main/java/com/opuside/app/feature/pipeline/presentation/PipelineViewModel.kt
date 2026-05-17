@@ -76,7 +76,8 @@ class PipelineViewModel @Inject constructor(
     private val workflowWatcher: WorkflowWatcher,
     private val repoIndexManager: RepoIndexManager,
     private val appSettings: AppSettings,
-    private val secureSettings: com.opuside.app.core.security.SecureSettingsDataStore
+    private val secureSettings: com.opuside.app.core.security.SecureSettingsDataStore,
+    private val keyRotator: com.opuside.app.feature.pipeline.data.PipelineKeyRotator
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -88,6 +89,15 @@ class PipelineViewModel @Inject constructor(
 
     private val _userPrompt = MutableStateFlow("")
     val userPrompt: StateFlow<String> = _userPrompt.asStateFlow()
+
+    private val _pipelineKeyA = MutableStateFlow("")
+    val pipelineKeyA: StateFlow<String> = _pipelineKeyA.asStateFlow()
+
+    private val _pipelineKeyB = MutableStateFlow("")
+    val pipelineKeyB: StateFlow<String> = _pipelineKeyB.asStateFlow()
+
+    private val _pipelineActiveKey = MutableStateFlow(0)
+    val pipelineActiveKey: StateFlow<Int> = _pipelineActiveKey.asStateFlow()
 
     private val _geminiLog = MutableStateFlow<List<GeminiLogEvent>>(emptyList())
     val geminiLog: StateFlow<List<GeminiLogEvent>> = _geminiLog.asStateFlow()
@@ -172,6 +182,12 @@ class PipelineViewModel @Inject constructor(
                     }
                 }
         }
+
+        viewModelScope.launch {
+            _pipelineKeyA.value = try { secureSettings.pipelineKeyA.first() } catch (_: Exception) { "" }
+            _pipelineKeyB.value = try { secureSettings.pipelineKeyB.first() } catch (_: Exception) { "" }
+            _pipelineActiveKey.value = try { secureSettings.pipelineActiveKeyIndex.first() } catch (_: Exception) { 0 }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -202,6 +218,20 @@ class PipelineViewModel @Inject constructor(
      */
     fun setLogFilter(taskId: String?) {
         _state.update { it.copy(logFilterTaskId = taskId) }
+    }
+
+    fun setPipelineKeyA(v: String) {
+        _pipelineKeyA.value = v
+        viewModelScope.launch { secureSettings.setPipelineKeyA(v) }
+    }
+    fun setPipelineKeyB(v: String) {
+        _pipelineKeyB.value = v
+        viewModelScope.launch { secureSettings.setPipelineKeyB(v) }
+    }
+    fun setPipelineActiveKey(index: Int) {
+        val clamped = index.coerceIn(0, 1)
+        _pipelineActiveKey.value = clamped
+        viewModelScope.launch { secureSettings.setPipelineActiveKeyIndex(clamped) }
     }
 
     /**
