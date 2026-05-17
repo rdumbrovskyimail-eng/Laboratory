@@ -709,7 +709,6 @@ class PipelineViewModel @Inject constructor(
         _totalCostEur.value = 0.0
         _totalTokens.value = 0
         _userError.value = null
-        _filePathsCache.value = emptyList()  // сбрасываем кэш на случай смены настроек
     }
 
     private fun resetForNewRun() {
@@ -720,7 +719,6 @@ class PipelineViewModel @Inject constructor(
         _totalCostEur.value = 0.0
         _totalTokens.value = 0
         _userError.value = null
-        // _filePathsCache НЕ сбрасываем — переиспользуем в новом прогоне
     }
 
     // ═══════════════════════════════════════════════════════════════════════
