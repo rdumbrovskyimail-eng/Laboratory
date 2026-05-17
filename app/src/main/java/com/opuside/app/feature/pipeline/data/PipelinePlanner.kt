@@ -37,7 +37,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class PipelinePlanner @Inject constructor(
-    private val secureSettings: SecureSettingsDataStore
+    private val secureSettings: SecureSettingsDataStore,
+    private val keyRotator: PipelineKeyRotator
 ) {
 
     companion object {
@@ -234,13 +235,11 @@ No markdown. No code fences. No commentary. Pure JSON.
                 )
             }
 
-            // 2. Получаем API ключ Gemini
-            val apiKey = secureSettings.getGeminiApiKey().first()
-            if (apiKey.isBlank()) {
-                return@withContext Result.failure(
-                    IllegalStateException("Gemini API key не настроен. Укажи в Settings → Gemini.")
+            // 2. Получаем API ключ Gemini с ротацией
+            var apiKey = keyRotator.currentKey()
+                ?: return@withContext Result.failure(
+                    IllegalStateException("Добавьте Gemini API ключ на экране Pipeline.")
                 )
-            }
 
             // 3. Строим компактный список путей для AI
             val pathsText = filePaths.joinToString("\n")
@@ -256,8 +255,22 @@ No markdown. No code fences. No commentary. Pure JSON.
 
             Log.d(TAG, "📤 Planning: prompt=${userPrompt.length}ch, files=${filePaths.size}")
 
-            // 5. Вызов Gemini API
-            val (rawJson, inputTokens, outputTokens) = callGemini(apiKey, userMessage)
+            // 5. Вызов Gemini API с возможной ротацией ключа
+            var result = callGemini(apiKey, userMessage)
+            if (result.isFailure && isQuotaError(result.exceptionOrNull()?.message)) {
+                val nextKey = keyRotator.burnAndRotate(apiKey)
+                if (nextKey != null) {
+                    Log.w(TAG, "⚠️ Quota exceeded, rotating key...")
+                    apiKey = nextKey
+                    result = callGemini(apiKey, userMessage)
+                } else {
+                    return@withContext Result.failure(
+                        Exception("Оба Gemini ключа исчерпали квоту, попробуйте через 5 минут")
+                    )
+                }
+            }
+
+            val (rawJson, inputTokens, outputTokens) = result
                 .getOrElse { return@withContext Result.failure(it) }
 
             // 6. Парсинг JSON
@@ -728,5 +741,10 @@ No markdown. No code fences. No commentary. Pure JSON.
             500, 502, 503 -> "Планировщик: сервер Gemini временно недоступен"
             else -> "Планировщик: ошибка $code — $msg"
         }
+    }
+
+    private fun isQuotaError(message: String?): Boolean {
+        val m = message?.lowercase() ?: return false
+        return m.contains("429") || m.contains("quota") || m.contains("exceeded") || m.contains("rate limit")
     }
 }
