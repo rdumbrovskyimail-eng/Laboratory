@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
@@ -601,9 +602,10 @@ class PipelineViewModel @Inject constructor(
         var receivedFatal = false
 
         try {
-            executor.executeTask(task, isRetryPass).collect { event ->
-                when (event) {
-                    is PipelineExecutor.ExecutorEvent.Gemini -> {
+            executor.lockFor(task.filePath).withLock {
+                executor.executeTask(task, isRetryPass).collect { event ->
+                    when (event) {
+                        is PipelineExecutor.ExecutorEvent.Gemini -> {
                         appendGeminiLog(event.log)
                     }
                     is PipelineExecutor.ExecutorEvent.Repo -> {
