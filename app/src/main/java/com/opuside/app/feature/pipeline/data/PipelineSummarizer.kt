@@ -2,7 +2,6 @@ package com.opuside.app.feature.pipeline.data
 
 import android.util.Log
 import com.opuside.app.core.security.SecureSettingsDataStore
-import com.opuside.app.feature.pipeline.data.key.PipelineKeyRotator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
@@ -13,20 +12,6 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * PIPELINE SUMMARIZER v1.0
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Третий Gemini-вызов в конвейере. Получает на вход результаты выполнения
- * всех задач и возвращает человекочитаемый отчёт на русском языке для
- * экрана "Результат".
- *
- * Это не критичный компонент — если он упадёт, ViewModel сгенерирует
- * fallback-отчёт обычной конкатенацией текста.
- *
- * Стоимость: ~3K input + ~1K output = €0.00002 за вызов.
- */
 @Singleton
 class PipelineSummarizer @Inject constructor(
     private val secureSettings: SecureSettingsDataStore,
@@ -53,35 +38,10 @@ Start with a one-line headline:
 Then THREE sections:
 
 1. SUMMARY (one paragraph, Russian)
-   - What was the overall goal of this pipeline run (infer from task names)
-   - How many files were modified successfully
-   - How many were unchanged (no edits needed)
-   - How many failed
-   - Total cost in EUR
-
 2. SUCCESSFUL CHANGES (bulleted list, Russian)
-   - For each successful file: brief description of what was changed
-   - Include commit SHA (first 8 chars)
-   - Mark "auto-resolved conflict" if applicable
-
 3. FAILED FILES (bulleted list, Russian, only if any failed)
-   - For each failed file:
-     • File path
-     • Error code and what it means
-     • Last error message (if useful)
-     • Suggested action for the user (concrete, actionable)
 
-═══ STYLE RULES ═══
-
-- Russian language throughout
-- Use markdown formatting: **bold** for emphasis, `code` for paths/SHAs
-- Be concise but specific
-- If a file had a NOT_FOUND_BLOCKS error, suggest verifying the AI
-  understood the file structure correctly
-- If a file had HTTP_409_UNRESOLVED, suggest checking for parallel edits
-- If HTTP_429_RATE_LIMIT, suggest waiting and re-running
-- Total report length: 300-600 words
-
+Russian language throughout. Markdown formatting. 300-600 words.
 OUTPUT only the report text. No JSON, no XML, no code fences.
 """.trimIndent()
     }
@@ -93,11 +53,13 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         totalTokens: Int
     ): String = withContext(Dispatchers.IO) {
         try {
-            val apiKey = keyRotator.getValidKey() ?: return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
+            // Получаем активный ключ через ротатор
+            var currentKeyInfo = keyRotator.currentKey()
+                ?: return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
 
             val userMessage = buildString {
                 appendLine("═══ ORIGINAL USER PROMPT ═══")
-                appendLine(userPrompt.take(2000))   // обрезаем чтобы не раздувать токены
+                appendLine(userPrompt.take(2000))
                 if (userPrompt.length > 2000) appendLine("... (truncated)")
                 appendLine()
                 appendLine("═══ PIPELINE RESULTS ═══")
@@ -119,20 +81,40 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                     appendLine("Attempts: ${task.attempts}")
                     task.commitSha?.let { appendLine("Commit: ${it.take(12)}") }
                     if (task.resolvedConflict) appendLine("⚠️ Conflict auto-resolved")
-                    task.errorCode?.let {
-                        appendLine("Error code: ${it.name} (${it.displayName})")
-                    }
-                    task.lastError?.let {
-                        appendLine("Last error: ${it.take(200)}")
-                    }
+                    task.errorCode?.let { appendLine("Error: ${it.name} (${it.displayName})") }
+                    task.lastError?.let { appendLine("Last error: ${it.take(200)}") }
                     if (task.operation == TaskOperation.CREATE) {
-                        appendLine("Content size: ${task.newFileContent?.length ?: 0} characters")
+                        appendLine("Content size: ${task.newFileContent?.length ?: 0} chars")
                     } else {
                         appendLine("Instructions preview: ${task.instructions.take(150)}...")
                     }
                 }
             }
 
+            // Цикл попыток с ротацией ключей при 429
+            var attempts = 0
+            while (attempts < 2) {
+                val (apiKey, idx) = currentKeyInfo!!
+                val result = callOnce(apiKey, userMessage)
+                if (result != null) return@withContext result
+
+                // Запрос упал — пробуем понять, был ли это 429
+                val next = keyRotator.burnAndRotate(idx)
+                if (next == null) break
+                currentKeyInfo = next
+                attempts++
+            }
+            fallbackReport(tasks, totalCostEur, totalTokens)
+        } catch (e: Exception) {
+            Log.w(TAG, "Summarizer failed: ${e.message}")
+            fallbackReport(tasks, totalCostEur, totalTokens)
+        }
+    }
+
+    /** Один HTTP-запрос к Gemini. null = ошибка (включая 429). */
+    private fun callOnce(apiKey: String, userMessage: String): String? {
+        var connection: HttpURLConnection? = null
+        return try {
             val requestBody = buildJsonObject {
                 put("system_instruction", buildJsonObject {
                     put("parts", JsonArray(listOf(
@@ -153,67 +135,51 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                 })
             }
 
-            val url = "$BASE_URL/$MODEL:generateContent"
-            var connection: HttpURLConnection? = null
-            try {
-                connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                    setRequestProperty("x-goog-api-key", apiKey)
-                    setRequestProperty("Accept", "application/json")
-                    connectTimeout = 30_000
-                    readTimeout = 60_000
-                    doOutput = true
-                    doInput = true
-                }
-                connection.outputStream.use {
-                    it.write(requestBody.toString().toByteArray(Charsets.UTF_8))
-                }
-
-                if (connection.responseCode !in 200..299) {
-                    Log.w(TAG, "Summarizer HTTP ${connection.responseCode} — using fallback")
-                    return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
-                }
-
-                val responseBody = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
-                    .use { it.readText() }
-                val json = Json.parseToJsonElement(responseBody).jsonObject
-
-                // finishReason check (SAFETY/RECITATION → пустой ответ)
-                val candidate = json["candidates"]?.jsonArray?.firstOrNull()
-                    ?: return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
-                val finishReason = candidate.jsonObject["finishReason"]?.jsonPrimitive?.contentOrNull
-                if (finishReason != null && finishReason != "STOP" && finishReason != "MAX_TOKENS") {
-                    Log.w(TAG, "Summarizer finishReason=$finishReason — using fallback")
-                    return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
-                }
-
-                val text = candidate.jsonObject["content"]?.jsonObject
-                    ?.get("parts")?.jsonArray
-                    ?.joinToString("") { part ->
-                        part.jsonObject["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                    }
-                    ?.takeIf { it.isNotBlank() }
-                    ?: return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
-
-                text.trim()
-            } finally {
-                try { connection?.disconnect() } catch (_: Exception) {}
+            connection = (URL("$BASE_URL/$MODEL:generateContent").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("x-goog-api-key", apiKey)
+                setRequestProperty("Accept", "application/json")
+                connectTimeout = 30_000
+                readTimeout = 60_000
+                doOutput = true
+                doInput = true
+            }
+            connection.outputStream.use {
+                it.write(requestBody.toString().toByteArray(Charsets.UTF_8))
             }
 
+            if (connection.responseCode !in 200..299) {
+                Log.w(TAG, "Summarizer HTTP ${connection.responseCode}")
+                return null
+            }
+
+            val responseBody = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
+                .use { it.readText() }
+            val json = Json.parseToJsonElement(responseBody).jsonObject
+            val candidate = json["candidates"]?.jsonArray?.firstOrNull() ?: return null
+            val finishReason = candidate.jsonObject["finishReason"]?.jsonPrimitive?.contentOrNull
+            if (finishReason != null && finishReason != "STOP" && finishReason != "MAX_TOKENS") return null
+
+            val text = candidate.jsonObject["content"]?.jsonObject
+                ?.get("parts")?.jsonArray
+                ?.joinToString("") { part ->
+                    part.jsonObject["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                }
+                ?.takeIf { it.isNotBlank() }
+                ?: return null
+
+            text.trim()
         } catch (e: Exception) {
-            Log.w(TAG, "Summarizer failed: ${e.message} — using fallback")
-            fallbackReport(tasks, totalCostEur, totalTokens)
+            Log.w(TAG, "callOnce failed: ${e.message}")
+            null
+        } finally {
+            try { connection?.disconnect() } catch (_: Exception) {}
         }
     }
 
-    /**
-     * Fallback-отчёт: если AI-summarizer недоступен, генерируем простой текст.
-     */
     private fun fallbackReport(
-        tasks: List<FileTask>,
-        totalCostEur: Double,
-        totalTokens: Int
+        tasks: List<FileTask>, totalCostEur: Double, totalTokens: Int
     ): String = buildString {
         val success = tasks.filter { it.status == TaskStatus.SUCCESS }
         val noChanges = tasks.filter { it.status == TaskStatus.NO_CHANGES_NEEDED }
@@ -223,56 +189,36 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
             success.isEmpty() && failed.isNotEmpty() -> "🔴 Pipeline failed"
             else -> "🟡 Pipeline complete with errors"
         }
-
         appendLine("$headline: ${success.size + noChanges.size}/${tasks.size} success, ${failed.size} failed")
         appendLine()
         appendLine("**Сводка**")
         appendLine("Обработано задач: ${tasks.size}")
-        appendLine("  • Создано новых файлов: ${tasks.count { it.operation == TaskOperation.CREATE && it.status == TaskStatus.SUCCESS }}")
-        appendLine("  • Изменено существующих: ${tasks.count { it.operation == TaskOperation.MODIFY && it.status == TaskStatus.SUCCESS }}")
+        appendLine("  • Создано: ${tasks.count { it.operation == TaskOperation.CREATE && it.status == TaskStatus.SUCCESS }}")
+        appendLine("  • Изменено: ${tasks.count { it.operation == TaskOperation.MODIFY && it.status == TaskStatus.SUCCESS }}")
         appendLine("  • Без изменений: ${noChanges.size}")
         appendLine("  • Провалено: ${failed.size}")
-        appendLine("Общая стоимость: €${String.format(java.util.Locale.US, "%.4f", totalCostEur)}")
-        appendLine("Токенов потрачено: $totalTokens")
+        appendLine("Стоимость: €${String.format(java.util.Locale.US, "%.4f", totalCostEur)}")
+        appendLine("Токенов: $totalTokens")
         appendLine()
-
-        val createdSuccess = success.filter { it.operation == TaskOperation.CREATE }
-        val modifiedSuccess = success.filter { it.operation == TaskOperation.MODIFY }
-
-        if (createdSuccess.isNotEmpty()) {
-            appendLine("**➕ Созданы новые файлы**")
-            for (t in createdSuccess) {
-                val sha = t.commitSha?.take(8) ?: "—"
-                appendLine("• `${t.filePath}` → `$sha`")
-            }
+        success.filter { it.operation == TaskOperation.CREATE }.takeIf { it.isNotEmpty() }?.let {
+            appendLine("**➕ Созданы файлы**")
+            for (t in it) appendLine("• `${t.filePath}` → `${t.commitSha?.take(8) ?: "—"}`")
             appendLine()
         }
-
-        if (modifiedSuccess.isNotEmpty()) {
-            appendLine("**✏️ Изменены существующие файлы**")
-            for (t in modifiedSuccess) {
-                val sha = t.commitSha?.take(8) ?: "—"
+        success.filter { it.operation == TaskOperation.MODIFY }.takeIf { it.isNotEmpty() }?.let {
+            appendLine("**✏️ Изменены файлы**")
+            for (t in it) {
                 val conflict = if (t.resolvedConflict) " ⚠️ auto-resolved" else ""
-                appendLine("• `${t.filePath}` → `$sha`$conflict")
+                appendLine("• `${t.filePath}` → `${t.commitSha?.take(8) ?: "—"}`$conflict")
             }
             appendLine()
         }
-
-        if (noChanges.isNotEmpty()) {
-            appendLine("**Без изменений**")
-            for (t in noChanges) {
-                appendLine("• `${t.filePath}` — AI не нашёл что менять")
-            }
-            appendLine()
-        }
-
         if (failed.isNotEmpty()) {
-            appendLine("**Провалены окончательно**")
+            appendLine("**Провалены**")
             for (t in failed) {
                 appendLine("• `${t.filePath}`")
-                appendLine("  Код: `${t.errorCode?.name ?: "UNKNOWN"}` — ${t.errorCode?.displayName ?: "неизвестная ошибка"}")
+                appendLine("  Код: `${t.errorCode?.name ?: "UNKNOWN"}` — ${t.errorCode?.displayName ?: ""}")
                 t.lastError?.let { appendLine("  Ошибка: ${it.take(200)}") }
-                appendLine("  Попыток: ${t.attempts}")
             }
         }
     }
