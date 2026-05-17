@@ -7,6 +7,7 @@ import android.util.Base64
 import androidx.biometric.BiometricPrompt
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.fragment.app.FragmentActivity
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -49,6 +50,10 @@ class SecureSettingsDataStore @Inject constructor(
         private val KEY_GEMINI_IV = stringPreferencesKey("gemini_api_iv_v1")
         private val GEMINI_API_KEYS_JSON = stringPreferencesKey("gemini_api_keys_json")
         private val GEMINI_ACTIVE_KEY_INDEX = intPreferencesKey("gemini_active_key_index")
+        val PIPELINE_GEMINI_KEY_A = stringPreferencesKey("pipeline_gemini_key_a")
+        val PIPELINE_GEMINI_KEY_B = stringPreferencesKey("pipeline_gemini_key_b")
+        val PIPELINE_GEMINI_ACTIVE = intPreferencesKey("pipeline_gemini_active")
+        val PIPELINE_GEMINI_MODEL = stringPreferencesKey("pipeline_gemini_model")
 
         private val KEY_DEEPSEEK_API = stringPreferencesKey("deepseek_api_encrypted_v1")
         private val KEY_DEEPSEEK_IV = stringPreferencesKey("deepseek_api_iv_v1")
@@ -371,6 +376,34 @@ class SecureSettingsDataStore @Inject constructor(
 
     fun getGeminiApiKey(): Flow<String> =
         getDecryptedKeyFlow("GeminiApiKey", KEY_GEMINI_API, KEY_GEMINI_IV)
+
+    val pipelineKeyA: Flow<String> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[PIPELINE_GEMINI_KEY_A] ?: "" }
+    suspend fun setPipelineKeyA(v: String) {
+        dataStore.edit { it[PIPELINE_GEMINI_KEY_A] = v }
+    }
+
+    val pipelineKeyB: Flow<String> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[PIPELINE_GEMINI_KEY_B] ?: "" }
+    suspend fun setPipelineKeyB(v: String) {
+        dataStore.edit { it[PIPELINE_GEMINI_KEY_B] = v }
+    }
+
+    val pipelineActiveKeyIndex: Flow<Int> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[PIPELINE_GEMINI_ACTIVE] ?: 0 }
+    suspend fun setPipelineActiveKeyIndex(i: Int) {
+        dataStore.edit { it[PIPELINE_GEMINI_ACTIVE] = i.coerceIn(0, 1) }
+    }
+
+    val pipelineGeminiModel: Flow<String> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[PIPELINE_GEMINI_MODEL] ?: "" }
+    suspend fun setPipelineGeminiModel(v: String) {
+        dataStore.edit { it[PIPELINE_GEMINI_MODEL] = v }
+    }
 
     suspend fun setGeminiApiKeys(keys: List<GeminiKeyEntry>) {
         val json = org.json.JSONArray()
