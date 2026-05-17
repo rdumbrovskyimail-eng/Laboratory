@@ -2,8 +2,8 @@ package com.opuside.app.feature.pipeline.data
 
 import android.util.Log
 import com.opuside.app.core.security.SecureSettingsDataStore
+import com.opuside.app.feature.pipeline.data.key.PipelineKeyRotator
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import java.io.BufferedReader
@@ -29,7 +29,8 @@ import javax.inject.Singleton
  */
 @Singleton
 class PipelineSummarizer @Inject constructor(
-    private val secureSettings: SecureSettingsDataStore
+    private val secureSettings: SecureSettingsDataStore,
+    private val keyRotator: PipelineKeyRotator
 ) {
     companion object {
         private const val TAG = "PipelineSummarizer"
@@ -92,10 +93,7 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         totalTokens: Int
     ): String = withContext(Dispatchers.IO) {
         try {
-            val apiKey = secureSettings.getGeminiApiKey().first()
-            if (apiKey.isBlank()) {
-                return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
-            }
+            val apiKey = keyRotator.getValidKey() ?: return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
 
             val userMessage = buildString {
                 appendLine("═══ ORIGINAL USER PROMPT ═══")
