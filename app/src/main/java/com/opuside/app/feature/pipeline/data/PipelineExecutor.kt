@@ -363,41 +363,37 @@ You MUST:
             taskId = taskId
         )))
 
-        // Проверим что файл не существует (защита от случайной перезаписи)
-        val existsCheck = checkFileExists(task.filePath)
-        if (existsCheck.exists) {
-            send(ExecutorEvent.Repo(RepoLogEvent(
-                type = RepoEventType.ERROR,
-                icon = "⚠️",
-                message = "Файл уже существует: ${task.filePath} — пропускаем создание",
-                taskId = taskId
-            )))
-            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                errorCode = TaskErrorCode.FILE_ALREADY_EXISTS,
-                message = "Файл ${task.filePath} уже существует, создание пропущено"
-            )))
-            return
-        }
-        if (existsCheck.fatalError != null) {
-            send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
-                TaskErrorCode.UNKNOWN, existsCheck.fatalError
-            )))
-            return
+        // Проверяем существует ли файл, чтобы получить его SHA (для возможности перезаписи)
+        val branch = appSettings.gitHubConfig.first().branch
+        var existingSha: String? = null
+        
+        try {
+            existingSha = gitHubClient.getFileContent(task.filePath, branch).getOrNull()?.sha
+            if (existingSha != null) {
+                send(ExecutorEvent.Repo(RepoLogEvent(
+                    type = RepoEventType.INFO,
+                    icon = "🔄",
+                    message = "Файл существует: ${task.filePath} — будет перезаписан",
+                    taskId = taskId
+                )))
+            } else {
+                send(ExecutorEvent.Repo(RepoLogEvent(
+                    type = RepoEventType.INFO,
+                    icon = "✓",
+                    message = "Путь свободен: ${task.filePath}",
+                    taskId = taskId
+                )))
+            }
+        } catch (e: Exception) {
+            // Игнорируем ошибки сети здесь, commit() сам с ними разберется
         }
 
-        send(ExecutorEvent.Repo(RepoLogEvent(
-            type = RepoEventType.INFO,
-            icon = "✓",
-            message = "Путь свободен: ${task.filePath}",
-            taskId = taskId
-        )))
-
-        // Коммитим новый файл (sha=null означает CREATE для GitHub API)
+        // Коммитим файл (если sha != null, это будет OVERWRITE, иначе CREATE)
         val outcome = commit(
             path = task.filePath,
             content = content,
-            initialSha = null,
-            commitMessage = "[Pipeline] CREATE ${task.filePath.substringAfterLast('/')}",
+            initialSha = existingSha,
+            commitMessage = "[Pipeline] " + (if (existingSha != null) "OVERWRITE" else "CREATE") + " ${task.filePath.substringAfterLast('/')}",
             taskId = taskId
         ) { event -> send(event) }
 
