@@ -407,7 +407,7 @@ No markdown. No code fences. No commentary. Pure JSON.
 
         // Имя файла
         val nameFromPath = rawPath?.substringAfterLast('/')?.takeIf {
-            it.contains('.') && (it.endsWith(".kt") || it.endsWith(".xml") || it.endsWith(".java"))
+            it.contains('.') // Принимаем абсолютно любые файлы с расширением (.json, .txt, .kts и т.д.)
         }
         val nameFromContent = deriveFileNameFromContent(content)
         val finalName = nameFromPath ?: nameFromContent ?: "GeneratedFile${index + 1}.kt"
