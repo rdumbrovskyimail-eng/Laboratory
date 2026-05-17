@@ -24,6 +24,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -118,6 +120,9 @@ fun PipelineScreen(
     val totalCost by viewModel.totalCostEur.collectAsStateWithLifecycle()
     val totalTokens by viewModel.totalTokens.collectAsStateWithLifecycle()
     val userError by viewModel.userError.collectAsStateWithLifecycle()
+    val pipelineKeyA by viewModel.pipelineKeyA.collectAsStateWithLifecycle()
+    val pipelineKeyB by viewModel.pipelineKeyB.collectAsStateWithLifecycle()
+    val pipelineActiveKey by viewModel.pipelineActiveKey.collectAsStateWithLifecycle()
 
     var promptExpanded by remember { mutableStateOf(true) }
 
@@ -159,6 +164,17 @@ fun PipelineScreen(
                 onToggleExpanded = { promptExpanded = !promptExpanded },
                 isRunning = state.isRunning,
                 phase = state.phase
+            )
+
+            // ═══ PIPELINE KEYS ════════════════════════════════════════════
+            PipelineKeysSection(
+                keyA = pipelineKeyA,
+                keyB = pipelineKeyB,
+                activeIndex = pipelineActiveKey,
+                enabled = !state.isRunning,
+                onKeyAChange = viewModel::setPipelineKeyA,
+                onKeyBChange = viewModel::setPipelineKeyB,
+                onActiveChange = viewModel::setPipelineActiveKey
             )
 
             // ═══ STATUS BUTTON + STOP ═════════════════════════════════════
@@ -1086,5 +1102,57 @@ private fun FatalErrorCard(error: String) {
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace
         )
+    }
+}
+
+@Composable
+private fun PipelineKeysSection(
+    keyA: String,
+    keyB: String,
+    activeIndex: Int,
+    enabled: Boolean,
+    onKeyAChange: (String) -> Unit,
+    onKeyBChange: (String) -> Unit,
+    onActiveChange: (Int) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+        KeyRow("Key A", keyA, enabled, activeIndex == 0, { onKeyAChange(it) }, { onActiveChange(0) })
+        Spacer(Modifier.height(4.dp))
+        KeyRow("Key B", keyB, enabled, activeIndex == 1, { onKeyBChange(it) }, { onActiveChange(1) })
+    }
+}
+
+@Composable
+private fun KeyRow(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    isActive: Boolean,
+    onValueChange: (String) -> Unit,
+    onSelect: () -> Unit
+) {
+    var isVisible by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(PipelineColors.surfaceElevated)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = isActive, onClick = if (enabled) onSelect else null, enabled = enabled)
+        Text(label, color = PipelineColors.textSecondary, fontSize = 12.sp, modifier = Modifier.width(40.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            enabled = enabled,
+            visualTransformation = if (isVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            modifier = Modifier.weight(1f).height(50.dp),
+            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+            colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = PipelineColors.surfaceDark, unfocusedContainerColor = PipelineColors.surfaceDark)
+        )
+        IconButton(onClick = { isVisible = !isVisible }) {
+            Icon(if (isVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = PipelineColors.textSecondary)
+        }
     }
 }
