@@ -130,13 +130,6 @@ class PipelineViewModel @Inject constructor(
     private val _userError = MutableStateFlow<String?>(null)
     val userError: StateFlow<String?> = _userError.asStateFlow()
 
-    /**
-     * Кэш путей файлов из репозитория. Заполняется в loadRepoStats() и
-     * переиспользуется в plan(), если getOrRefresh() вернёт null
-     * (race / cache expiry на стороне RepoIndexManager).
-     */
-    private val _filePathsCache = MutableStateFlow<List<String>>(emptyList())
-
     /** Главный job выполнения (для cancel) */
     private var pipelineJob: Job? = null
 
@@ -229,128 +222,7 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Результат попытки получения списка файлов с диагностикой для пользователя.
-     */
-    private data class FetchResult(
-        val paths: List<String>,
-        val errorMessage: String? = null
-    )
 
-    /**
-     * ═══════════════════════════════════════════════════════════════════════
-     * Получение списка путей файлов в репозитории через GitHub Trees API.
-     * ═══════════════════════════════════════════════════════════════════════
-     *
-     * НЕ ЗАВИСИТ от пользовательского RepoIndexManager API. Делает прямой
-     * HTTP вызов на GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
-     * с авторизацией через GitHub PAT.
-     *
-     * Документация: https://docs.github.com/en/rest/git/trees
-     */
-    private suspend fun fetchFilePathsDetailed(): FetchResult = withContext(Dispatchers.IO) {
-        val cfg = try {
-            appSettings.gitHubConfig.first()
-        } catch (e: Exception) {
-            return@withContext FetchResult(
-                emptyList(),
-                "Не удалось прочитать настройки GitHub: ${e.message}"
-            )
-        }
-
-        if (cfg.owner.isBlank() || cfg.repo.isBlank()) {
-            return@withContext FetchResult(
-                emptyList(),
-                "В Settings → GitHub не задан owner или repo (сейчас: owner='${cfg.owner}', repo='${cfg.repo}')"
-            )
-        }
-
-        val branch = if (cfg.branch.isBlank()) "main" else cfg.branch
-        val token = cfg.token // ✅ ПРОСТО ВЗЯТЬ ТОКЕН ИЗ КОНФИГА
-
-        val url = "https://api.github.com/repos/${cfg.owner}/${cfg.repo}" +
-                "/git/trees/${branch}?recursive=1"
-
-        android.util.Log.d(TAG, "fetchFilePaths → GET $url (tokenFound=${token.isNotBlank()})")
-
-        var connection: HttpURLConnection? = null
-        try {
-            connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
-                setRequestProperty("User-Agent", "OpusIDE-Pipeline")
-                if (token.isNotBlank()) {
-                    setRequestProperty("Authorization", "Bearer $token")
-                }
-                connectTimeout = 15_000
-                readTimeout = 30_000
-                doInput = true
-            }
-
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                val errBody = connection.errorStream?.let {
-                    BufferedReader(InputStreamReader(it, Charsets.UTF_8))
-                        .use { r -> r.readText() }
-                } ?: ""
-                android.util.Log.e(TAG, "GitHub tree API: HTTP $code — ${errBody.take(500)}")
-
-                val hint = when (code) {
-                    401 -> "401: токен не валиден или не найден. " +
-                            (if (token.isBlank())
-                                "cfg.token is blank. Открой Settings → GitHub и проверь что токен сохранён."
-                            else "Токен передан, но GitHub его не принял. Возможно истёк или нет прав 'repo'.")
-                    403 -> "403: rate limit или нет прав на репо. " +
-                            "GitHub PAT нужен с правом 'repo' для приватных репозиториев."
-                    404 -> "404: репозиторий или ветка не найдены. " +
-                            "Проверь owner='${cfg.owner}', repo='${cfg.repo}', branch='$branch'."
-                    409 -> "409: репозиторий пустой (нет коммитов)"
-                    else -> "HTTP $code"
-                }
-                return@withContext FetchResult(
-                    emptyList(),
-                    "$hint\n\nURL: $url"
-                )
-            }
-
-            val body = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
-                .use { it.readText() }
-            val json = Json.parseToJsonElement(body).jsonObject
-            val tree = json["tree"]?.jsonArray
-            if (tree == null) {
-                return@withContext FetchResult(
-                    emptyList(),
-                    "GitHub ответил 200, но в response нет поля 'tree'. Это очень странно."
-                )
-            }
-            val truncated = json["truncated"]?.jsonPrimitive?.contentOrNull == "true"
-            if (truncated) {
-                android.util.Log.w(TAG, "GitHub tree truncated — repo too large (>100k files)")
-            }
-
-            val paths = tree.mapNotNull { item ->
-                val obj = item.jsonObject
-                val type = obj["type"]?.jsonPrimitive?.contentOrNull
-                if (type != "blob") return@mapNotNull null
-                obj["path"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-            }
-            android.util.Log.d(TAG, "fetchFilePaths: got ${paths.size} files")
-            FetchResult(paths)
-        } catch (e: java.net.UnknownHostException) {
-            FetchResult(emptyList(), "Нет интернета")
-        } catch (e: java.net.SocketTimeoutException) {
-            FetchResult(emptyList(), "Таймаут запроса к GitHub")
-        } catch (e: Exception) {
-            android.util.Log.e(TAG, "fetchFilePaths failed", e)
-            FetchResult(emptyList(), "Ошибка: ${e.message?.take(200)}")
-        } finally {
-            try { connection?.disconnect() } catch (_: Exception) {}
-        }
-    }
-
-    /** Совместимость с предыдущим API */
-    private suspend fun fetchFilePaths(): List<String> = fetchFilePathsDetailed().paths
 
     // ═══════════════════════════════════════════════════════════════════════
     // STEP 1: PLAN
