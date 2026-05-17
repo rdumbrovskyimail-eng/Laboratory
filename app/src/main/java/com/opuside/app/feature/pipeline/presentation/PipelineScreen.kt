@@ -177,6 +177,14 @@ fun PipelineScreen(
                 onActiveChange = viewModel::setPipelineActiveKey
             )
 
+            ModelOverrideSection(
+                modelName = state.modelOverrideName,
+                enabled = state.modelOverrideEnabled,
+                interactive = !state.isRunning,
+                onModelNameChange = viewModel::setModelOverrideName,
+                onToggle = viewModel::setModelOverrideEnabled
+            )
+
             // ═══ STATUS BUTTON + STOP ═════════════════════════════════════
             StatusBar(
                 state = state,
