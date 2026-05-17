@@ -383,25 +383,17 @@ class PipelineViewModel @Inject constructor(
                     message = "Планировщик: анализ промпта (${prompt.length}ch)..."
                 ))
 
-                // ─── Получаем список путей файлов через GitHub Trees API ──
-                val filePaths: List<String> = run {
-                    val cached = _filePathsCache.value
-                    if (cached.isNotEmpty()) {
-                        android.util.Log.d(TAG, "plan: using cached ${cached.size} paths")
-                        cached
-                    } else {
-                        val fetch = fetchFilePathsDetailed()
-                        if (fetch.paths.isNotEmpty()) {
-                            _filePathsCache.value = fetch.paths
-                            fetch.paths
-                        } else {
-                            _userError.value = fetch.errorMessage
-                                ?: "Не удалось получить список файлов из GitHub."
-                            _state.update { it.copy(phase = PipelinePhase.IDLE) }
-                            return@launch
-                        }
-                    }
+                // ─── Получаем список путей файлов через встроенный RepoIndexManager ──
+                val repoIndex = repoIndexManager.getOrRefresh()
+                
+                if (repoIndex == null) {
+                    _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
+                    _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                    return@launch
                 }
+                
+                // Получаем пути только для файлов (исключая папки)
+                val filePaths = repoIndex.nodes.filter { it.isFile }.map { it.path }
 
                 val plan = planner.plan(prompt, filePaths).getOrElse { e ->
                     appendGeminiLog(GeminiLogEvent(
