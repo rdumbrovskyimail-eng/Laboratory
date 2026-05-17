@@ -202,44 +202,26 @@ class PipelineViewModel @Inject constructor(
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
-                val cfg = appSettings.gitHubConfig.first()
-                if (cfg.owner.isBlank() || cfg.repo.isBlank()) {
-                    _userError.value = "GitHub не настроен. Зайди в Settings → GitHub."
+                // Используем встроенный менеджер, который сам работает с токенами и кэшем
+                val index = repoIndexManager.getOrRefresh()
+                
+                if (index == null) {
+                    _userError.value = "Не удалось загрузить индекс репозитория из GitHub."
                     return@launch
                 }
-
-                val fetch = fetchFilePathsDetailed()
-                if (fetch.paths.isEmpty()) {
-                    _userError.value = fetch.errorMessage
-                        ?: "Не удалось получить список файлов из GitHub."
-                    return@launch
-                }
-
-                // Кэшируем для использования в plan() — избегаем повторных запросов
-                _filePathsCache.value = fetch.paths
-
-                // Подсчёт по расширениям из путей
-                val byExt: Map<String, Int> = fetch.paths
-                    .mapNotNull { p ->
-                        val dot = p.lastIndexOf('.')
-                        if (dot < 0 || dot == p.length - 1) null
-                        else p.substring(dot + 1).lowercase()
-                    }
-                    .groupingBy { it }
-                    .eachCount()
 
                 _repoStats.value = RepoStats(
-                    owner = cfg.owner,
-                    repo = cfg.repo,
-                    branch = cfg.branch,
-                    totalFiles = fetch.paths.size,
-                    totalDirectories = 0,
-                    totalSizeBytes = 0L,
-                    totalSizeFormatted = "—",
-                    byExtension = byExt,
-                    maxDepth = fetch.paths.maxOfOrNull { it.count { c -> c == '/' } } ?: 0,
-                    truncated = false,
-                    loadedAtMs = System.currentTimeMillis()
+                    owner = index.owner,
+                    repo = index.repo,
+                    branch = index.branch,
+                    totalFiles = index.totalFiles,
+                    totalDirectories = index.totalDirectories,
+                    totalSizeBytes = index.totalSize,
+                    totalSizeFormatted = index.totalSizeFormatted,
+                    byExtension = index.nodes.filter { it.isFile }.groupingBy { it.extension.lowercase() }.eachCount(),
+                    maxDepth = index.maxDepth,
+                    truncated = index.truncated,
+                    loadedAtMs = index.loadedAt
                 )
             } catch (e: Exception) {
                 _userError.value = "Ошибка загрузки репо: ${e.message}"
