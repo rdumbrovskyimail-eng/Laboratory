@@ -158,7 +158,20 @@ class PipelineViewModel @Inject constructor(
     // ═══════════════════════════════════════════════════════════════════════
 
     init {
-        loadRepoStats()
+        // Подписываемся на настройки и ждём 500мс, чтобы токен успел расшифроваться.
+        // Как только конфигурация готова (есть owner, repo и token) — загружаем статистику.
+        viewModelScope.launch {
+            appSettings.gitHubConfig
+                .debounce(500)
+                .distinctUntilChanged()
+                .collectLatest { config ->
+                    if (config.owner.isNotBlank() && config.repo.isNotBlank() && config.token.isNotBlank()) {
+                        loadRepoStats()
+                    } else {
+                        _repoStats.value = null
+                    }
+                }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -193,16 +206,17 @@ class PipelineViewModel @Inject constructor(
 
     /**
      * Обновить статистику репо (для шапки экрана).
-     * Использует GitHub Trees API напрямую — независимо от RepoIndexManager.
+     * Безопасно получает индекс через RepoIndexManager.
      */
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
-                // Используем встроенный менеджер, который сам работает с токенами и кэшем
+                // Если индекс уже грузится в Creator'е, этот метод просто подождёт
+                // и возьмёт готовый благодаря Mutex внутри RepoIndexManager
                 val index = repoIndexManager.getOrRefresh()
                 
                 if (index == null) {
-                    _userError.value = "Не удалось загрузить индекс репозитория из GitHub."
+                    _userError.value = "Не удалось загрузить индекс репозитория. Проверьте токен и доступ."
                     return@launch
                 }
 
