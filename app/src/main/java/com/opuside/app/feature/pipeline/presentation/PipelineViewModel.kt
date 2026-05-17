@@ -147,8 +147,7 @@ class PipelineViewModel @Inject constructor(
         const val MIN_PARALLEL = 1
         const val MAX_PARALLEL = 8
         /** Jitter delay между задачами (анти-flake GitHub) */
-        private const val JITTER_MIN_MS = 400L
-        private const val JITTER_MAX_MS = 1200L
+        private const val JITTER_BASE_MS = 600L
         /** Tag for logs */
         private const val TAG = "PipelineViewModel"
     }
@@ -265,6 +264,26 @@ class PipelineViewModel @Inject constructor(
             try {
                 resetForNewRun()
                 _state.update { it.copy(phase = PipelinePhase.PLANNING) }
+
+                // Дедупликация: объединяем задачи с одинаковым filePath
+                val deduped = _state.value.tasks
+                    .groupBy { it.filePath }
+                    .map { (_, group) ->
+                        if (group.size == 1) group.first()
+                        else group.first().copy(
+                            instructions = group.joinToString("\n\n═══ Также: ═══\n") { it.instructions },
+                            operation = group.first().operation
+                        )
+                    }
+                if (deduped.size < _state.value.tasks.size) {
+                    val removed = _state.value.tasks.size - deduped.size
+                    appendGeminiLog(GeminiLogEvent(
+                        type = GeminiEventType.INFO,
+                        icon = "🧹",
+                        message = "Дедупликация: объединено $removed дубликат(ов) задач по filePath"
+                    ))
+                    _state.update { it.copy(tasks = deduped) }
+                }
 
                 appendGeminiLog(GeminiLogEvent(
                     type = GeminiEventType.PLANNER_START,
@@ -524,8 +543,10 @@ class PipelineViewModel @Inject constructor(
 
                         // Jitter delay — без него GitHub может ответить 409 на быстрые PUT
                         if (localIdx > 0) {
-                            val jitter = Random.nextLong(JITTER_MIN_MS, JITTER_MAX_MS)
-                            delay(jitter)
+                            val scale = kotlin.math.sqrt(maxParallel.toDouble()).coerceAtLeast(1.0)
+                            val jitterMin = (JITTER_BASE_MS * scale).toLong()
+                            val jitterMax = (JITTER_BASE_MS * scale * 2).toLong()
+                            delay(Random.nextLong(jitterMin, jitterMax))
                         }
 
                         // Mark as running
