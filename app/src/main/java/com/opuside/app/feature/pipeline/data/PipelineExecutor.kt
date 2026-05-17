@@ -184,7 +184,8 @@ You MUST:
                     fileContent = originalContent,
                     fileName = task.filePath.substringAfterLast('/'),
                     instructions = effectiveInstructions,
-                    model = MODEL
+                    model = MODEL,
+                    usePipelineKeys = true
                 ).getOrElse { e ->
                     val code = classifyAiError(e)
                     send(ExecutorEvent.Gemini(GeminiLogEvent(
