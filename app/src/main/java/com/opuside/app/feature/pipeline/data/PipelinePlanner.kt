@@ -227,24 +227,19 @@ No markdown. No code fences. No commentary. Pure JSON.
                     IllegalArgumentException("Промпт не может быть пустым")
                 )
             }
-
-            // 1. Проверяем что список путей не пуст
             if (filePaths.isEmpty()) {
                 return@withContext Result.failure(
                     IllegalStateException("Репозиторий пуст или индекс ещё не загружен")
                 )
             }
 
-            // 2. Получаем API ключ Gemini с ротацией
-            var apiKey = keyRotator.currentKey()
+            // Получаем активный ключ из ротатора (Pair<String, Int>)
+            var currentKeyInfo = keyRotator.currentKey()
                 ?: return@withContext Result.failure(
                     IllegalStateException("Добавьте Gemini API ключ на экране Pipeline.")
                 )
 
-            // 3. Строим компактный список путей для AI
             val pathsText = filePaths.joinToString("\n")
-
-            // 4. Формируем user message для планировщика
             val userMessage = buildString {
                 appendLine("═══ USER PROMPT (verbatim) ═══")
                 appendLine(userPrompt)
@@ -252,63 +247,58 @@ No markdown. No code fences. No commentary. Pure JSON.
                 appendLine("═══ AVAILABLE FILES IN REPOSITORY (${filePaths.size} total) ═══")
                 appendLine(pathsText)
             }
-
             Log.d(TAG, "📤 Planning: prompt=${userPrompt.length}ch, files=${filePaths.size}")
 
-            // 5. Вызов Gemini API с возможной ротацией ключа
-            var result = callGemini(apiKey, userMessage)
-            if (result.isFailure && isQuotaError(result.exceptionOrNull()?.message)) {
-                val nextKey = keyRotator.burnAndRotate(apiKey)
-                if (nextKey != null) {
-                    Log.w(TAG, "⚠️ Quota exceeded, rotating key...")
-                    apiKey = nextKey
-                    result = callGemini(apiKey, userMessage)
-                } else {
+            // Цикл с авто-ротацией ключей при 429
+            var result: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
+            var attempts = 0
+            while (attempts < 2) {
+                val (apiKey, idx) = currentKeyInfo!!
+                result = callGemini(apiKey, userMessage)
+                if (result.isSuccess) break
+                val errMsg = result.exceptionOrNull()?.message
+                if (!isQuotaError(errMsg)) break  // не 429 — не пробуем другой ключ
+                Log.w(TAG, "⚠️ Quota на ключе #$idx, переключаемся...")
+                val next = keyRotator.burnAndRotate(idx)
+                if (next == null) {
                     return@withContext Result.failure(
                         Exception("Оба Gemini ключа исчерпали квоту, попробуйте через 5 минут")
                     )
                 }
+                currentKeyInfo = next
+                attempts++
             }
 
-            val (rawJson, inputTokens, outputTokens) = result
-                .getOrElse { return@withContext Result.failure(it) }
+            val (rawJson, inputTokens, outputTokens) = result.getOrElse {
+                return@withContext Result.failure(it)
+            }
 
-            // 6. Парсинг JSON
-            val plannedTasks = parsePlanResponse(rawJson)
-                .getOrElse { return@withContext Result.failure(it) }
-
+            val plannedTasks = parsePlanResponse(rawJson).getOrElse {
+                return@withContext Result.failure(it)
+            }
             if (plannedTasks.isEmpty()) {
                 return@withContext Result.failure(
-                    IllegalStateException("Планировщик не вернул ни одной задачи. Проверь промпт.")
+                    IllegalStateException("Планировщик не вернул задач. Проверь промпт.")
                 )
             }
-
             if (plannedTasks.size > MAX_TASKS_LIMIT) {
-                Log.w(TAG, "⚠️ Planner returned ${plannedTasks.size} tasks (limit=$MAX_TASKS_LIMIT)")
+                Log.w(TAG, "⚠️ ${plannedTasks.size} задач (лимит=$MAX_TASKS_LIMIT)")
             }
 
-            // 7. Резолвинг путей через локальный индекс из filePaths
             val resolvedTasks = resolvePaths(plannedTasks, filePaths)
-
-            // 8. Расчёт стоимости
             val cost = (inputTokens * 0.25 + outputTokens * 1.50) / 1_000_000.0 * 0.92
 
             Log.d(TAG, "✅ Planned ${resolvedTasks.size} tasks " +
                     "(${inputTokens}in+${outputTokens}out, €${String.format(java.util.Locale.US, "%.5f", cost)})")
 
-            Result.success(
-                PlannerOutput(
-                    tasks = resolvedTasks,
-                    rawJson = rawJson,
-                    tokensUsed = inputTokens + outputTokens,
-                    costEur = cost
-                )
-            )
-
+            Result.success(PlannerOutput(
+                tasks = resolvedTasks, rawJson = rawJson,
+                tokensUsed = inputTokens + outputTokens, costEur = cost
+            ))
         } catch (e: java.net.SocketTimeoutException) {
-            Result.failure(Exception("Таймаут планировщика. Попробуй ещё раз."))
+            Result.failure(Exception("Таймаут планировщика."))
         } catch (e: java.net.UnknownHostException) {
-            Result.failure(Exception("Нет подключения к интернету"))
+            Result.failure(Exception("Нет интернета"))
         } catch (e: Exception) {
             Log.e(TAG, "❌ Planning failed", e)
             Result.failure(e)
