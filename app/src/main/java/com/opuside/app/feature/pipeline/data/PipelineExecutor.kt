@@ -57,7 +57,7 @@ class PipelineExecutor @Inject constructor(
 
     /** Per-file Mutex: гарантирует что 2 задачи на один filePath не пересекутся (read→edit→commit). */
     private val fileLocks = ConcurrentHashMap<String, Mutex>()
-    private fun lockFor(path: String): Mutex = fileLocks.computeIfAbsent(path) { Mutex() }
+    fun lockFor(path: String): Mutex = fileLocks.computeIfAbsent(path) { Mutex() }
 
     /** Глобальный GitHub write throttle: между PUT-запросами держим минимум 800мс независимо от параллелизма. */
     private val githubWriteMutex = Mutex()
@@ -130,35 +130,34 @@ You MUST:
         )))
 
         try {
-            lockFor(task.filePath).withLock {
-                // ═══ CREATE BRANCH ════════════════════════════════════════
-                if (task.operation == TaskOperation.CREATE) {
-                    executeCreateTask(task, taskId, startTime)
-                    return@withLock
-                }
+            // ═══ CREATE BRANCH ════════════════════════════════════════
+            if (task.operation == TaskOperation.CREATE) {
+                executeCreateTask(task, taskId, startTime)
+                return@channelFlow
+            }
 
-                // ═══ STEP 1: READ ═════════════════════════════════════════
-                val readOutcome = readFile(task.filePath)
-                val originalContent: String
-                val originalSha: String
-                when (readOutcome) {
-                    is ReadOutcome.FatalErr -> {
-                        send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
-                            TaskErrorCode.UNKNOWN, readOutcome.message
-                        )))
-                        return@withLock
-                    }
-                    is ReadOutcome.DeferrableErr -> {
-                        send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                            readOutcome.code, readOutcome.message
-                        )))
-                        return@withLock
-                    }
-                    is ReadOutcome.Ok -> {
-                        originalContent = readOutcome.content
-                        originalSha = readOutcome.sha
-                    }
+            // ═══ STEP 1: READ ═════════════════════════════════════════
+            val readOutcome = readFile(task.filePath)
+            val originalContent: String
+            val originalSha: String
+            when (readOutcome) {
+                is ReadOutcome.FatalErr -> {
+                    send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                        TaskErrorCode.UNKNOWN, readOutcome.message
+                    )))
+                    return@channelFlow
                 }
+                is ReadOutcome.DeferrableErr -> {
+                    send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                        readOutcome.code, readOutcome.message
+                    )))
+                    return@channelFlow
+                }
+                is ReadOutcome.Ok -> {
+                    originalContent = readOutcome.content
+                    originalSha = readOutcome.sha
+                }
+            }
 
                 send(ExecutorEvent.Repo(RepoLogEvent(
                     type = RepoEventType.FILE_READ,
@@ -197,7 +196,7 @@ You MUST:
                     send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                         code, e.message ?: "AI call failed"
                     )))
-                    return@withLock
+                    return@channelFlow
                 }
 
                 send(ExecutorEvent.Gemini(GeminiLogEvent(
@@ -232,7 +231,7 @@ You MUST:
                         tokensUsed = tokensTotal,
                         costEur = editResult.costEUR
                     )))
-                    return@withLock
+                    return@channelFlow
                 }
 
                 val applyResult = aiEditService.applyEdits(originalContent, editResult.blocks)
@@ -248,7 +247,7 @@ You MUST:
                             e.message ?: "Apply failed",
                             tokensTotal
                         )))
-                        return@withLock
+                        return@channelFlow
                     }
 
                 send(ExecutorEvent.Gemini(GeminiLogEvent(
@@ -271,7 +270,7 @@ You MUST:
                         "Ни один блок не применился (${applyResult.totalFailed} not found)",
                         tokensTotal
                     )))
-                    return@withLock
+                    return@channelFlow
                 }
 
                 send(ExecutorEvent.Gemini(GeminiLogEvent(
@@ -325,7 +324,6 @@ You MUST:
                 }
 
                 delay(INTER_FILE_DELAY_MS)
-            }
         } catch (e: CancellationException) {
             Log.d(TAG, "Task ${task.filePath} cancelled")
             throw e
