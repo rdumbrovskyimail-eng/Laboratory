@@ -18,7 +18,8 @@ import javax.inject.Singleton
 @Singleton
 class CreatorAIEditService @Inject constructor(
     private val appSettings: AppSettings,
-    private val secureSettings: SecureSettingsDataStore
+    private val secureSettings: SecureSettingsDataStore,
+    private val pipelineKeyRotator: com.opuside.app.feature.pipeline.data.PipelineKeyRotator
 ) {
 
     // ═══════════════════════════════════════════════════════════════
@@ -196,7 +197,8 @@ Example 2 — Delete a function:
         fileContent: String,
         fileName: String,
         instructions: String,
-        model: AiModel = AiModel.GEMINI_3_1_FLASH_LITE
+        model: AiModel = AiModel.GEMINI_3_1_FLASH_LITE,
+        usePipelineKeys: Boolean = false
     ): Result<EditResult> = withContext(Dispatchers.IO) {
         try {
             val lineCount = fileContent.lines().size
@@ -206,8 +208,31 @@ Example 2 — Delete a function:
             val systemPrompt = buildSystemPrompt(useLineNumbers)
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
-            val rawResponse = callGeminiApi(systemPrompt, userMessage, model)
-                .getOrElse { return@withContext Result.failure(it) }
+            val (apiKey, keyIdx) = if (usePipelineKeys) {
+                pipelineKeyRotator.currentKey()
+                    ?: return@withContext Result.failure(Exception("Добавьте Gemini API ключ на экране Pipeline"))
+            } else {
+                val k = try { secureSettings.getGeminiApiKey().first() } catch (_: Exception) { "" }
+                if (k.isBlank()) return@withContext Result.failure(Exception("Gemini API key не настроен"))
+                k to -1
+            }
+
+            var rawResponse: Result<Triple<String, Int, Int>>
+            var attempts = 0
+            do {
+                rawResponse = callGeminiApi(systemPrompt, userMessage, model, apiKey)
+                if (rawResponse.isFailure && usePipelineKeys && attempts < 3) {
+                    val error = rawResponse.exceptionOrNull()?.message ?: ""
+                    if (error.contains("429")) {
+                        pipelineKeyRotator.burnAndRotate(keyIdx)
+                        attempts++
+                        continue
+                    }
+                }
+                break
+            } while (true)
+
+            val (content, inputTokens, outputTokens) = rawResponse.getOrElse { return@withContext Result.failure(it) }
 
             val content = rawResponse.first
             val inputTokens = rawResponse.second
@@ -240,13 +265,9 @@ Example 2 — Delete a function:
     private suspend fun callGeminiApi(
         systemPrompt: String,
         userMessage: String,
-        model: AiModel
+        model: AiModel,
+        apiKey: String
     ): Result<Triple<String, Int, Int>> {
-        val apiKey = try {
-            secureSettings.getGeminiApiKey().first()
-        } catch (e: Exception) { "" }
-        if (apiKey.isBlank()) return Result.failure(Exception("Gemini API key не настроен. Укажите ключ в Settings."))
-
         val url = "$GEMINI_API_BASE_URL/${model.apiId}:generateContent?key=$apiKey"
 
         val requestBody = JSONObject().apply {
