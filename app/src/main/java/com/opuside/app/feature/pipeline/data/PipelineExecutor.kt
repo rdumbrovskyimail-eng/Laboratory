@@ -131,206 +131,201 @@ You MUST:
 
         try {
             lockFor(task.filePath).withLock {
-                // ═══ CREATE BRANCH ════════════════════════════════════════════════
-                // Для CREATE-задачи пропускаем read + AI Edit, контент уже готов.
+                // ═══ CREATE BRANCH ════════════════════════════════════════
                 if (task.operation == TaskOperation.CREATE) {
                     executeCreateTask(task, taskId, startTime)
-                    return@channelFlow
+                    return@withLock
                 }
 
-                // ═══ STEP 1: READ ════════════════════════════════════════════════
-            val readOutcome = readFile(task.filePath)
-            val originalContent: String
-            val originalSha: String
-            when (readOutcome) {
-                is ReadOutcome.FatalErr -> {
-                    send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
-                        TaskErrorCode.UNKNOWN, readOutcome.message
-                    )))
-                    return@channelFlow
+                // ═══ STEP 1: READ ═════════════════════════════════════════
+                val readOutcome = readFile(task.filePath)
+                val originalContent: String
+                val originalSha: String
+                when (readOutcome) {
+                    is ReadOutcome.FatalErr -> {
+                        send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                            TaskErrorCode.UNKNOWN, readOutcome.message
+                        )))
+                        return@withLock
+                    }
+                    is ReadOutcome.DeferrableErr -> {
+                        send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                            readOutcome.code, readOutcome.message
+                        )))
+                        return@withLock
+                    }
+                    is ReadOutcome.Ok -> {
+                        originalContent = readOutcome.content
+                        originalSha = readOutcome.sha
+                    }
                 }
-                is ReadOutcome.DeferrableErr -> {
-                    send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                        readOutcome.code, readOutcome.message
-                    )))
-                    return@channelFlow
-                }
-                is ReadOutcome.Ok -> {
-                    originalContent = readOutcome.content
-                    originalSha = readOutcome.sha
-                }
-            }
 
-            send(ExecutorEvent.Repo(RepoLogEvent(
-                type = RepoEventType.FILE_READ,
-                icon = "📄",
-                message = "Прочитан: ${task.filePath} (${originalContent.length / 1024}KB)",
-                taskId = taskId
-            )))
-
-            // ═══ STEP 2: AI EDIT CALL ════════════════════════════════════════
-            val effectiveInstructions = if (isRetryPass) {
-                RETRY_HINT_PREFIX + task.instructions
-            } else {
-                task.instructions
-            }
-
-            send(ExecutorEvent.Gemini(GeminiLogEvent(
-                type = GeminiEventType.AI_REQUEST,
-                icon = "📤",
-                message = "→ Gemini 3.1 Flash-Lite (${effectiveInstructions.length}ch)",
-                taskId = taskId
-            )))
-
-            val editResult = aiEditService.processEdit(
-                fileContent = originalContent,
-                fileName = task.filePath.substringAfterLast('/'),
-                instructions = effectiveInstructions,
-                model = MODEL
-            ).getOrElse { e ->
-                val code = classifyAiError(e)
-                send(ExecutorEvent.Gemini(GeminiLogEvent(
-                    type = GeminiEventType.AI_APPLY_FAIL,
-                    icon = "❌",
-                    message = "AI ошибка: ${e.message?.take(100)}",
-                    taskId = taskId
-                )))
-                send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                    code, e.message ?: "AI call failed"
-                )))
-                return@channelFlow
-            }
-
-            send(ExecutorEvent.Gemini(GeminiLogEvent(
-                type = GeminiEventType.AI_RESPONSE,
-                icon = "📥",
-                message = "AI: ${editResult.blocks.size} блок(ов), " +
-                        "${editResult.inputTokens}in+${editResult.outputTokens}out, " +
-                        "€${String.format(java.util.Locale.US, "%.5f", editResult.costEUR)}",
-                taskId = taskId,
-                tokens = editResult.inputTokens + editResult.outputTokens,
-                costEur = editResult.costEUR
-            )))
-
-            val tokensTotal = editResult.inputTokens + editResult.outputTokens
-
-            // ═══ STEP 3: APPLY DECISION ══════════════════════════════════════
-            if (editResult.blocks.isEmpty()) {
-                // 0 блоков → файл не требует изменений → НЕ коммитим вообще
-                // (GitHub отклонил бы PUT того же контента, плюс зря триггернули бы CI)
-                send(ExecutorEvent.Gemini(GeminiLogEvent(
-                    type = GeminiEventType.INFO,
-                    icon = "⚪",
-                    message = "AI не нашёл изменений — пропускаем коммит, идём далее",
-                    taskId = taskId
-                )))
                 send(ExecutorEvent.Repo(RepoLogEvent(
-                    type = RepoEventType.INFO,
-                    icon = "⚪",
-                    message = "${task.filePath.substringAfterLast('/')}: без изменений (коммит не требуется)",
+                    type = RepoEventType.FILE_READ,
+                    icon = "📄",
+                    message = "Прочитан: ${task.filePath} (${originalContent.length / 1024}KB)",
                     taskId = taskId
                 )))
-                send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
-                    commitSha = originalSha,    // используем существующий SHA как ссылку
-                    tokensUsed = tokensTotal,
-                    costEur = editResult.costEUR
-                )))
-                return@channelFlow
-            }
 
-            // Применяем блоки локально
-            val applyResult = aiEditService.applyEdits(originalContent, editResult.blocks)
-                .getOrElse { e ->
+                // ═══ STEP 2: AI EDIT CALL ════════════════════════════════════════
+                val effectiveInstructions = if (isRetryPass) {
+                    RETRY_HINT_PREFIX + task.instructions
+                } else {
+                    task.instructions
+                }
+
+                send(ExecutorEvent.Gemini(GeminiLogEvent(
+                    type = GeminiEventType.AI_REQUEST,
+                    icon = "📤",
+                    message = "→ Gemini 3.1 Flash-Lite (${effectiveInstructions.length}ch)",
+                    taskId = taskId
+                )))
+
+                val editResult = aiEditService.processEdit(
+                    fileContent = originalContent,
+                    fileName = task.filePath.substringAfterLast('/'),
+                    instructions = effectiveInstructions,
+                    model = MODEL
+                ).getOrElse { e ->
+                    val code = classifyAiError(e)
                     send(ExecutorEvent.Gemini(GeminiLogEvent(
                         type = GeminiEventType.AI_APPLY_FAIL,
                         icon = "❌",
-                        message = "Локальное применение упало: ${e.message?.take(80)}",
+                        message = "AI ошибка: ${e.message?.take(100)}",
                         taskId = taskId
                     )))
                     send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                        TaskErrorCode.AI_INVALID_RESPONSE,
-                        e.message ?: "Apply failed",
-                        tokensTotal
+                        code, e.message ?: "AI call failed"
                     )))
-                    return@channelFlow
+                    return@withLock
                 }
 
-            send(ExecutorEvent.Gemini(GeminiLogEvent(
-                type = GeminiEventType.AI_BLOCKS_PARSED,
-                icon = "🔧",
-                message = "Применение: ${applyResult.totalApplied}/${editResult.blocks.size} блок(ов)" +
-                        if (applyResult.totalFailed > 0) ", ${applyResult.totalFailed} not found" else "",
-                taskId = taskId
-            )))
-
-            // ВСЕ блоки не нашлись → откладываем
-            if (applyResult.totalApplied == 0 && applyResult.totalFailed > 0) {
                 send(ExecutorEvent.Gemini(GeminiLogEvent(
-                    type = GeminiEventType.AI_APPLY_FAIL,
-                    icon = "⏸",
-                    message = "Ни один блок не применился → отложено",
+                    type = GeminiEventType.AI_RESPONSE,
+                    icon = "📥",
+                    message = "AI: ${editResult.blocks.size} блок(ов), " +
+                            "${editResult.inputTokens}in+${editResult.outputTokens}out, " +
+                            "€${String.format(java.util.Locale.US, "%.5f", editResult.costEUR)}",
+                    taskId = taskId,
+                    tokens = editResult.inputTokens + editResult.outputTokens,
+                    costEur = editResult.costEUR
+                )))
+
+                val tokensTotal = editResult.inputTokens + editResult.outputTokens
+
+                // ═══ STEP 3: APPLY DECISION ══════════════════════════════════════
+                if (editResult.blocks.isEmpty()) {
+                    send(ExecutorEvent.Gemini(GeminiLogEvent(
+                        type = GeminiEventType.INFO,
+                        icon = "⚪",
+                        message = "AI не нашёл изменений — пропускаем коммит, идём далее",
+                        taskId = taskId
+                    )))
+                    send(ExecutorEvent.Repo(RepoLogEvent(
+                        type = RepoEventType.INFO,
+                        icon = "⚪",
+                        message = "${task.filePath.substringAfterLast('/')}: без изменений (коммит не требуется)",
+                        taskId = taskId
+                    )))
+                    send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
+                        commitSha = originalSha,
+                        tokensUsed = tokensTotal,
+                        costEur = editResult.costEUR
+                    )))
+                    return@withLock
+                }
+
+                val applyResult = aiEditService.applyEdits(originalContent, editResult.blocks)
+                    .getOrElse { e ->
+                        send(ExecutorEvent.Gemini(GeminiLogEvent(
+                            type = GeminiEventType.AI_APPLY_FAIL,
+                            icon = "❌",
+                            message = "Локальное применение упало: ${e.message?.take(80)}",
+                            taskId = taskId
+                        )))
+                        send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                            TaskErrorCode.AI_INVALID_RESPONSE,
+                            e.message ?: "Apply failed",
+                            tokensTotal
+                        )))
+                        return@withLock
+                    }
+
+                send(ExecutorEvent.Gemini(GeminiLogEvent(
+                    type = GeminiEventType.AI_BLOCKS_PARSED,
+                    icon = "🔧",
+                    message = "Применение: ${applyResult.totalApplied}/${editResult.blocks.size} блок(ов)" +
+                            if (applyResult.totalFailed > 0) ", ${applyResult.totalFailed} not found" else "",
                     taskId = taskId
                 )))
-                send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                    TaskErrorCode.NOT_FOUND_BLOCKS,
-                    "Ни один блок не применился (${applyResult.totalFailed} not found)",
-                    tokensTotal
-                )))
-                return@channelFlow
-            }
 
-            send(ExecutorEvent.Gemini(GeminiLogEvent(
-                type = GeminiEventType.AI_APPLY_OK,
-                icon = "✏️",
-                message = "Готово к коммиту: ${applyResult.newContent.length / 1024}KB",
-                taskId = taskId
-            )))
-
-            // ═══ STEP 4: COMMIT ═══════════════════════════════════════════════
-            val outcome = commit(
-                path = task.filePath,
-                content = applyResult.newContent,
-                initialSha = originalSha,
-                commitMessage = "[Pipeline] ${task.filePath.substringAfterLast('/')}",
-                taskId = taskId
-            ) { event -> send(event) }
-
-            when (outcome) {
-                is CommitOutcome.Ok -> {
-                    val durationMs = System.currentTimeMillis() - startTime
-                    repoIndexManager.invalidate()
-
-                    send(ExecutorEvent.Repo(RepoLogEvent(
-                        type = RepoEventType.FILE_COMMITTED,
-                        icon = "💾",
-                        message = "Коммит: ${outcome.sha.take(8)} (${durationMs}ms)" +
-                                if (outcome.resolvedConflict) " ⚠️ auto-resolved" else "",
-                        taskId = taskId,
-                        commitSha = outcome.sha
+                if (applyResult.totalApplied == 0 && applyResult.totalFailed > 0) {
+                    send(ExecutorEvent.Gemini(GeminiLogEvent(
+                        type = GeminiEventType.AI_APPLY_FAIL,
+                        icon = "⏸",
+                        message = "Ни один блок не применился → отложено",
+                        taskId = taskId
                     )))
-
-                    send(ExecutorEvent.Final(TaskExecutionResult.Success(
-                        commitSha = outcome.sha,
-                        resolvedConflict = outcome.resolvedConflict,
-                        tokensUsed = tokensTotal,
-                        costEur = editResult.costEUR,
-                        editResult = editResult
-                    )))
-                }
-                is CommitOutcome.FatalErr -> {
-                    send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
-                        TaskErrorCode.UNKNOWN, outcome.message
-                    )))
-                }
-                is CommitOutcome.DeferrableErr -> {
                     send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                        outcome.code, outcome.message, tokensTotal
+                        TaskErrorCode.NOT_FOUND_BLOCKS,
+                        "Ни один блок не применился (${applyResult.totalFailed} not found)",
+                        tokensTotal
                     )))
+                    return@withLock
                 }
+
+                send(ExecutorEvent.Gemini(GeminiLogEvent(
+                    type = GeminiEventType.AI_APPLY_OK,
+                    icon = "✏️",
+                    message = "Готово к коммиту: ${applyResult.newContent.length / 1024}KB",
+                    taskId = taskId
+                )))
+
+                // ═══ STEP 4: COMMIT ═══════════════════════════════════════════════
+                val outcome = commit(
+                    path = task.filePath,
+                    content = applyResult.newContent,
+                    initialSha = originalSha,
+                    commitMessage = "[Pipeline] ${task.filePath.substringAfterLast('/')}",
+                    taskId = taskId
+                ) { event -> send(event) }
+
+                when (outcome) {
+                    is CommitOutcome.Ok -> {
+                        val durationMs = System.currentTimeMillis() - startTime
+                        repoIndexManager.invalidate()
+
+                        send(ExecutorEvent.Repo(RepoLogEvent(
+                            type = RepoEventType.FILE_COMMITTED,
+                            icon = "💾",
+                            message = "Коммит: ${outcome.sha.take(8)} (${durationMs}ms)" +
+                                    if (outcome.resolvedConflict) " ⚠️ auto-resolved" else "",
+                            taskId = taskId,
+                            commitSha = outcome.sha
+                        )))
+
+                        send(ExecutorEvent.Final(TaskExecutionResult.Success(
+                            commitSha = outcome.sha,
+                            resolvedConflict = outcome.resolvedConflict,
+                            tokensUsed = tokensTotal,
+                            costEur = editResult.costEUR,
+                            editResult = editResult
+                        )))
+                    }
+                    is CommitOutcome.FatalErr -> {
+                        send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                            TaskErrorCode.UNKNOWN, outcome.message
+                        )))
+                    }
+                    is CommitOutcome.DeferrableErr -> {
+                        send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                            outcome.code, outcome.message, tokensTotal
+                        )))
+                    }
+                }
+
+                delay(INTER_FILE_DELAY_MS)
             }
-
-            delay(INTER_FILE_DELAY_MS)
-
         } catch (e: CancellationException) {
             Log.d(TAG, "Task ${task.filePath} cancelled")
             throw e
