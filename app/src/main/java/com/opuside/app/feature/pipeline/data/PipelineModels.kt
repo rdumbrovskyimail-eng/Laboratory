@@ -3,48 +3,24 @@ package com.opuside.app.feature.pipeline.data
 import com.opuside.app.feature.creator.data.CreatorAIEditService
 import java.util.UUID
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * PIPELINE MODELS — все типы данных для G-конвейера
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Архитектура состояний:
- *   IDLE → PLANNING → REVIEWING → EXECUTING → DEFERRED_PASS → FINALIZING → DONE
- *                                       ↓
- *                                    CANCELLED
- *                                       ↓
- *                                     FATAL
- *
- * Каждая задача (FileTask) проходит свой жизненный цикл:
- *   PENDING → PROCESSING → SUCCESS / NO_CHANGES / DEFERRED → FAILED_FINAL
- */
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PIPELINE STATE (общее состояние конвейера)
-// ═══════════════════════════════════════════════════════════════════════════
-
 enum class PipelinePhase {
-    IDLE,              // ничего не делается, ждём ввода
-    PLANNING,          // Gemini-планировщик разбирает промпт на задачи
-    REVIEWING,         // план готов, пользователь смотрит и жмёт "Старт"
-    EXECUTING,         // первый проход по задачам
-    DEFERRED_PASS,     // второй проход по отложенным задачам
-    FINALIZING,        // финальный AI-отчёт генерируется
-    DONE,              // полностью завершено
-    CANCELLED,         // пользователь нажал STOP
-    FATAL              // критическая ошибка (401/403), всё остановлено
+    IDLE, PLANNING, REVIEWING, EXECUTING, DEFERRED_PASS, FINALIZING,
+    DONE, CANCELLED, FATAL
 }
 
 data class PipelineState(
     val phase: PipelinePhase = PipelinePhase.IDLE,
     val tasks: List<FileTask> = emptyList(),
-    val currentTaskIndex: Int = -1,           // последняя начатая задача (для backward compat UI)
-    val runningTaskIds: Set<String> = emptySet(), // все параллельно выполняющиеся задачи
+    val currentTaskIndex: Int = -1,
+    val runningTaskIds: Set<String> = emptySet(),
     val finalReport: String? = null,
     val fatalError: String? = null,
     val pipelineRunId: String = UUID.randomUUID().toString().take(8),
-    val maxParallelTasks: Int = 3,            // сколько задач параллельно (1=последовательно)
-    val logFilterTaskId: String? = null       // фильтр логов по конкретной задаче (null = все)
+    val maxParallelTasks: Int = 3,
+    val logFilterTaskId: String? = null,
+    // НОВОЕ: Override модели Gemini
+    val modelOverrideEnabled: Boolean = false,
+    val modelOverrideName: String = ""
 ) {
     val totalTasks: Int get() = tasks.size
     val completedTasks: Int get() = tasks.count { it.status.isTerminal }
@@ -55,12 +31,6 @@ data class PipelineState(
     val deferredTasks: Int get() = tasks.count { it.status == TaskStatus.DEFERRED }
     val progress: Float get() = if (totalTasks == 0) 0f else completedTasks.toFloat() / totalTasks
 
-    /**
-     * Оценочная стоимость прогона (евро). Считается приблизительно:
-     *   MODIFY = ~€0.00002 (Gemini AI Edit call)
-     *   CREATE = €0 (нет AI вызова)
-     * Не включает стоимость планировщика и финального отчёта (~€0.00004 фиксировано).
-     */
     val estimatedCost: Double get() {
         val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
         return modifyCount * 0.00002 + 0.00004
@@ -82,79 +52,47 @@ data class PipelineState(
         successfulTasks == 0 -> OverallStatus.FAILED_ALL
         else -> OverallStatus.SUCCESS_PARTIAL
     }
+
+    /** Резолвит override в apiId для Gemini, либо null = использовать дефолт. */
+    val effectiveModelApiId: String? get() =
+        if (modelOverrideEnabled) modelOverrideName.trim().ifBlank { null } else null
 }
 
 enum class OverallStatus {
-    RUNNING,           // в процессе
-    SUCCESS_ALL,       // 🟢 всё успешно
-    SUCCESS_PARTIAL,   // 🟡 часть упала, часть прошла
-    FAILED_ALL,        // 🔴 всё упало
-    FATAL,             // 🔴 критическая ошибка (401/403)
-    CANCELLED          // ⚪ остановлено пользователем
+    RUNNING, SUCCESS_ALL, SUCCESS_PARTIAL, FAILED_ALL, FATAL, CANCELLED
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// TASK OPERATION (modify existing vs create new)
-// ═══════════════════════════════════════════════════════════════════════════
 
 enum class TaskOperation {
-    MODIFY,   // изменение существующего файла через AI Edit
-    CREATE;   // создание нового файла с готовым контентом
-
-    val emoji: String get() = when (this) {
-        MODIFY -> "✏️"
-        CREATE -> "➕"
-    }
-
-    val displayName: String get() = when (this) {
-        MODIFY -> "Изменить"
-        CREATE -> "Создать"
-    }
+    MODIFY, CREATE;
+    val emoji: String get() = when (this) { MODIFY -> "✏️"; CREATE -> "➕" }
+    val displayName: String get() = when (this) { MODIFY -> "Изменить"; CREATE -> "Создать" }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// FILE TASK (одна задача = один файл)
-// ═══════════════════════════════════════════════════════════════════════════
 
 data class FileTask(
     val id: String = UUID.randomUUID().toString().take(8),
     val operation: TaskOperation = TaskOperation.MODIFY,
-    val filePath: String,                      // полный путь от планировщика, после fuzzy-resolve
-    val originalPathFromAi: String,            // как AI его назвал изначально (для отчёта)
-    val instructions: String,                  // для MODIFY: инструкции для AI Edit; для CREATE: пусто или описание
-    val newFileContent: String? = null,        // только для CREATE: готовый контент нового файла
-    val packageName: String? = null,           // только для CREATE: package (для валидации/отчёта)
+    val filePath: String,
+    val originalPathFromAi: String,
+    val instructions: String,
+    val newFileContent: String? = null,
+    val packageName: String? = null,
     val status: TaskStatus = TaskStatus.PENDING,
-    val attempts: Int = 0,                     // сколько попыток сделано
-    val lastError: String? = null,             // последнее сообщение об ошибке
-    val errorCode: TaskErrorCode? = null,      // код ошибки (для отчёта)
-    val commitSha: String? = null,             // SHA коммита после успеха
-    val resolvedConflict: Boolean = false,     // был ли auto-resolved конфликт
-    val tokensUsed: Int = 0,                   // токены потрачены на этот файл
-    val durationMs: Long = 0                   // сколько обрабатывался
+    val attempts: Int = 0,
+    val lastError: String? = null,
+    val errorCode: TaskErrorCode? = null,
+    val commitSha: String? = null,
+    val resolvedConflict: Boolean = false,
+    val tokensUsed: Int = 0,
+    val durationMs: Long = 0
 )
 
 enum class TaskStatus {
-    PENDING,              // ⏸ ждёт
-    PROCESSING,           // ⏳ обрабатывается сейчас
-    SUCCESS,              // ✅ закоммичено
-    NO_CHANGES_NEEDED,    // ⚪ AI не нашёл что менять, закоммичен оригинал
-    DEFERRED,             // 🔄 отложено на второй проход
-    FAILED_FINAL;         // ❌ финально провалилось
-
-    val isTerminal: Boolean get() = this == SUCCESS ||
-            this == NO_CHANGES_NEEDED ||
-            this == FAILED_FINAL
-
+    PENDING, PROCESSING, SUCCESS, NO_CHANGES_NEEDED, DEFERRED, FAILED_FINAL;
+    val isTerminal: Boolean get() = this == SUCCESS || this == NO_CHANGES_NEEDED || this == FAILED_FINAL
     val isDeferrable: Boolean get() = this == DEFERRED
-
     val emoji: String get() = when (this) {
-        PENDING -> "⏸"
-        PROCESSING -> "⏳"
-        SUCCESS -> "✅"
-        NO_CHANGES_NEEDED -> "⚪"
-        DEFERRED -> "🔄"
-        FAILED_FINAL -> "❌"
+        PENDING -> "⏸"; PROCESSING -> "⏳"; SUCCESS -> "✅"
+        NO_CHANGES_NEEDED -> "⚪"; DEFERRED -> "🔄"; FAILED_FINAL -> "❌"
     }
 }
 
@@ -170,49 +108,28 @@ enum class TaskErrorCode(val displayName: String) {
     AI_INVALID_RESPONSE("AI вернул некорректный ответ"),
     PATH_RESOLVE_FAILED("Не удалось определить точный путь к файлу"),
     INVALID_CREATE_CONTENT("Контент для создания файла не указан"),
+    TASK_TIMEOUT("Задача превысила лимит времени (5 минут)"),
     UNKNOWN("Неизвестная ошибка")
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// LOG EVENTS (для двух live-логов)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Событие в логе "что делает Gemini".
- * Показывается на левом экране.
- */
 data class GeminiLogEvent(
     val id: String = UUID.randomUUID().toString(),
     val timestamp: Long = System.currentTimeMillis(),
     val type: GeminiEventType,
     val icon: String,
     val message: String,
-    val taskId: String? = null,        // привязка к конкретной задаче
+    val taskId: String? = null,
     val durationMs: Long? = null,
     val tokens: Int? = null,
     val costEur: Double? = null
 )
 
 enum class GeminiEventType {
-    PLANNER_START,        // начали планирование
-    PLANNER_DONE,         // план готов
-    TASK_START,           // начали обработку конкретного файла
-    AI_REQUEST,           // отправили запрос в Gemini
-    AI_RESPONSE,          // получили ответ
-    AI_BLOCKS_PARSED,     // распарсили блоки замен
-    AI_APPLY_OK,          // блоки применены
-    AI_APPLY_FAIL,        // блоки не применились
-    AI_RETRY,             // ретрай
-    SUMMARY_START,        // финальный отчёт
-    SUMMARY_DONE,
-    ERROR,
-    INFO
+    PLANNER_START, PLANNER_DONE, TASK_START, AI_REQUEST, AI_RESPONSE,
+    AI_BLOCKS_PARSED, AI_APPLY_OK, AI_APPLY_FAIL, AI_RETRY,
+    SUMMARY_START, SUMMARY_DONE, ERROR, INFO
 }
 
-/**
- * Событие в логе "что происходит в репо".
- * Показывается на правом экране.
- */
 data class RepoLogEvent(
     val id: String = UUID.randomUUID().toString(),
     val timestamp: Long = System.currentTimeMillis(),
@@ -224,46 +141,30 @@ data class RepoLogEvent(
     val commitUrl: String? = null,
     val workflowRunId: Long? = null,
     val workflowRunUrl: String? = null,
-    val workflowStatus: String? = null,        // queued, in_progress, completed
-    val workflowConclusion: String? = null     // success, failure, cancelled
+    val workflowStatus: String? = null,
+    val workflowConclusion: String? = null
 )
 
 enum class RepoEventType {
-    FILE_READ,            // прочитали файл
-    FILE_COMMITTED,       // запушили коммит
-    COMMIT_CONFLICT,      // 409 при коммите
-    CONFLICT_RESOLVED,    // конфликт auto-resolved
-    WORKFLOW_TRIGGERED,   // GitHub Actions запустился
-    WORKFLOW_PROGRESS,    // обновление статуса
-    WORKFLOW_SUCCESS,
-    WORKFLOW_FAILURE,
-    INDEX_INVALIDATED,    // индекс репо переиндексирован
-    INFO,
-    ERROR
+    FILE_READ, FILE_COMMITTED, COMMIT_CONFLICT, CONFLICT_RESOLVED,
+    WORKFLOW_TRIGGERED, WORKFLOW_PROGRESS, WORKFLOW_SUCCESS, WORKFLOW_FAILURE,
+    INDEX_INVALIDATED, INFO, ERROR
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PLANNER OUTPUT (что возвращает Gemini-планировщик)
-// ═══════════════════════════════════════════════════════════════════════════
 
 data class PlannerOutput(
     val tasks: List<PlannedTask>,
-    val rawJson: String,                       // оригинальный JSON от Gemini (для дебага)
+    val rawJson: String,
     val tokensUsed: Int,
     val costEur: Double
 )
 
 data class PlannedTask(
     val operation: TaskOperation = TaskOperation.MODIFY,
-    val file: String,                          // путь как его дал AI (может быть неполный или сгенерированный для CREATE)
-    val instructions: String = "",             // для MODIFY: инструкции AI Edit; для CREATE: пусто
-    val content: String? = null,               // только для CREATE: полный контент нового файла
-    val packageName: String? = null            // только для CREATE: package declaration
+    val file: String,
+    val instructions: String = "",
+    val content: String? = null,
+    val packageName: String? = null
 )
-
-// ═══════════════════════════════════════════════════════════════════════════
-// EXECUTION RESULT (результат выполнения одной задачи)
-// ═══════════════════════════════════════════════════════════════════════════
 
 sealed class TaskExecutionResult {
     data class Success(
@@ -280,23 +181,17 @@ sealed class TaskExecutionResult {
         val costEur: Double
     ) : TaskExecutionResult()
 
-    /** Recoverable — можно ретрайнуть или отложить */
     data class Deferrable(
         val errorCode: TaskErrorCode,
         val message: String,
         val tokensUsed: Int = 0
     ) : TaskExecutionResult()
 
-    /** Fatal — останавливаем весь конвейер */
     data class Fatal(
         val errorCode: TaskErrorCode,
         val message: String
     ) : TaskExecutionResult()
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// REPO STATS (для шапки экрана)
-// ═══════════════════════════════════════════════════════════════════════════
 
 data class RepoStats(
     val owner: String,
@@ -306,18 +201,24 @@ data class RepoStats(
     val totalDirectories: Int,
     val totalSizeBytes: Long,
     val totalSizeFormatted: String,
-    val byExtension: Map<String, Int>,         // "kt" -> 245, "xml" -> 32
+    val byExtension: Map<String, Int>,
     val maxDepth: Int,
     val truncated: Boolean,
     val loadedAtMs: Long
 ) {
     val isReady: Boolean get() = totalFiles > 0
 
-    /** Топ-5 расширений для UI */
     fun topExtensions(limit: Int = 5): List<Pair<String, Int>> =
         byExtension.entries
             .filter { it.key.isNotBlank() }
             .sortedByDescending { it.value }
             .take(limit)
+            .map { it.key to it.value }
+
+    /** ВСЕ расширения — для expandable секции со скроллом */
+    fun allExtensions(): List<Pair<String, Int>> =
+        byExtension.entries
+            .filter { it.key.isNotBlank() }
+            .sortedByDescending { it.value }
             .map { it.key to it.value }
 }
