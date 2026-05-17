@@ -159,6 +159,8 @@ class PipelineViewModel @Inject constructor(
         const val MAX_PARALLEL = 8
         /** Jitter delay между задачами (анти-flake GitHub) */
         private const val JITTER_BASE_MS = 600L
+        /** Per-task timeout (защита от вечного зависания) */
+        private const val TASK_TIMEOUT_MS = 5 * 60_000L
         /** Tag for logs */
         private const val TAG = "PipelineViewModel"
     }
@@ -187,6 +189,18 @@ class PipelineViewModel @Inject constructor(
             _pipelineKeyA.value = try { secureSettings.pipelineKeyA.first() } catch (_: Exception) { "" }
             _pipelineKeyB.value = try { secureSettings.pipelineKeyB.first() } catch (_: Exception) { "" }
             _pipelineActiveKey.value = try { secureSettings.pipelineActiveKeyIndex.first() } catch (_: Exception) { 0 }
+        }
+
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(30_000L)
+                if (!_state.value.isRunning) {
+                    try {
+                        repoIndexManager.invalidate()
+                        loadRepoStats()
+                    } catch (_: Exception) { /* тихо */ }
+                }
+            }
         }
     }
 
@@ -232,6 +246,15 @@ class PipelineViewModel @Inject constructor(
         val clamped = index.coerceIn(0, 1)
         _pipelineActiveKey.value = clamped
         viewModelScope.launch { secureSettings.setPipelineActiveKeyIndex(clamped) }
+    }
+
+    fun setModelOverrideEnabled(enabled: Boolean) {
+        if (_state.value.isRunning) return
+        _state.update { it.copy(modelOverrideEnabled = enabled) }
+    }
+    fun setModelOverrideName(name: String) {
+        if (_state.value.isRunning) return
+        _state.update { it.copy(modelOverrideName = name) }
     }
 
     /**
@@ -621,62 +644,70 @@ class PipelineViewModel @Inject constructor(
     ): Boolean {
         _state.update { it.copy(currentTaskIndex = idx) }
         updateTask(task.id) {
-            it.copy(
-                status = TaskStatus.PROCESSING,
-                attempts = it.attempts + 1
-            )
+            it.copy(status = TaskStatus.PROCESSING, attempts = it.attempts + 1)
         }
         val startMs = System.currentTimeMillis()
-
         var receivedFinal = false
         var receivedFatal = false
+        val overrideApiId = _state.value.effectiveModelApiId
 
         try {
-            executor.lockFor(task.filePath).withLock {
-                executor.executeTask(task, isRetryPass).collect { event ->
-                    when (event) {
-                        is PipelineExecutor.ExecutorEvent.Gemini -> {
-                        appendGeminiLog(event.log)
-                    }
-                    is PipelineExecutor.ExecutorEvent.Repo -> {
-                        appendRepoLog(event.log)
-                        // Если был commit — запускаем watcher как ребёнок watcherScope
-                        // (не текущей async-задачи, иначе awaitAll будет ждать watcher 3 мин)
-                        val commitSha = event.log.commitSha
-                        if (event.log.type == RepoEventType.FILE_COMMITTED && commitSha != null) {
-                            watcherScope.launch {
-                                try {
-                                    workflowWatcher.watch(commitSha, task.id).collect { evt ->
-                                        appendRepoLog(evt)
+            kotlinx.coroutines.withTimeout(TASK_TIMEOUT_MS) {
+                executor.lockFor(task.filePath).withLock {
+                    executor.executeTask(task, isRetryPass, overrideApiId).collect { event ->
+                        when (event) {
+                            is PipelineExecutor.ExecutorEvent.Gemini -> {
+                                appendGeminiLog(event.log)
+                            }
+                            is PipelineExecutor.ExecutorEvent.Repo -> {
+                                appendRepoLog(event.log)
+                                val commitSha = event.log.commitSha
+                                if (event.log.type == RepoEventType.FILE_COMMITTED && commitSha != null) {
+                                    watcherScope.launch {
+                                        try {
+                                            workflowWatcher.watch(commitSha, task.id).collect { evt ->
+                                                appendRepoLog(evt)
+                                            }
+                                        } catch (e: CancellationException) {
+                                            // нормально
+                                        } catch (e: Exception) {
+                                            appendRepoLog(RepoLogEvent(
+                                                type = RepoEventType.INFO, icon = "ℹ️",
+                                                message = "Watcher ${commitSha.take(8)}: ${e.message?.take(80)}",
+                                                taskId = task.id, commitSha = commitSha
+                                            ))
+                                        }
                                     }
-                                } catch (e: CancellationException) {
-                                    // нормально, остановка
-                                } catch (e: Exception) {
-                                    appendRepoLog(RepoLogEvent(
-                                        type = RepoEventType.INFO,
-                                        icon = "ℹ️",
-                                        message = "Watcher ${commitSha.take(8)}: ${e.message?.take(80)}",
-                                        taskId = task.id,
-                                        commitSha = commitSha
-                                    ))
                                 }
                             }
-                        }
-                    }
-                    is PipelineExecutor.ExecutorEvent.Final -> {
-                        receivedFinal = true
-                        applyTaskResult(task.id, event.result, startMs)
-                        if (event.result is TaskExecutionResult.Fatal) {
-                            receivedFatal = true
-                            _state.update {
-                                it.copy(fatalError = event.result.message)
+                            is PipelineExecutor.ExecutorEvent.Final -> {
+                                receivedFinal = true
+                                applyTaskResult(task.id, event.result, startMs)
+                                if (event.result is TaskExecutionResult.Fatal) {
+                                    receivedFatal = true
+                                    _state.update { it.copy(fatalError = event.result.message) }
+                                }
                             }
                         }
                     }
                 }
             }
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            if (!receivedFinal) {
+                appendGeminiLog(GeminiLogEvent(
+                    type = GeminiEventType.ERROR, icon = "⏰",
+                    message = "Задача превысила 5 мин → DEFERRED",
+                    taskId = task.id
+                ))
+                updateTask(task.id) {
+                    it.copy(
+                        status = TaskStatus.DEFERRED,
+                        lastError = "Timeout 5 минут",
+                        errorCode = TaskErrorCode.TASK_TIMEOUT
+                    )
+                }
+            }
         } catch (e: CancellationException) {
-            // Если задача была отменена в середине — пометим как DEFERRED
             if (!receivedFinal) {
                 updateTask(task.id) {
                     it.copy(
@@ -779,6 +810,7 @@ class PipelineViewModel @Inject constructor(
         _totalCostEur.value = 0.0
         _totalTokens.value = 0
         _userError.value = null
+        executor.clearFileLocks()
     }
 
     private fun resetForNewRun() {
