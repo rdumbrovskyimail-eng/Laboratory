@@ -1156,3 +1156,119 @@ private fun KeyRow(
         }
     }
 }
+
+@Composable
+private fun ModelOverrideSection(
+    modelName: String,
+    enabled: Boolean,
+    interactive: Boolean,
+    onModelNameChange: (String) -> Unit,
+    onToggle: (Boolean) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(PipelineColors.surfaceElevated)
+            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text(
+            "🧠 Override модели Gemini",
+            color = PipelineColors.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+        OutlinedTextField(
+            value = modelName,
+            onValueChange = onModelNameChange,
+            enabled = interactive && enabled,
+            placeholder = {
+                Text(
+                    "gemini-2.5-pro / gemini-flash-latest / ...",
+                    color = PipelineColors.textTertiary,
+                    fontSize = 11.sp
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(
+                fontFamily = FontFamily.Monospace, fontSize = 12.sp,
+                color = PipelineColors.textPrimary
+            ),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = PipelineColors.surfaceDark,
+                unfocusedContainerColor = PipelineColors.surfaceDark,
+                disabledContainerColor = PipelineColors.surfaceDark,
+                focusedBorderColor = PipelineColors.accentBlue,
+                unfocusedBorderColor = PipelineColors.borderSubtle
+            )
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            ToggleButton(
+                label = "ON",
+                active = enabled,
+                enabledColor = PipelineColors.accentGreen,
+                interactive = interactive,
+                onClick = { onToggle(true) },
+                modifier = Modifier.weight(1f)
+            )
+            ToggleButton(
+                label = "OFF",
+                active = !enabled,
+                enabledColor = PipelineColors.accentRed,
+                interactive = interactive,
+                onClick = { onToggle(false) },
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = if (enabled) {
+                if (modelName.isBlank()) "⚠️ Введите apiId модели, иначе используется дефолтная"
+                else "✓ Будет использована: $modelName"
+            } else "Используется дефолтная: gemini-3.1-flash-lite-preview",
+            color = if (enabled && modelName.isBlank()) PipelineColors.accentYellow
+                    else PipelineColors.textTertiary,
+            fontSize = 10.sp
+        )
+    }
+}
+
+@Composable
+private fun ToggleButton(
+    label: String,
+    active: Boolean,
+    enabledColor: Color,
+    interactive: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val bg = if (active) enabledColor else PipelineColors.surfaceDark
+    val fg = if (active) Color.White else PipelineColors.textSecondary
+    val border = if (active) enabledColor else PipelineColors.borderSubtle
+    Box(
+        modifier = modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(bg)
+            .border(1.dp, border, RoundedCornerShape(8.dp))
+            .clickable(enabled = interactive, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            label,
+            color = fg,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 13.sp,
+            fontFamily = FontFamily.Monospace
+        )
+    }
+}
