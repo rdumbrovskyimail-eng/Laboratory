@@ -13,7 +13,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -50,6 +53,24 @@ class PipelineExecutor @Inject constructor(
 
     companion object {
         private const val TAG = "PipelineExecutor"
+    }
+
+    /** Per-file Mutex: гарантирует что 2 задачи на один filePath не пересекутся (read→edit→commit). */
+    private val fileLocks = ConcurrentHashMap<String, Mutex>()
+    private fun lockFor(path: String): Mutex = fileLocks.computeIfAbsent(path) { Mutex() }
+
+    /** Глобальный GitHub write throttle: между PUT-запросами держим минимум 800мс независимо от параллелизма. */
+    private val githubWriteMutex = Mutex()
+    @Volatile private var lastGithubWriteMs: Long = 0L
+    private suspend fun throttleGithubWrite() {
+        githubWriteMutex.withLock {
+            val now = System.currentTimeMillis()
+            val elapsed = now - lastGithubWriteMs
+            val needed = 800L - elapsed
+            if (needed > 0) delay(needed)
+            lastGithubWriteMs = System.currentTimeMillis()
+        }
+    }
         private const val CONFLICT_RETRY_MAX = 3
         private const val NETWORK_RETRY_MAX = 2
         private const val INTER_FILE_DELAY_MS = 1500L
@@ -109,14 +130,15 @@ You MUST:
         )))
 
         try {
-            // ═══ CREATE BRANCH ════════════════════════════════════════════════
-            // Для CREATE-задачи пропускаем read + AI Edit, контент уже готов.
-            if (task.operation == TaskOperation.CREATE) {
-                executeCreateTask(task, taskId, startTime)
-                return@channelFlow
-            }
+            lockFor(task.filePath).withLock {
+                // ═══ CREATE BRANCH ════════════════════════════════════════════════
+                // Для CREATE-задачи пропускаем read + AI Edit, контент уже готов.
+                if (task.operation == TaskOperation.CREATE) {
+                    executeCreateTask(task, taskId, startTime)
+                    return@channelFlow
+                }
 
-            // ═══ STEP 1: READ ════════════════════════════════════════════════
+                // ═══ STEP 1: READ ════════════════════════════════════════════════
             val readOutcome = readFile(task.filePath)
             val originalContent: String
             val originalSha: String
@@ -373,7 +395,7 @@ You MUST:
                 send(ExecutorEvent.Repo(RepoLogEvent(
                     type = RepoEventType.INFO,
                     icon = "🔄",
-                    message = "Файл существует: ${task.filePath} — будет перезаписан",
+                    message = "CREATE→OVERWRITE existing: ${task.filePath}",
                     taskId = taskId
                 )))
             } else {
@@ -548,6 +570,7 @@ You MUST:
 
         while (attempt < CONFLICT_RETRY_MAX) {
             try {
+                throttleGithubWrite()
                 val result = gitHubClient.createOrUpdateFile(
                     path = path,
                     content = content,
@@ -563,24 +586,26 @@ You MUST:
                 when {
                     // 422 для CREATE — обычно означает что файл уже существует (race condition)
                     e.statusCode == 422 && isCreate -> {
-                        return@withContext CommitOutcome.DeferrableErr(
-                            TaskErrorCode.FILE_ALREADY_EXISTS,
-                            "GitHub: 422 — файл уже существует или контент некорректен"
-                        )
+                        val fresh = gitHubClient.getFileContent(path, branch).getOrNull()
+                        if (fresh != null) {
+                            currentSha = fresh.sha
+                            attempt++
+                            delay(1500L * attempt)
+                            continue
+                        } else {
+                            return@withContext CommitOutcome.DeferrableErr(
+                                TaskErrorCode.FILE_ALREADY_EXISTS,
+                                "422 — файл уже существует и не получили свежий SHA"
+                            )
+                        }
                     }
                     e.statusCode == 409 ||
                             e.message.contains("does not match", ignoreCase = true) -> {
-                        // 409 в CREATE-режиме не должен случаться (sha=null), но обрабатываем
-                        if (isCreate) {
-                            return@withContext CommitOutcome.DeferrableErr(
-                                TaskErrorCode.FILE_ALREADY_EXISTS,
-                                "GitHub: конфликт при создании — файл, возможно, уже существует"
-                            )
-                        }
                         notify(ExecutorEvent.Repo(RepoLogEvent(
                             type = RepoEventType.COMMIT_CONFLICT,
                             icon = "⚠️",
-                            message = "409 Conflict (попытка ${attempt + 1}/$CONFLICT_RETRY_MAX) — auto KEEP_MINE",
+                            message = "409 Conflict (попытка ${attempt + 1}/$CONFLICT_RETRY_MAX) — auto KEEP_MINE" +
+                                    if (isCreate) " (CREATE→OVERWRITE)" else "",
                             taskId = taskId
                         )))
                         // Получаем свежий SHA из ТОЙ ЖЕ ветки
