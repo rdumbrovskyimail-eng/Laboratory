@@ -199,7 +199,8 @@ Example 2 — Delete a function:
         instructions: String,
         model: AiModel = AiModel.GEMINI_3_1_FLASH_LITE,
         usePipelineKeys: Boolean = false,
-        customModelApiId: String? = null
+        customModelApiId: String? = null,
+        thinkingLevelOverride: String? = null
     ): Result<EditResult> = withContext(Dispatchers.IO) {
         try {
             val lineCount = fileContent.lines().size
@@ -232,7 +233,7 @@ Example 2 — Delete a function:
             var rawResponse: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
             while (true) {
-                rawResponse = callGeminiApi(systemPrompt, userMessage, effectiveApiId, currentApiKey)
+                rawResponse = callGeminiApi(systemPrompt, userMessage, effectiveApiId, currentApiKey, thinkingLevelOverride)
                 if (rawResponse.isSuccess) break
                 if (!usePipelineKeys || attempts >= 2) break
                 val errMsg = rawResponse.exceptionOrNull()?.message?.lowercase() ?: ""
@@ -277,7 +278,8 @@ Example 2 — Delete a function:
         systemPrompt: String,
         userMessage: String,
         modelApiId: String,
-        apiKey: String
+        apiKey: String,
+        thinkingLevelOverride: String? = null
     ): Result<Triple<String, Int, Int>> {
         val url = "$GEMINI_API_BASE_URL/$modelApiId:generateContent?key=$apiKey"
 
@@ -299,10 +301,13 @@ Example 2 — Delete a function:
                 put("maxOutputTokens", MAX_OUTPUT_TOKENS)
                 put("temperature", 0.0)
                 put("topP", 0.95)
-                // Для Gemini 3.x — максимальный thinking
                 if (modelApiId.startsWith("gemini-3")) {
+                    // Lite — берём из override (low/medium/high), иначе всем 3.x по дефолту high
+                    val level = thinkingLevelOverride?.trim()?.lowercase()?.takeIf {
+                        it in listOf("low", "medium", "high")
+                    } ?: "high"
                     put("thinkingConfig", JSONObject().apply {
-                        put("thinkingLevel", "high")
+                        put("thinkingLevel", level)
                     })
                 }
             })
