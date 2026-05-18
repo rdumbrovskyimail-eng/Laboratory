@@ -260,6 +260,12 @@ class PipelineViewModel @Inject constructor(
         if (_state.value.isRunning) return
         _state.update { it.copy(selectedModelApiId = apiId) }
     }
+    fun setLiteThinkingLevel(level: String) {
+        if (_state.value.isRunning) return
+        val normalized = level.lowercase().trim()
+        if (normalized !in listOf("low", "medium", "high")) return
+        _state.update { it.copy(liteThinkingLevel = normalized) }
+    }
 
     /**
      * Обновить статистику репо (для шапки экрана).
@@ -654,11 +660,15 @@ class PipelineViewModel @Inject constructor(
         var receivedFinal = false
         var receivedFatal = false
         val overrideApiId = _state.value.effectiveModelApiId
+        // Thinking-уровень: только для Lite модели когда она выбрана и Override OFF
+        val isLiteActive = !_state.value.modelOverrideEnabled &&
+                _state.value.selectedModelApiId == "gemini-3.1-flash-lite-preview"
+        val thinkingLevel = if (isLiteActive) _state.value.liteThinkingLevel else null
 
         try {
             kotlinx.coroutines.withTimeout(TASK_TIMEOUT_MS) {
                 executor.lockFor(task.filePath).withLock {
-                    executor.executeTask(task, isRetryPass, overrideApiId).collect { event ->
+                    executor.executeTask(task, isRetryPass, overrideApiId, thinkingLevel).collect { event ->
                         when (event) {
                             is PipelineExecutor.ExecutorEvent.Gemini -> {
                                 appendGeminiLog(event.log)
