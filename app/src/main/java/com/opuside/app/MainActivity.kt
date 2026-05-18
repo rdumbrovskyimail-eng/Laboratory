@@ -63,6 +63,9 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            com.opuside.app.feature.pipeline.service.NotificationPermissionHelper.request(this)
+        } catch (_: Exception) { /* не критично */ }
 
         // Создаём каналы уведомлений
         WorkflowNotificationManager.createChannels(this)
