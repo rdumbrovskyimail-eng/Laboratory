@@ -156,6 +156,12 @@ fun PipelineScreen(
             // ═══ HEADER ═══════════════════════════════════════════════════
             PipelineHeader(repoStats = repoStats, runId = state.pipelineRunId)
 
+            PipelineModeSelector(
+                currentMode = state.pipelineMode,
+                interactive = !state.isRunning,
+                onModeChange = viewModel::setPipelineMode
+            )
+
             // ═══ PROMPT (collapsible) ═════════════════════════════════════
             PromptSection(
                 prompt = userPrompt,
@@ -1429,5 +1435,81 @@ private fun LiteThinkingSelector(
             color = PipelineColors.textTertiary,
             fontSize = 10.sp
         )
+    }
+}
+
+@Composable
+private fun PipelineModeSelector(
+    currentMode: com.opuside.app.feature.pipeline.data.PipelineMode,
+    interactive: Boolean,
+    onModeChange: (com.opuside.app.feature.pipeline.data.PipelineMode) -> Unit
+) {
+    val modes = listOf(
+        com.opuside.app.feature.pipeline.data.PipelineMode.ONLINE,
+        com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(PipelineColors.surfaceElevated)
+            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(12.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text(
+            "⚙️ Режим работы",
+            color = PipelineColors.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            modes.forEach { mode ->
+                val isSelected = currentMode == mode
+                val bg = if (isSelected) PipelineColors.accentBlue else PipelineColors.surfaceDark
+                val fg = if (isSelected) Color.White else PipelineColors.textSecondary
+                val border = if (isSelected) PipelineColors.accentBlue else PipelineColors.borderSubtle
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(bg)
+                        .border(1.dp, border, RoundedCornerShape(10.dp))
+                        .clickable(enabled = interactive) { onModeChange(mode) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "${mode.emoji} ${mode.displayName}",
+                        color = fg,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = when (currentMode) {
+                com.opuside.app.feature.pipeline.data.PipelineMode.ONLINE ->
+                    "Прямые коммиты в GitHub — по одному на файл. Может ловить rate limit при параллелизме 5+."
+                com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE ->
+                    "Клонируем репозиторий локально, правим все файлы, в конце — один коммит и push. Безопасно от rate limit."
+            },
+            color = PipelineColors.textTertiary,
+            fontSize = 10.sp
+        )
+        if (!interactive) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Переключение режима недоступно во время выполнения",
+                color = PipelineColors.accentYellow,
+                fontSize = 10.sp
+            )
+        }
     }
 }
