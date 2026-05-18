@@ -93,7 +93,8 @@ You MUST:
     fun executeTask(
         task: FileTask,
         isRetryPass: Boolean,
-        overrideModelApiId: String? = null
+        overrideModelApiId: String? = null,
+        thinkingLevelOverride: String? = null
     ): Flow<ExecutorEvent> = channelFlow {
         val startTime = System.currentTimeMillis()
         val taskId = task.id
@@ -158,7 +159,8 @@ You MUST:
                 instructions = effectiveInstructions,
                 model = MODEL,
                 usePipelineKeys = true,
-                customModelApiId = overrideModelApiId
+                customModelApiId = overrideModelApiId,
+                thinkingLevelOverride = thinkingLevelOverride
             ).getOrElse { e ->
                 val code = classifyAiError(e)
                 send(ExecutorEvent.Gemini(GeminiLogEvent(
