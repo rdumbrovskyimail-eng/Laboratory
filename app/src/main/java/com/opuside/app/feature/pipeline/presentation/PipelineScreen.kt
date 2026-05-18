@@ -177,6 +177,11 @@ fun PipelineScreen(
                 onActiveChange = viewModel::setPipelineActiveKey
             )
 
+            DefaultModelSelector(
+                selected = state.selectedModelApiId,
+                interactive = !state.isRunning && !state.modelOverrideEnabled,
+                onSelect = viewModel::setSelectedModel
+            )
             ModelOverrideSection(
                 modelName = state.modelOverrideName,
                 enabled = state.modelOverrideEnabled,
@@ -1277,6 +1282,74 @@ private fun ToggleButton(
             fontWeight = FontWeight.SemiBold,
             fontSize = 13.sp,
             fontFamily = FontFamily.Monospace
+        )
+    }
+}
+
+@Composable
+private fun DefaultModelSelector(
+    selected: String,
+    interactive: Boolean,
+    onSelect: (String) -> Unit
+) {
+    val options = listOf(
+        "gemini-3-flash-preview" to "⚡ 3 Flash",
+        "gemini-3.1-flash-lite-preview" to "🪶 3.1 Flash-Lite"
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(PipelineColors.surfaceElevated)
+            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text(
+            "📌 Дефолтная модель",
+            color = PipelineColors.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            options.forEach { (apiId, label) ->
+                val isSelected = selected == apiId
+                val bg = if (isSelected) PipelineColors.accentBlue else PipelineColors.surfaceDark
+                val fg = if (isSelected) Color.White else PipelineColors.textSecondary
+                val border = if (isSelected) PipelineColors.accentBlue else PipelineColors.borderSubtle
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(36.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(bg)
+                        .border(1.dp, border, RoundedCornerShape(8.dp))
+                        .clickable(enabled = interactive) { onSelect(apiId) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        color = fg,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = if (interactive)
+                "Используется когда Override OFF. Temperature=0.0, Thinking=HIGH."
+            else if (!interactive && selected.isNotBlank())
+                "Override включён — используется поле выше"
+            else "",
+            color = PipelineColors.textTertiary,
+            fontSize = 10.sp
         )
     }
 }
