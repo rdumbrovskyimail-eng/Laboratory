@@ -44,6 +44,9 @@ import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import kotlin.random.Random
+import com.opuside.app.feature.pipeline.data.LocalRepoManager
+import com.opuside.app.feature.pipeline.data.PipelineMode
+import com.opuside.app.feature.pipeline.data.PipelineKeyRotator
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -77,8 +80,8 @@ class PipelineViewModel @Inject constructor(
     private val repoIndexManager: RepoIndexManager,
     private val appSettings: AppSettings,
     private val secureSettings: com.opuside.app.core.security.SecureSettingsDataStore,
-    private val keyRotator: com.opuside.app.feature.pipeline.data.PipelineKeyRotator,
-    private val localRepoManager: com.opuside.app.feature.pipeline.data.LocalRepoManager
+    private val keyRotator: PipelineKeyRotator,
+    private val localRepoManager: LocalRepoManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -101,7 +104,7 @@ class PipelineViewModel @Inject constructor(
     val pipelineActiveKey: StateFlow<Int> = _pipelineActiveKey.asStateFlow()
 
     /** Статус локального клона для UI (см. PipelineModeSelector в Screen) */
-    val localRepoStatus: StateFlow<com.opuside.app.feature.pipeline.data.LocalRepoManager.RepoStatus>
+    val localRepoStatus: StateFlow<LocalRepoManager.RepoStatus>
         get() = localRepoManager.status
     val localRepoProgress: StateFlow<String?>
         get() = localRepoManager.progressMessage
@@ -198,8 +201,8 @@ class PipelineViewModel @Inject constructor(
             _pipelineActiveKey.value = try { secureSettings.pipelineActiveKeyIndex.first() } catch (_: Exception) { 0 }
             val savedMode = try { secureSettings.pipelineMode.first() } catch (_: Exception) { "online" }
             val mode = when (savedMode) {
-                "offline" -> com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
-                else -> com.opuside.app.feature.pipeline.data.PipelineMode.ONLINE
+                "offline" -> PipelineMode.OFFLINE
+                else -> PipelineMode.ONLINE
             }
             _state.update { it.copy(pipelineMode = mode) }
         }
@@ -261,7 +264,7 @@ class PipelineViewModel @Inject constructor(
         viewModelScope.launch { secureSettings.setPipelineActiveKeyIndex(clamped) }
     }
 
-    fun setPipelineMode(mode: com.opuside.app.feature.pipeline.data.PipelineMode) {
+    fun setPipelineMode(mode: PipelineMode) {
         if (_state.value.isRunning) return  // во время выполнения переключение запрещено
         _state.update { it.copy(pipelineMode = mode) }
         viewModelScope.launch {
@@ -513,7 +516,7 @@ class PipelineViewModel @Inject constructor(
             val watcherScope = CoroutineScope(coroutineContext + SupervisorJob(coroutineContext[Job]))
             try {
                 val maxParallel = _state.value.maxParallelTasks
-                val isOffline = _state.value.pipelineMode == com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
+                val isOffline = _state.value.pipelineMode == PipelineMode.OFFLINE
 
                 // ═══ OFFLINE PRE-FLIGHT: клонируем/обновляем репо ═══════════
                 if (isOffline) {
@@ -833,7 +836,7 @@ class PipelineViewModel @Inject constructor(
         val isLiteActive = !_state.value.modelOverrideEnabled &&
                 _state.value.selectedModelApiId == "gemini-3.1-flash-lite-preview"
         val thinkingLevel = if (isLiteActive) _state.value.liteThinkingLevel else null
-        val isOffline = _state.value.pipelineMode == com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
+        val isOffline = _state.value.pipelineMode == PipelineMode.OFFLINE
 
         try {
             kotlinx.coroutines.withTimeout(TASK_TIMEOUT_MS) {
