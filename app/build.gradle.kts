@@ -186,6 +186,10 @@ dependencies {
     // BIOMETRIC
     implementation(libs.androidx.biometric)
 
+    // JGit для offline-режима Pipeline (clone, pull, commit, push)
+    implementation("org.eclipse.jgit:org.eclipse.jgit:6.10.0.202406032230-r")
+    implementation("org.slf4j:slf4j-nop:2.0.13")
+
     // TESTING
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
