@@ -45,6 +45,7 @@ data class PipelineState(
 
     val estimatedCost: Double get() {
         val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
+        // DELETE и CREATE не делают AI-вызов, не тратят токены
         return modifyCount * 0.00002 + 0.00004
     }
 
@@ -78,9 +79,13 @@ enum class OverallStatus {
 }
 
 enum class TaskOperation {
-    MODIFY, CREATE;
-    val emoji: String get() = when (this) { MODIFY -> "✏️"; CREATE -> "➕" }
-    val displayName: String get() = when (this) { MODIFY -> "Изменить"; CREATE -> "Создать" }
+    MODIFY, CREATE, DELETE;
+    val emoji: String get() = when (this) {
+        MODIFY -> "✏️"; CREATE -> "➕"; DELETE -> "🗑"
+    }
+    val displayName: String get() = when (this) {
+        MODIFY -> "Изменить"; CREATE -> "Создать"; DELETE -> "Удалить"
+    }
 }
 
 data class FileTask(
