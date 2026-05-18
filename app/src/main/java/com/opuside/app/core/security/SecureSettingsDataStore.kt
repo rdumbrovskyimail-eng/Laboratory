@@ -54,6 +54,7 @@ class SecureSettingsDataStore @Inject constructor(
         val PIPELINE_GEMINI_KEY_B = stringPreferencesKey("pipeline_gemini_key_b")
         val PIPELINE_GEMINI_ACTIVE = intPreferencesKey("pipeline_gemini_active")
         val PIPELINE_GEMINI_MODEL = stringPreferencesKey("pipeline_gemini_model")
+        val PIPELINE_MODE = stringPreferencesKey("pipeline_mode")
 
         private val KEY_DEEPSEEK_API = stringPreferencesKey("deepseek_api_encrypted_v1")
         private val KEY_DEEPSEEK_IV = stringPreferencesKey("deepseek_api_iv_v1")
@@ -403,6 +404,15 @@ class SecureSettingsDataStore @Inject constructor(
         .map { it[PIPELINE_GEMINI_MODEL] ?: "" }
     suspend fun setPipelineGeminiModel(v: String) {
         dataStore.edit { it[PIPELINE_GEMINI_MODEL] = v }
+    }
+
+    val pipelineMode: Flow<String> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[PIPELINE_MODE] ?: "online" }
+    suspend fun setPipelineMode(v: String) {
+        val normalized = v.trim().lowercase()
+        if (normalized !in listOf("online", "offline")) return
+        dataStore.edit { it[PIPELINE_MODE] = normalized }
     }
 
     suspend fun setGeminiApiKeys(keys: List<GeminiKeyEntry>) {
