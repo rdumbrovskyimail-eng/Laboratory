@@ -189,6 +189,12 @@ class PipelineViewModel @Inject constructor(
             _pipelineKeyA.value = try { secureSettings.pipelineKeyA.first() } catch (_: Exception) { "" }
             _pipelineKeyB.value = try { secureSettings.pipelineKeyB.first() } catch (_: Exception) { "" }
             _pipelineActiveKey.value = try { secureSettings.pipelineActiveKeyIndex.first() } catch (_: Exception) { 0 }
+            val savedMode = try { secureSettings.pipelineMode.first() } catch (_: Exception) { "online" }
+            val mode = when (savedMode) {
+                "offline" -> com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
+                else -> com.opuside.app.feature.pipeline.data.PipelineMode.ONLINE
+            }
+            _state.update { it.copy(pipelineMode = mode) }
         }
 
         viewModelScope.launch {
@@ -246,6 +252,14 @@ class PipelineViewModel @Inject constructor(
         val clamped = index.coerceIn(0, 1)
         _pipelineActiveKey.value = clamped
         viewModelScope.launch { secureSettings.setPipelineActiveKeyIndex(clamped) }
+    }
+
+    fun setPipelineMode(mode: com.opuside.app.feature.pipeline.data.PipelineMode) {
+        if (_state.value.isRunning) return  // во время выполнения переключение запрещено
+        _state.update { it.copy(pipelineMode = mode) }
+        viewModelScope.launch {
+            secureSettings.setPipelineMode(mode.name.lowercase())
+        }
     }
 
     fun setModelOverrideEnabled(enabled: Boolean) {
