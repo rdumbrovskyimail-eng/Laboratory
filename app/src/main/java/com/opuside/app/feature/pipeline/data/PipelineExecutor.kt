@@ -25,7 +25,8 @@ class PipelineExecutor @Inject constructor(
     private val gitHubClient: GitHubApiClient,
     private val aiEditService: CreatorAIEditService,
     private val repoIndexManager: RepoIndexManager,
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val localRepoManager: LocalRepoManager
 ) {
 
     companion object {
@@ -94,7 +95,8 @@ You MUST:
         task: FileTask,
         isRetryPass: Boolean,
         overrideModelApiId: String? = null,
-        thinkingLevelOverride: String? = null
+        thinkingLevelOverride: String? = null,
+        offlineMode: Boolean = false
     ): Flow<ExecutorEvent> = channelFlow {
         val startTime = System.currentTimeMillis()
         val taskId = task.id
@@ -109,11 +111,13 @@ You MUST:
 
         try {
             if (task.operation == TaskOperation.CREATE) {
-                executeCreateTask(task, taskId, startTime)
+                if (offlineMode) executeCreateTaskOffline(task, taskId, startTime)
+                else executeCreateTask(task, taskId, startTime)
                 return@channelFlow
             }
 
-            val readOutcome = readFile(task.filePath)
+            val readOutcome = if (offlineMode) readFileOffline(task.filePath)
+                              else readFile(task.filePath)
             val originalContent: String
             val originalSha: String
             when (readOutcome) {
@@ -248,41 +252,70 @@ You MUST:
                 taskId = taskId
             )))
 
-            val outcome = commit(
-                path = task.filePath,
-                content = applyResult.newContent,
-                initialSha = originalSha,
-                commitMessage = "[Pipeline] ${task.filePath.substringAfterLast('/')}",
-                taskId = taskId
-            ) { event -> send(event) }
-
-            when (outcome) {
-                is CommitOutcome.Ok -> {
-                    val durationMs = System.currentTimeMillis() - startTime
-                    repoIndexManager.invalidate()
-                    send(ExecutorEvent.Repo(RepoLogEvent(
-                        type = RepoEventType.FILE_COMMITTED, icon = "💾",
-                        message = "Коммит: ${outcome.sha.take(8)} (${durationMs}ms)" +
-                                if (outcome.resolvedConflict) " ⚠️ auto-resolved" else "",
-                        taskId = taskId, commitSha = outcome.sha
+            if (offlineMode) {
+                // OFFLINE — пишем в локальный клон, без коммита/пуша.
+                val writeRes = localRepoManager.writeFile(task.filePath, applyResult.newContent)
+                if (writeRes.isFailure) {
+                    val e = writeRes.exceptionOrNull()
+                    send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                        TaskErrorCode.NETWORK_ERROR,
+                        "Локальная запись упала: ${e?.message?.take(120)}",
+                        tokensTotal
                     )))
-                    send(ExecutorEvent.Final(TaskExecutionResult.Success(
-                        commitSha = outcome.sha,
-                        resolvedConflict = outcome.resolvedConflict,
-                        tokensUsed = tokensTotal,
-                        costEur = editResult.costEUR,
-                        editResult = editResult
-                    )))
+                    return@channelFlow
                 }
-                is CommitOutcome.FatalErr -> send(ExecutorEvent.Final(
-                    TaskExecutionResult.Fatal(TaskErrorCode.UNKNOWN, outcome.message)
-                ))
-                is CommitOutcome.DeferrableErr -> send(ExecutorEvent.Final(
-                    TaskExecutionResult.Deferrable(outcome.code, outcome.message, tokensTotal)
-                ))
+                val durationMs = System.currentTimeMillis() - startTime
+                send(ExecutorEvent.Repo(RepoLogEvent(
+                    type = RepoEventType.LOCAL_WRITE, icon = "📝",
+                    message = "Локально: ${task.filePath.substringAfterLast('/')} " +
+                            "(${applyResult.newContent.length / 1024}KB, ${durationMs}ms)",
+                    taskId = taskId
+                )))
+                send(ExecutorEvent.Final(TaskExecutionResult.Success(
+                    commitSha = "pending-batch",   // будет заменено реальным sha после push
+                    resolvedConflict = false,
+                    tokensUsed = tokensTotal,
+                    costEur = editResult.costEUR,
+                    editResult = editResult
+                )))
+            } else {
+                // ONLINE — как было: commit через GitHub API.
+                val outcome = commit(
+                    path = task.filePath,
+                    content = applyResult.newContent,
+                    initialSha = originalSha,
+                    commitMessage = "[Pipeline] ${task.filePath.substringAfterLast('/')}",
+                    taskId = taskId
+                ) { event -> send(event) }
+
+                when (outcome) {
+                    is CommitOutcome.Ok -> {
+                        val durationMs = System.currentTimeMillis() - startTime
+                        repoIndexManager.invalidate()
+                        send(ExecutorEvent.Repo(RepoLogEvent(
+                            type = RepoEventType.FILE_COMMITTED, icon = "💾",
+                            message = "Коммит: ${outcome.sha.take(8)} (${durationMs}ms)" +
+                                    if (outcome.resolvedConflict) " ⚠️ auto-resolved" else "",
+                            taskId = taskId, commitSha = outcome.sha
+                        )))
+                        send(ExecutorEvent.Final(TaskExecutionResult.Success(
+                            commitSha = outcome.sha,
+                            resolvedConflict = outcome.resolvedConflict,
+                            tokensUsed = tokensTotal,
+                            costEur = editResult.costEUR,
+                            editResult = editResult
+                        )))
+                    }
+                    is CommitOutcome.FatalErr -> send(ExecutorEvent.Final(
+                        TaskExecutionResult.Fatal(TaskErrorCode.UNKNOWN, outcome.message)
+                    ))
+                    is CommitOutcome.DeferrableErr -> send(ExecutorEvent.Final(
+                        TaskExecutionResult.Deferrable(outcome.code, outcome.message, tokensTotal)
+                    ))
+                }
             }
 
-            delay(INTER_FILE_DELAY_MS)
+            if (!offlineMode) delay(INTER_FILE_DELAY_MS)
         } catch (e: CancellationException) {
             Log.d(TAG, "Task ${task.filePath} cancelled")
             throw e
@@ -365,6 +398,75 @@ You MUST:
                 TaskExecutionResult.Deferrable(outcome.code, outcome.message)
             ))
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // OFFLINE — чтение/создание через локальный клон
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private suspend fun readFileOffline(path: String): ReadOutcome {
+        val result = localRepoManager.readFile(path)
+        return result.fold(
+            onSuccess = { content -> ReadOutcome.Ok(content, "offline-no-sha") },
+            onFailure = { e ->
+                if (e is java.io.FileNotFoundException) {
+                    ReadOutcome.DeferrableErr(TaskErrorCode.FILE_NOT_FOUND, "Файл не найден в локальном клоне: $path")
+                } else {
+                    ReadOutcome.DeferrableErr(TaskErrorCode.NETWORK_ERROR, e.message ?: "Read failed: $path")
+                }
+            }
+        )
+    }
+
+    private suspend fun kotlinx.coroutines.channels.ProducerScope<ExecutorEvent>.executeCreateTaskOffline(
+        task: FileTask, taskId: String, startTime: Long
+    ) {
+        val content = task.newFileContent
+        if (content.isNullOrBlank()) {
+            send(ExecutorEvent.Gemini(GeminiLogEvent(
+                type = GeminiEventType.ERROR, icon = "❌",
+                message = "CREATE без контента", taskId = taskId
+            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                TaskErrorCode.INVALID_CREATE_CONTENT,
+                "CREATE task '${task.filePath}' has no content"
+            )))
+            return
+        }
+
+        val alreadyExists = localRepoManager.fileExists(task.filePath)
+        send(ExecutorEvent.Repo(RepoLogEvent(
+            type = RepoEventType.INFO,
+            icon = if (alreadyExists) "🔄" else "✓",
+            message = if (alreadyExists) "CREATE→OVERWRITE (offline): ${task.filePath}"
+                      else "Путь свободен (offline): ${task.filePath}",
+            taskId = taskId
+        )))
+
+        val writeRes = localRepoManager.writeFile(task.filePath, content)
+        if (writeRes.isFailure) {
+            val e = writeRes.exceptionOrNull()
+            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                TaskErrorCode.NETWORK_ERROR,
+                "Локальное создание упало: ${e?.message?.take(120)}"
+            )))
+            return
+        }
+
+        val durationMs = System.currentTimeMillis() - startTime
+        send(ExecutorEvent.Repo(RepoLogEvent(
+            type = RepoEventType.LOCAL_WRITE, icon = "📝",
+            message = "Создан локально: ${task.filePath.substringAfterLast('/')} " +
+                    "(${content.length / 1024}KB, ${durationMs}ms)",
+            taskId = taskId
+        )))
+        send(ExecutorEvent.Final(TaskExecutionResult.Success(
+            commitSha = "pending-batch",
+            resolvedConflict = false,
+            tokensUsed = 0,
+            costEur = 0.0,
+            editResult = null
+        )))
     }
 
     private suspend fun readFile(path: String): ReadOutcome = withContext(Dispatchers.IO) {
