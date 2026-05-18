@@ -77,7 +77,8 @@ class PipelineViewModel @Inject constructor(
     private val repoIndexManager: RepoIndexManager,
     private val appSettings: AppSettings,
     private val secureSettings: com.opuside.app.core.security.SecureSettingsDataStore,
-    private val keyRotator: com.opuside.app.feature.pipeline.data.PipelineKeyRotator
+    private val keyRotator: com.opuside.app.feature.pipeline.data.PipelineKeyRotator,
+    private val localRepoManager: com.opuside.app.feature.pipeline.data.LocalRepoManager
 ) : ViewModel() {
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -98,6 +99,12 @@ class PipelineViewModel @Inject constructor(
 
     private val _pipelineActiveKey = MutableStateFlow(0)
     val pipelineActiveKey: StateFlow<Int> = _pipelineActiveKey.asStateFlow()
+
+    /** Статус локального клона для UI (см. PipelineModeSelector в Screen) */
+    val localRepoStatus: StateFlow<com.opuside.app.feature.pipeline.data.LocalRepoManager.RepoStatus>
+        get() = localRepoManager.status
+    val localRepoProgress: StateFlow<String?>
+        get() = localRepoManager.progressMessage
 
     private val _geminiLog = MutableStateFlow<List<GeminiLogEvent>>(emptyList())
     val geminiLog: StateFlow<List<GeminiLogEvent>> = _geminiLog.asStateFlow()
@@ -259,6 +266,45 @@ class PipelineViewModel @Inject constructor(
         _state.update { it.copy(pipelineMode = mode) }
         viewModelScope.launch {
             secureSettings.setPipelineMode(mode.name.lowercase())
+        }
+    }
+
+    /** Ручная синхронизация локального клона (кнопка в UI). */
+    fun syncLocalRepo() {
+        if (_state.value.isRunning) return
+        viewModelScope.launch {
+            appendRepoLog(RepoLogEvent(
+                type = RepoEventType.CLONE_START, icon = "📥",
+                message = "Синхронизация локального клона..."
+            ))
+            val result = localRepoManager.ensureCloned()
+            result.fold(
+                onSuccess = {
+                    appendRepoLog(RepoLogEvent(
+                        type = RepoEventType.CLONE_DONE, icon = "✅",
+                        message = "Клон готов: ${it.name}"
+                    ))
+                },
+                onFailure = { e ->
+                    appendRepoLog(RepoLogEvent(
+                        type = RepoEventType.ERROR, icon = "❌",
+                        message = "Ошибка синхронизации: ${e.message?.take(150)}"
+                    ))
+                    _userError.value = e.message
+                }
+            )
+        }
+    }
+
+    /** Удалить локальный клон (кнопка в UI). */
+    fun deleteLocalClone() {
+        if (_state.value.isRunning) return
+        viewModelScope.launch {
+            localRepoManager.deleteClone()
+            appendRepoLog(RepoLogEvent(
+                type = RepoEventType.INFO, icon = "🗑",
+                message = "Локальный клон удалён"
+            ))
         }
     }
 
@@ -467,13 +513,39 @@ class PipelineViewModel @Inject constructor(
             val watcherScope = CoroutineScope(coroutineContext + SupervisorJob(coroutineContext[Job]))
             try {
                 val maxParallel = _state.value.maxParallelTasks
+                val isOffline = _state.value.pipelineMode == com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
+
+                // ═══ OFFLINE PRE-FLIGHT: клонируем/обновляем репо ═══════════
+                if (isOffline) {
+                    appendRepoLog(RepoLogEvent(
+                        type = RepoEventType.CLONE_START, icon = "📥",
+                        message = "Offline: подготовка локального клона..."
+                    ))
+                    val cloneRes = localRepoManager.ensureCloned()
+                    if (cloneRes.isFailure) {
+                        val e = cloneRes.exceptionOrNull()
+                        appendRepoLog(RepoLogEvent(
+                            type = RepoEventType.ERROR, icon = "❌",
+                            message = "Клон/pull упал: ${e?.message?.take(150)}"
+                        ))
+                        _state.update {
+                            it.copy(phase = PipelinePhase.FATAL, fatalError = e?.message)
+                        }
+                        return@launch
+                    }
+                    appendRepoLog(RepoLogEvent(
+                        type = RepoEventType.CLONE_DONE, icon = "✅",
+                        message = "Клон готов, начинаем правки локально"
+                    ))
+                }
+
                 _state.update { it.copy(phase = PipelinePhase.EXECUTING) }
 
                 appendGeminiLog(GeminiLogEvent(
                     type = GeminiEventType.INFO,
                     icon = "▶️",
                     message = "Старт конвейера: ${_state.value.tasks.size} задач(а), " +
-                            "параллелизм=$maxParallel"
+                            "параллелизм=$maxParallel, режим=${if (isOffline) "Offline" else "Online"}"
                 ))
 
                 // ═══ ПЕРВЫЙ ПРОХОД (параллельно) ════════════════════════════
@@ -551,6 +623,90 @@ class PipelineViewModel @Inject constructor(
                     icon = "✅",
                     message = "Отчёт готов"
                 ))
+
+                // ═══ OFFLINE POST-FLIGHT: один коммит + push ════════════════
+                if (isOffline) {
+                    val tasks = _state.value.tasks
+                    val successfulFiles = tasks
+                        .filter { it.status == TaskStatus.SUCCESS && it.commitSha == "pending-batch" }
+                        .map { it.filePath.substringAfterLast('/') }
+
+                    if (successfulFiles.isNotEmpty()) {
+                        val commitMsg = buildString {
+                            append("[Pipeline] ${successfulFiles.size} change(s)")
+                            if (successfulFiles.size <= 8) {
+                                append(": ")
+                                append(successfulFiles.joinToString(", "))
+                            }
+                        }
+                        appendRepoLog(RepoLogEvent(
+                            type = RepoEventType.LOCAL_COMMIT, icon = "📦",
+                            message = "Staging ${successfulFiles.size} файл(ов)..."
+                        ))
+                        val commitRes = localRepoManager.stageAndCommit(commitMsg)
+                        if (commitRes.isFailure) {
+                            val e = commitRes.exceptionOrNull()
+                            if (e is com.opuside.app.feature.pipeline.data.LocalRepoManager.NoChangesException) {
+                                appendRepoLog(RepoLogEvent(
+                                    type = RepoEventType.INFO, icon = "⚪",
+                                    message = "Нечего коммитить — все правки пустые"
+                                ))
+                            } else {
+                                appendRepoLog(RepoLogEvent(
+                                    type = RepoEventType.ERROR, icon = "❌",
+                                    message = "Локальный коммит упал: ${e?.message?.take(150)}"
+                                ))
+                            }
+                        } else {
+                            val sha = commitRes.getOrThrow()
+                            appendRepoLog(RepoLogEvent(
+                                type = RepoEventType.LOCAL_COMMIT, icon = "✏️",
+                                message = "Локальный коммит: ${sha.take(8)}",
+                                commitSha = sha
+                            ))
+                            // Заменяем pending-batch на реальный sha во всех задачах
+                            _state.update { st ->
+                                st.copy(tasks = st.tasks.map { t ->
+                                    if (t.commitSha == "pending-batch") t.copy(commitSha = sha) else t
+                                })
+                            }
+
+                            // Push
+                            appendRepoLog(RepoLogEvent(
+                                type = RepoEventType.PUSH_START, icon = "🚀",
+                                message = "Push в origin..."
+                            ))
+                            val pushRes = localRepoManager.push()
+                            if (pushRes.isFailure) {
+                                val e = pushRes.exceptionOrNull()
+                                appendRepoLog(RepoLogEvent(
+                                    type = RepoEventType.PUSH_FAILED, icon = "❌",
+                                    message = "Push упал: ${e?.message?.take(200)}. Изменения в локальном клоне сохранены."
+                                ))
+                                _userError.value = "Push не удался: ${e?.message?.take(200)}"
+                            } else {
+                                appendRepoLog(RepoLogEvent(
+                                    type = RepoEventType.PUSH_DONE, icon = "✅",
+                                    message = "Push успешен: ${successfulFiles.size} файл(ов) одним коммитом",
+                                    commitSha = sha
+                                ))
+                                // Запускаем watcher на финальный коммит
+                                viewModelScope.launch {
+                                    try {
+                                        workflowWatcher.watch(sha, null).collect { evt ->
+                                            appendRepoLog(evt)
+                                        }
+                                    } catch (_: Exception) {}
+                                }
+                            }
+                        }
+                    } else {
+                        appendRepoLog(RepoLogEvent(
+                            type = RepoEventType.INFO, icon = "⚪",
+                            message = "Offline: нет успешных задач, push не требуется"
+                        ))
+                    }
+                }
 
                 _state.update {
                     it.copy(
@@ -674,15 +830,15 @@ class PipelineViewModel @Inject constructor(
         var receivedFinal = false
         var receivedFatal = false
         val overrideApiId = _state.value.effectiveModelApiId
-        // Thinking-уровень: только для Lite модели когда она выбрана и Override OFF
         val isLiteActive = !_state.value.modelOverrideEnabled &&
                 _state.value.selectedModelApiId == "gemini-3.1-flash-lite-preview"
         val thinkingLevel = if (isLiteActive) _state.value.liteThinkingLevel else null
+        val isOffline = _state.value.pipelineMode == com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
 
         try {
             kotlinx.coroutines.withTimeout(TASK_TIMEOUT_MS) {
                 executor.lockFor(task.filePath).withLock {
-                    executor.executeTask(task, isRetryPass, overrideApiId, thinkingLevel).collect { event ->
+                    executor.executeTask(task, isRetryPass, overrideApiId, thinkingLevel, isOffline).collect { event ->
                         when (event) {
                             is PipelineExecutor.ExecutorEvent.Gemini -> {
                                 appendGeminiLog(event.log)
