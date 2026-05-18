@@ -47,6 +47,7 @@ import kotlin.random.Random
 import com.opuside.app.feature.pipeline.data.LocalRepoManager
 import com.opuside.app.feature.pipeline.data.PipelineMode
 import com.opuside.app.feature.pipeline.data.PipelineKeyRotator
+import com.opuside.app.feature.pipeline.service.PipelineForegroundService
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
@@ -73,6 +74,7 @@ import com.opuside.app.feature.pipeline.data.PipelineKeyRotator
  */
 @HiltViewModel
 class PipelineViewModel @Inject constructor(
+    @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
     private val planner: PipelinePlanner,
     private val executor: PipelineExecutor,
     private val summarizer: PipelineSummarizer,
@@ -215,6 +217,38 @@ class PipelineViewModel @Inject constructor(
                         repoIndexManager.invalidate()
                         loadRepoStats()
                     } catch (_: Exception) { /* тихо */ }
+                }
+            }
+        }
+
+        viewModelScope.launch {
+            _state.collect { st ->
+                if (st.isRunning) {
+                    val title = when (st.phase) {
+                        PipelinePhase.PLANNING -> "Pipeline: планирование"
+                        PipelinePhase.EXECUTING -> "Pipeline: выполнение"
+                        PipelinePhase.DEFERRED_PASS -> "Pipeline: retry-проход"
+                        PipelinePhase.FINALIZING -> "Pipeline: финальный отчёт"
+                        else -> "Pipeline"
+                    }
+                    val currentTask = st.tasks.firstOrNull { it.id in st.runningTaskIds }
+                    val text = buildString {
+                        append("${st.completedTasks}/${st.totalTasks} задач")
+                        if (st.successfulTasks > 0) append(" · ✅ ${st.successfulTasks}")
+                        if (st.failedTasks > 0) append(" · ❌ ${st.failedTasks}")
+                        if (st.deferredTasks > 0) append(" · 🔄 ${st.deferredTasks}")
+                        currentTask?.let {
+                            append("\n📄 ${it.filePath.substringAfterLast('/')}")
+                        }
+                    }
+                    PipelineForegroundService.update(
+                        context = appContext,
+                        title = title,
+                        text = text,
+                        completed = st.completedTasks,
+                        total = st.totalTasks,
+                        indeterminate = st.phase == PipelinePhase.PLANNING || st.phase == PipelinePhase.FINALIZING
+                    )
                 }
             }
         }
@@ -390,6 +424,7 @@ class PipelineViewModel @Inject constructor(
         pipelineJob = viewModelScope.launch {
             try {
                 resetForNewRun()
+                PipelineForegroundService.start(appContext, "Pipeline: планирование", "Анализ промпта...")
                 _state.update { it.copy(phase = PipelinePhase.PLANNING) }
 
                 // Дедупликация: объединяем задачи с одинаковым filePath
@@ -473,13 +508,17 @@ class PipelineViewModel @Inject constructor(
                         currentTaskIndex = -1
                     )
                 }
+                // План готов, но юзер ещё смотрит — сервис не нужен пока не нажмут Start
+                PipelineForegroundService.stop(appContext)
 
             } catch (e: CancellationException) {
                 _state.update { it.copy(phase = PipelinePhase.CANCELLED) }
+                PipelineForegroundService.stop(appContext)
                 throw e
             } catch (e: Exception) {
                 _userError.value = "Ошибка планирования: ${e.message}"
                 _state.update { it.copy(phase = PipelinePhase.IDLE) }
+                PipelineForegroundService.stop(appContext)
             }
         }
     }
@@ -510,10 +549,12 @@ class PipelineViewModel @Inject constructor(
 
         pipelineJob?.cancel()
         pipelineJob = viewModelScope.launch {
-            // SupervisorJob с parent = текущий job (pipelineJob)
-            // Watcher'ы будут детьми этого scope, а не async-задач
-            // → не блокируют awaitAll, но отменяются при stop pipelineJob
             val watcherScope = CoroutineScope(coroutineContext + SupervisorJob(coroutineContext[Job]))
+            PipelineForegroundService.start(
+                appContext,
+                "Pipeline запущен",
+                "0/${_state.value.tasks.size} задач"
+            )
             try {
                 val maxParallel = _state.value.maxParallelTasks
                 val isOffline = _state.value.pipelineMode == PipelineMode.OFFLINE
@@ -739,8 +780,8 @@ class PipelineViewModel @Inject constructor(
                     )
                 }
             } finally {
-                // Отменяем все висящие watcher'ы — мы уже завершились
                 watcherScope.cancel()
+                PipelineForegroundService.stop(appContext)
             }
         }
     }
@@ -982,6 +1023,7 @@ class PipelineViewModel @Inject constructor(
             message = "Остановка по запросу пользователя..."
         ))
         _state.update { it.copy(phase = PipelinePhase.CANCELLED) }
+        PipelineForegroundService.stop(appContext)
     }
 
     /**
@@ -998,6 +1040,7 @@ class PipelineViewModel @Inject constructor(
         _totalTokens.value = 0
         _userError.value = null
         executor.clearFileLocks()
+        PipelineForegroundService.stop(appContext)
     }
 
     private fun resetForNewRun() {
@@ -1040,5 +1083,6 @@ class PipelineViewModel @Inject constructor(
     override fun onCleared() {
         super.onCleared()
         pipelineJob?.cancel()
+        PipelineForegroundService.stop(appContext)
     }
 }
