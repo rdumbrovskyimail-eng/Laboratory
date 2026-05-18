@@ -83,6 +83,14 @@ Each task has an "operation" field — either "modify" or "create".
   - "package": Kotlin package name IF mentioned by user (e.g. "com.x.y.feature")
     or extractable from content's package declaration; otherwise null
 
+▸ DELETE task:
+  - Deletes an existing file from the repository
+  - "operation": "delete"
+  - "file": EXACT path from the provided file list (no guessing!)
+  - "instructions": brief reason for deletion (optional)
+  - "content": null
+  - "package": null
+
 ═══ STRICT RULES ═══
 
 RULE 1 — DETECT CREATE TASKS:
@@ -94,6 +102,18 @@ Look for phrases like:
 - "Add a new file..."
 - "Create file..."
 These signal a CREATE task. If unsure, prefer MODIFY (safer).
+
+RULE 1a — DETECT DELETE TASKS:
+Look for phrases like:
+- "Удали файл..."
+- "Удалить файл X.kt"
+- "Убери из репо файл..."
+- "Delete file..."
+- "Remove file..."
+These signal a DELETE task. "file" MUST be the EXACT path from the provided
+file list — same rule as MODIFY (no guessing). If the path cannot be matched
+in the file list, OMIT that task (don't invent paths to delete).
+NEVER guess — deletion is irreversible.
 
 RULE 2 — CREATE PATH/PACKAGE HANDLING:
 - If user gave a FULL path like "app/src/main/java/com/x/Y.kt" → use it as "file"
@@ -171,7 +191,8 @@ No markdown. No code fences. No commentary. Pure JSON.
                             put("type", "string")
                             put("enum", JsonArray(listOf(
                                 JsonPrimitive("modify"),
-                                JsonPrimitive("create")
+                                JsonPrimitive("create"),
+                                JsonPrimitive("delete")
                             )))
                             put("description", "Type of operation on the file")
                         })
@@ -338,6 +359,15 @@ No markdown. No code fences. No commentary. Pure JSON.
                     val resolved = resolveCreatePath(task, idx, sourceRoot, pathSet)
                     if (resolved == null) {
                         Log.w(TAG, "Skipping CREATE task #$idx: cannot resolve path")
+                        continue
+                    }
+                    addOrMerge(result, seen, resolved)
+                }
+                TaskOperation.DELETE -> {
+                    val resolved = resolveModifyPath(task, pathSet, nameToFullPaths)
+                    // Если резолв не нашёл реального пути — пропускаем (страховка от удаления случайного файла)
+                    if (resolved.file !in pathSet) {
+                        Log.w(TAG, "Skipping DELETE task #$idx: path '${resolved.file}' not found in repo")
                         continue
                     }
                     addOrMerge(result, seen, resolved)
@@ -659,6 +689,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                 val opStr = obj["operation"]?.jsonPrimitive?.contentOrNull?.lowercase()
                 val operation = when (opStr) {
                     "create" -> TaskOperation.CREATE
+                    "delete" -> TaskOperation.DELETE
                     "modify", null -> TaskOperation.MODIFY
                     else -> {
                         Log.w(TAG, "Unknown operation '$opStr', falling back to MODIFY")
@@ -699,6 +730,18 @@ No markdown. No code fences. No commentary. Pure JSON.
                                 instructions = instructions,
                                 content = content,
                                 packageName = pkg
+                            )
+                        }
+                    }
+                    TaskOperation.DELETE -> {
+                        if (file == null) {
+                            Log.w(TAG, "Skipping DELETE task without file path")
+                            null
+                        } else {
+                            PlannedTask(
+                                operation = TaskOperation.DELETE,
+                                file = file,
+                                instructions = instructions.ifBlank { "Удалить файл" }
                             )
                         }
                     }
