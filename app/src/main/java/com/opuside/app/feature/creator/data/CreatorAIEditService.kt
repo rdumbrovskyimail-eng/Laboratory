@@ -297,7 +297,14 @@ Example 2 — Delete a function:
             })
             put("generationConfig", JSONObject().apply {
                 put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                put("temperature", 0.1)
+                put("temperature", 0.0)
+                put("topP", 0.95)
+                // Для Gemini 3.x — максимальный thinking
+                if (modelApiId.startsWith("gemini-3")) {
+                    put("thinkingConfig", JSONObject().apply {
+                        put("thinkingLevel", "high")
+                    })
+                }
             })
         }
 
