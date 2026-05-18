@@ -22,7 +22,9 @@ data class PipelineState(
     val modelOverrideEnabled: Boolean = false,
     val modelOverrideName: String = "",
     // Дефолтная модель из списка (если override OFF)
-    val selectedModelApiId: String = "gemini-3-flash-preview"
+    val selectedModelApiId: String = "gemini-3-flash-preview",
+    // Thinking-уровень для Lite модели (low / medium / high)
+    val liteThinkingLevel: String = "high"
 ) {
     val totalTasks: Int get() = tasks.size
     val completedTasks: Int get() = tasks.count { it.status.isTerminal }
