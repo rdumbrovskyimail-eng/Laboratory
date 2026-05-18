@@ -256,6 +256,10 @@ class PipelineViewModel @Inject constructor(
         if (_state.value.isRunning) return
         _state.update { it.copy(modelOverrideName = name) }
     }
+    fun setSelectedModel(apiId: String) {
+        if (_state.value.isRunning) return
+        _state.update { it.copy(selectedModelApiId = apiId) }
+    }
 
     /**
      * Обновить статистику репо (для шапки экрана).
