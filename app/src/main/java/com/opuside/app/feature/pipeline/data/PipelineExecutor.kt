@@ -115,6 +115,11 @@ You MUST:
                 else executeCreateTask(task, taskId, startTime)
                 return@channelFlow
             }
+            if (task.operation == TaskOperation.DELETE) {
+                if (offlineMode) executeDeleteTaskOffline(task, taskId, startTime)
+                else executeDeleteTaskOnline(task, taskId, startTime)
+                return@channelFlow
+            }
 
             val readOutcome = if (offlineMode) readFileOffline(task.filePath)
                               else readFile(task.filePath)
@@ -619,5 +624,122 @@ You MUST:
             "unknownhost" in msg || "network" in msg -> TaskErrorCode.NETWORK_ERROR
             else -> TaskErrorCode.AI_EMPTY_RESPONSE
         }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DELETE TASK — Online (через GitHub API) и Offline (через LocalRepoManager)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private suspend fun kotlinx.coroutines.channels.ProducerScope<ExecutorEvent>.executeDeleteTaskOnline(
+        task: FileTask, taskId: String, startTime: Long
+    ) {
+        val cfg = try { appSettings.gitHubConfig.first() }
+        catch (e: Exception) {
+            send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
+                TaskErrorCode.UNKNOWN, "GitHub config: ${e.message}"
+            )))
+            return
+        }
+
+        send(ExecutorEvent.Gemini(GeminiLogEvent(
+            type = GeminiEventType.INFO, icon = "🗑",
+            message = "Удаление файла (online): ${task.filePath}",
+            taskId = taskId
+        )))
+
+        // 1) Получаем актуальный SHA файла
+        val fileInfo = gitHubClient.getFileContent(task.filePath, cfg.branch).getOrNull()
+        if (fileInfo == null) {
+            send(ExecutorEvent.Repo(RepoLogEvent(
+                type = RepoEventType.INFO, icon = "⚪",
+                message = "Файл уже не существует: ${task.filePath}", taskId = taskId
+            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
+                commitSha = "not-found", tokensUsed = 0, costEur = 0.0
+            )))
+            return
+        }
+
+        // 2) Throttle и удаление
+        throttleGithubWrite()
+        val result = gitHubClient.deleteFileExt(
+            owner = cfg.owner,
+            repo = cfg.repo,
+            token = cfg.token,
+            path = task.filePath,
+            message = "[Pipeline] DELETE ${task.filePath.substringAfterLast('/')}",
+            sha = fileInfo.sha,
+            branch = cfg.branch
+        )
+
+        if (result.isFailure) {
+            val e = result.exceptionOrNull()
+            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                TaskErrorCode.NETWORK_ERROR,
+                "DELETE упал: ${e?.message?.take(150)}"
+            )))
+            return
+        }
+
+        val durationMs = System.currentTimeMillis() - startTime
+        repoIndexManager.invalidate()
+        send(ExecutorEvent.Repo(RepoLogEvent(
+            type = RepoEventType.FILE_COMMITTED, icon = "🗑",
+            message = "Удалён: ${task.filePath.substringAfterLast('/')} (${durationMs}ms)",
+            taskId = taskId
+        )))
+        send(ExecutorEvent.Final(TaskExecutionResult.Success(
+            commitSha = "delete-${task.id}",
+            resolvedConflict = false,
+            tokensUsed = 0,
+            costEur = 0.0,
+            editResult = null
+        )))
+        delay(INTER_FILE_DELAY_MS)
+    }
+
+    private suspend fun kotlinx.coroutines.channels.ProducerScope<ExecutorEvent>.executeDeleteTaskOffline(
+        task: FileTask, taskId: String, startTime: Long
+    ) {
+        send(ExecutorEvent.Gemini(GeminiLogEvent(
+            type = GeminiEventType.INFO, icon = "🗑",
+            message = "Удаление файла (offline): ${task.filePath}",
+            taskId = taskId
+        )))
+
+        if (!localRepoManager.fileExists(task.filePath)) {
+            send(ExecutorEvent.Repo(RepoLogEvent(
+                type = RepoEventType.INFO, icon = "⚪",
+                message = "Файл уже не существует в клоне: ${task.filePath}", taskId = taskId
+            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
+                commitSha = "not-found", tokensUsed = 0, costEur = 0.0
+            )))
+            return
+        }
+
+        val result = localRepoManager.deleteFile(task.filePath)
+        if (result.isFailure) {
+            val e = result.exceptionOrNull()
+            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
+                TaskErrorCode.NETWORK_ERROR,
+                "Локальное удаление упало: ${e?.message?.take(120)}"
+            )))
+            return
+        }
+
+        val durationMs = System.currentTimeMillis() - startTime
+        send(ExecutorEvent.Repo(RepoLogEvent(
+            type = RepoEventType.LOCAL_WRITE, icon = "🗑",
+            message = "Удалён локально: ${task.filePath.substringAfterLast('/')} (${durationMs}ms)",
+            taskId = taskId
+        )))
+        send(ExecutorEvent.Final(TaskExecutionResult.Success(
+            commitSha = "pending-batch",
+            resolvedConflict = false,
+            tokensUsed = 0,
+            costEur = 0.0,
+            editResult = null
+        )))
     }
 }
