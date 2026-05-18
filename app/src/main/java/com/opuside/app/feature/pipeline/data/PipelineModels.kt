@@ -20,7 +20,9 @@ data class PipelineState(
     val logFilterTaskId: String? = null,
     // НОВОЕ: Override модели Gemini
     val modelOverrideEnabled: Boolean = false,
-    val modelOverrideName: String = ""
+    val modelOverrideName: String = "",
+    // Дефолтная модель из списка (если override OFF)
+    val selectedModelApiId: String = "gemini-3-flash-preview"
 ) {
     val totalTasks: Int get() = tasks.size
     val completedTasks: Int get() = tasks.count { it.status.isTerminal }
@@ -53,9 +55,12 @@ data class PipelineState(
         else -> OverallStatus.SUCCESS_PARTIAL
     }
 
-    /** Резолвит override в apiId для Gemini, либо null = использовать дефолт. */
-    val effectiveModelApiId: String? get() =
-        if (modelOverrideEnabled) modelOverrideName.trim().ifBlank { null } else null
+    /** Какую модель отправлять в Gemini API. Override-поле приоритетнее селектора. */
+    val effectiveModelApiId: String get() =
+        if (modelOverrideEnabled && modelOverrideName.isNotBlank())
+            modelOverrideName.trim()
+        else
+            selectedModelApiId
 }
 
 enum class OverallStatus {
