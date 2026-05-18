@@ -197,6 +197,31 @@ class LocalRepoManager @Inject constructor(
         }
     }
 
+    /**
+     * Удалить файл из локального клона. НЕ делает git rm — это будет в stageAndCommit().
+     * git add . после удаления автоматически пометит файл к удалению из индекса.
+     */
+    suspend fun deleteFile(relativePath: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val dir = currentRepoDir() ?: return@withContext Result.failure(
+                IllegalStateException("Репозиторий не настроен")
+            )
+            val file = File(dir, relativePath)
+            if (!file.exists()) {
+                return@withContext Result.failure(
+                    java.io.FileNotFoundException("Файл не существует: $relativePath")
+                )
+            }
+            val deleted = file.delete()
+            if (!deleted) {
+                return@withContext Result.failure(Exception("Не удалось удалить файл: $relativePath"))
+            }
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /** Существует ли файл в клоне */
     suspend fun fileExists(relativePath: String): Boolean = withContext(Dispatchers.IO) {
         val dir = currentRepoDir() ?: return@withContext false
