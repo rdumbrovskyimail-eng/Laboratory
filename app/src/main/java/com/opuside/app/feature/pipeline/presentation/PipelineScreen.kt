@@ -182,6 +182,15 @@ fun PipelineScreen(
                 interactive = !state.isRunning && !state.modelOverrideEnabled,
                 onSelect = viewModel::setSelectedModel
             )
+            // Thinking-уровень показывается ТОЛЬКО когда выбрана Lite
+            if (state.selectedModelApiId == "gemini-3.1-flash-lite-preview"
+                && !state.modelOverrideEnabled) {
+                LiteThinkingSelector(
+                    selected = state.liteThinkingLevel,
+                    interactive = !state.isRunning,
+                    onSelect = viewModel::setLiteThinkingLevel
+                )
+            }
             ModelOverrideSection(
                 modelName = state.modelOverrideName,
                 enabled = state.modelOverrideEnabled,
@@ -1348,6 +1357,75 @@ private fun DefaultModelSelector(
             else if (!interactive && selected.isNotBlank())
                 "Override включён — используется поле выше"
             else "",
+            color = PipelineColors.textTertiary,
+            fontSize = 10.sp
+        )
+    }
+}
+
+@Composable
+private fun LiteThinkingSelector(
+    selected: String,
+    interactive: Boolean,
+    onSelect: (String) -> Unit
+) {
+    val options = listOf(
+        "low" to "🌱 LOW",
+        "medium" to "⚙️ MEDIUM",
+        "high" to "🔥 HIGH"
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(PipelineColors.surfaceElevated)
+            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Text(
+            "🧠 Thinking для Flash-Lite",
+            color = PipelineColors.textPrimary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(bottom = 6.dp)
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            options.forEach { (level, label) ->
+                val isSelected = selected == level
+                val bg = if (isSelected) PipelineColors.accentPurple else PipelineColors.surfaceDark
+                val fg = if (isSelected) Color.White else PipelineColors.textSecondary
+                val border = if (isSelected) PipelineColors.accentPurple else PipelineColors.borderSubtle
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(bg)
+                        .border(1.dp, border, RoundedCornerShape(8.dp))
+                        .clickable(enabled = interactive) { onSelect(level) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        color = fg,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = when (selected) {
+                "low" -> "Минимум рассуждений — макс. экономия токенов, простые правки"
+                "medium" -> "Средний уровень — баланс цены и качества"
+                else -> "Максимум рассуждений — лучшее качество, больше TPM"
+            },
             color = PipelineColors.textTertiary,
             fontSize = 10.sp
         )
