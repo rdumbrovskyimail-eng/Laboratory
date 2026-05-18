@@ -72,6 +72,13 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- ★ NEW: Foreground Service для Pipeline -->
+        <service
+            android:name=".feature.pipeline.service.PipelineForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false"
+            android:stopWithTask="false" />
+
         <!-- Автозапуск после перезагрузки телефона -->
         <receiver
             android:name=".core.notification.BootReceiver"
