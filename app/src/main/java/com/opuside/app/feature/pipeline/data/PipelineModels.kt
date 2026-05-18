@@ -3,6 +3,11 @@ package com.opuside.app.feature.pipeline.data
 import com.opuside.app.feature.creator.data.CreatorAIEditService
 import java.util.UUID
 
+enum class PipelineMode(val displayName: String, val emoji: String) {
+    ONLINE("Online", "🌐"),
+    OFFLINE("Offline", "📦");
+}
+
 enum class PipelinePhase {
     IDLE, PLANNING, REVIEWING, EXECUTING, DEFERRED_PASS, FINALIZING,
     DONE, CANCELLED, FATAL
@@ -24,7 +29,10 @@ data class PipelineState(
     // Дефолтная модель из списка (если override OFF)
     val selectedModelApiId: String = "gemini-3-flash-preview",
     // Thinking-уровень для Lite модели (low / medium / high)
-    val liteThinkingLevel: String = "high"
+    val liteThinkingLevel: String = "high",
+    // Режим работы пайплайна: Online = коммиты напрямую через GitHub API,
+    // Offline = клонируем репо локально, правим, в конце один коммит + push
+    val pipelineMode: PipelineMode = PipelineMode.ONLINE
 ) {
     val totalTasks: Int get() = tasks.size
     val completedTasks: Int get() = tasks.count { it.status.isTerminal }
