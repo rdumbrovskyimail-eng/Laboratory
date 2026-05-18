@@ -1,34 +1,18 @@
 package com.opuside.app.feature.creator.di
 
-import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.security.SecureSettingsDataStore
-import com.opuside.app.feature.creator.data.CreatorAIEditService
 import dagger.Module
-import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
-import javax.inject.Singleton
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * CreatorModule — DI для AI Edit сервиса
  * ═══════════════════════════════════════════════════════════════════════════
  *
- * Если CreatorAIEditService уже имеет @Singleton @Inject constructor,
- * то этот модуль НЕ нужен — Hilt подхватит автоматически.
- *
- * Модуль нужен только если вы хотите явно управлять созданием.
+ * CreatorAIEditService помечен @Singleton @Inject constructor — Hilt создаёт
+ * его автоматически, ручной @Provides не нужен. Модуль оставлен пустым на
+ * случай, если в будущем потребуется явная конфигурация Creator-зависимостей.
  */
 @Module
 @InstallIn(SingletonComponent::class)
-object CreatorModule {
-
-    @Provides
-    @Singleton
-    fun provideCreatorAIEditService(
-        appSettings: AppSettings,
-        secureSettings: SecureSettingsDataStore
-    ): CreatorAIEditService {
-        return CreatorAIEditService(appSettings, secureSettings)
-    }
-}
+object CreatorModule
