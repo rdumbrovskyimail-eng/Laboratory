@@ -123,6 +123,8 @@ fun PipelineScreen(
     val pipelineKeyA by viewModel.pipelineKeyA.collectAsStateWithLifecycle()
     val pipelineKeyB by viewModel.pipelineKeyB.collectAsStateWithLifecycle()
     val pipelineActiveKey by viewModel.pipelineActiveKey.collectAsStateWithLifecycle()
+    val localRepoStatus by viewModel.localRepoStatus.collectAsStateWithLifecycle()
+    val localRepoProgress by viewModel.localRepoProgress.collectAsStateWithLifecycle()
 
     var promptExpanded by remember { mutableStateOf(true) }
 
@@ -161,6 +163,16 @@ fun PipelineScreen(
                 interactive = !state.isRunning,
                 onModeChange = viewModel::setPipelineMode
             )
+
+            if (state.pipelineMode == com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE) {
+                LocalCloneStatusSection(
+                    status = localRepoStatus,
+                    progress = localRepoProgress,
+                    interactive = !state.isRunning,
+                    onSync = viewModel::syncLocalRepo,
+                    onDelete = viewModel::deleteLocalClone
+                )
+            }
 
             // ═══ PROMPT (collapsible) ═════════════════════════════════════
             PromptSection(
@@ -1510,6 +1522,115 @@ private fun PipelineModeSelector(
                 color = PipelineColors.accentYellow,
                 fontSize = 10.sp
             )
+        }
+    }
+}
+
+@Composable
+private fun LocalCloneStatusSection(
+    status: com.opuside.app.feature.pipeline.data.LocalRepoManager.RepoStatus,
+    progress: String?,
+    interactive: Boolean,
+    onSync: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val sizeKb = (status.sizeBytes / 1024.0).toInt()
+    val sizeFormatted = when {
+        sizeKb &lt; 1024 -> "$sizeKb KB"
+        else -> "${ "%.1f".format(sizeKb / 1024.0) } MB"
+    }
+    val ageSec = if (status.lastSyncMs > 0)
+        ((System.currentTimeMillis() - status.lastSyncMs) / 1000).coerceAtLeast(0)
+    else -1L
+    val ageStr = when {
+        ageSec &lt; 0 -> "ни разу"
+        ageSec &lt; 60 -> "${ageSec}с назад"
+        ageSec &lt; 3600 -> "${ageSec / 60}мин назад"
+        else -> "${ageSec / 3600}ч назад"
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(PipelineColors.surfaceElevated)
+            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val icon = when (status.state) {
+                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.CLONED -> "📦"
+                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.NOT_CLONED -> "⚪"
+                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.ERROR -> "❌"
+            }
+            Text(
+                "$icon Локальный клон",
+                color = PipelineColors.textPrimary,
+                fontWeight = FontWeight.Medium,
+                fontSize = 12.sp,
+                modifier = Modifier.weight(1f)
+            )
+            if (progress != null) {
+                Text(
+                    progress,
+                    color = PipelineColors.accentBlue,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = when (status.state) {
+                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.CLONED ->
+                    "${status.owner}/${status.repo} · $sizeFormatted · обновлён $ageStr" +
+                            if (status.pendingChanges > 0) " · ⚠️ ${status.pendingChanges} несохранённых" else ""
+                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.NOT_CLONED ->
+                    "Клон ещё не создан. Запустится автоматически при старте пайплайна."
+                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.ERROR ->
+                    "Ошибка: ${status.errorMessage ?: "неизвестно"}"
+            },
+            color = PipelineColors.textTertiary,
+            fontSize = 10.sp
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(PipelineColors.accentBlue.copy(alpha = if (interactive) 1f else 0.4f))
+                    .clickable(enabled = interactive, onClick = onSync),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "🔄 Синхронизировать",
+                    color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 11.sp
+                )
+            }
+            if (status.state == com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.CLONED) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(34.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(PipelineColors.surfaceDark)
+                        .border(1.dp, PipelineColors.accentRed.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .clickable(enabled = interactive, onClick = onDelete),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "🗑 Удалить клон",
+                        color = PipelineColors.accentRed,
+                        fontWeight = FontWeight.SemiBold, fontSize = 11.sp
+                    )
+                }
+            }
         }
     }
 }
