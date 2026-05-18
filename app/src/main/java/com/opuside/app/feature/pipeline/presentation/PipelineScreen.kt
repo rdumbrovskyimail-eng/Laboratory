@@ -41,6 +41,8 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.opuside.app.feature.pipeline.data.*
+import com.opuside.app.feature.pipeline.data.LocalRepoManager
+import com.opuside.app.feature.pipeline.data.PipelineMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -164,7 +166,7 @@ fun PipelineScreen(
                 onModeChange = viewModel::setPipelineMode
             )
 
-            if (state.pipelineMode == com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE) {
+            if (state.pipelineMode == PipelineMode.OFFLINE) {
                 LocalCloneStatusSection(
                     status = localRepoStatus,
                     progress = localRepoProgress,
@@ -1452,13 +1454,13 @@ private fun LiteThinkingSelector(
 
 @Composable
 private fun PipelineModeSelector(
-    currentMode: com.opuside.app.feature.pipeline.data.PipelineMode,
+    currentMode: PipelineMode,
     interactive: Boolean,
-    onModeChange: (com.opuside.app.feature.pipeline.data.PipelineMode) -> Unit
+    onModeChange: (PipelineMode) -> Unit
 ) {
     val modes = listOf(
-        com.opuside.app.feature.pipeline.data.PipelineMode.ONLINE,
-        com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE
+        PipelineMode.ONLINE,
+        PipelineMode.OFFLINE
     )
     Column(
         modifier = Modifier
@@ -1528,7 +1530,7 @@ private fun PipelineModeSelector(
 
 @Composable
 private fun LocalCloneStatusSection(
-    status: com.opuside.app.feature.pipeline.data.LocalRepoManager.RepoStatus,
+    status: LocalRepoManager.RepoStatus,
     progress: String?,
     interactive: Boolean,
     onSync: () -> Unit,
@@ -1563,9 +1565,9 @@ private fun LocalCloneStatusSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             val icon = when (status.state) {
-                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.CLONED -> "📦"
-                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.NOT_CLONED -> "⚪"
-                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.ERROR -> "❌"
+                LocalRepoManager.CloneState.CLONED -> "📦"
+                LocalRepoManager.CloneState.NOT_CLONED -> "⚪"
+                LocalRepoManager.CloneState.ERROR -> "❌"
             }
             Text(
                 "$icon Локальный клон",
@@ -1586,12 +1588,12 @@ private fun LocalCloneStatusSection(
         Spacer(Modifier.height(4.dp))
         Text(
             text = when (status.state) {
-                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.CLONED ->
+                LocalRepoManager.CloneState.CLONED ->
                     "${status.owner}/${status.repo} · $sizeFormatted · обновлён $ageStr" +
                             if (status.pendingChanges > 0) " · ⚠️ ${status.pendingChanges} несохранённых" else ""
-                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.NOT_CLONED ->
+                LocalRepoManager.CloneState.NOT_CLONED ->
                     "Клон ещё не создан. Запустится автоматически при старте пайплайна."
-                com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.ERROR ->
+                LocalRepoManager.CloneState.ERROR ->
                     "Ошибка: ${status.errorMessage ?: "неизвестно"}"
             },
             color = PipelineColors.textTertiary,
@@ -1613,7 +1615,7 @@ private fun LocalCloneStatusSection(
                     color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 11.sp
                 )
             }
-            if (status.state == com.opuside.app.feature.pipeline.data.LocalRepoManager.CloneState.CLONED) {
+            if (status.state == LocalRepoManager.CloneState.CLONED) {
                 Box(
                     modifier = Modifier
                         .weight(1f)
