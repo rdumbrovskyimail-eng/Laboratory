@@ -39,6 +39,7 @@ Then THREE sections:
 
 1. SUMMARY (one paragraph, Russian)
 2. SUCCESSFUL CHANGES (bulleted list, Russian)
+   Группируй по типу операции: ✏️ Изменены, ➕ Созданы, 🗑 Удалены.
 3. FAILED FILES (bulleted list, Russian, only if any failed)
 
 Russian language throughout. Markdown formatting. 300-600 words.
@@ -184,6 +185,10 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         val success = tasks.filter { it.status == TaskStatus.SUCCESS }
         val noChanges = tasks.filter { it.status == TaskStatus.NO_CHANGES_NEEDED }
         val failed = tasks.filter { it.status == TaskStatus.FAILED_FINAL }
+        val createdSuccess = success.filter { it.operation == TaskOperation.CREATE }
+        val modifiedSuccess = success.filter { it.operation == TaskOperation.MODIFY }
+        val deletedSuccess = success.filter { it.operation == TaskOperation.DELETE }
+
         val headline = when {
             failed.isEmpty() && success.isNotEmpty() -> "✅ Pipeline complete"
             success.isEmpty() && failed.isNotEmpty() -> "🔴 Pipeline failed"
@@ -193,23 +198,31 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         appendLine()
         appendLine("**Сводка**")
         appendLine("Обработано задач: ${tasks.size}")
-        appendLine("  • Создано: ${tasks.count { it.operation == TaskOperation.CREATE && it.status == TaskStatus.SUCCESS }}")
-        appendLine("  • Изменено: ${tasks.count { it.operation == TaskOperation.MODIFY && it.status == TaskStatus.SUCCESS }}")
+        appendLine("  • Создано: ${createdSuccess.size}")
+        appendLine("  • Изменено: ${modifiedSuccess.size}")
+        appendLine("  • Удалено: ${deletedSuccess.size}")
         appendLine("  • Без изменений: ${noChanges.size}")
         appendLine("  • Провалено: ${failed.size}")
         appendLine("Стоимость: €${String.format(java.util.Locale.US, "%.4f", totalCostEur)}")
         appendLine("Токенов: $totalTokens")
         appendLine()
-        success.filter { it.operation == TaskOperation.CREATE }.takeIf { it.isNotEmpty() }?.let {
+        if (createdSuccess.isNotEmpty()) {
             appendLine("**➕ Созданы файлы**")
-            for (t in it) appendLine("• `${t.filePath}` → `${t.commitSha?.take(8) ?: "—"}`")
+            for (t in createdSuccess) appendLine("• `${t.filePath}` → `${t.commitSha?.take(8) ?: "—"}`")
             appendLine()
         }
-        success.filter { it.operation == TaskOperation.MODIFY }.takeIf { it.isNotEmpty() }?.let {
+        if (modifiedSuccess.isNotEmpty()) {
             appendLine("**✏️ Изменены файлы**")
-            for (t in it) {
+            for (t in modifiedSuccess) {
                 val conflict = if (t.resolvedConflict) " ⚠️ auto-resolved" else ""
                 appendLine("• `${t.filePath}` → `${t.commitSha?.take(8) ?: "—"}`$conflict")
+            }
+            appendLine()
+        }
+        if (deletedSuccess.isNotEmpty()) {
+            appendLine("**🗑 Удалены файлы**")
+            for (t in deletedSuccess) {
+                appendLine("• `${t.filePath}`")
             }
             appendLine()
         }
