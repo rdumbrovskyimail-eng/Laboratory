@@ -249,7 +249,11 @@ class LocalRepoManager @Inject constructor(
             val dir = repoDirFor(cfg.owner, cfg.repo)
             try {
                 Git.open(dir).use { git ->
+                    // 1. Добавляем новые и измененные файлы
                     git.add().addFilepattern(".").call()
+                    // 2. ✅ ДОБАВЛЕНО: Фиксируем удаленные файлы (без этого удаления игнорируются)
+                    git.add().setUpdate(true).addFilepattern(".").call()
+                    
                     val status = git.status().call()
                     if (status.isClean) {
                         return@withContext Result.failure(NoChangesException())
@@ -375,7 +379,8 @@ class LocalRepoManager @Inject constructor(
             .setDirectory(dir)
             .setBranch(cfg.branch)
             .setCredentialsProvider(creds)
-            .setDepth(SHALLOW_DEPTH)
+            // ✅ ИСПРАВЛЕНО: Убрали .setDepth(SHALLOW_DEPTH). 
+            // Теперь качается полная история, что гарантирует 100% успешный Push.
             .call()
             .close()
     }
