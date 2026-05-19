@@ -1066,6 +1066,13 @@ private fun repoAccentFor(type: RepoEventType): Color = when (type) {
     RepoEventType.INDEX_INVALIDATED -> PipelineColors.textTertiary
     RepoEventType.INFO -> PipelineColors.textSecondary
     RepoEventType.ERROR -> PipelineColors.accentRed
+    RepoEventType.CLONE_START, RepoEventType.CLONE_PROGRESS -> PipelineColors.accentBlue
+    RepoEventType.CLONE_DONE -> PipelineColors.accentGreen
+    RepoEventType.LOCAL_WRITE -> PipelineColors.textSecondary
+    RepoEventType.LOCAL_COMMIT -> PipelineColors.accentGreen
+    RepoEventType.PUSH_START -> PipelineColors.accentBlue
+    RepoEventType.PUSH_DONE -> PipelineColors.accentGreen
+    else -> PipelineColors.textSecondary
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
