@@ -43,6 +43,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.opuside.app.feature.pipeline.data.*
 import com.opuside.app.feature.pipeline.data.LocalRepoManager
 import com.opuside.app.feature.pipeline.data.PipelineMode
+import com.opuside.app.feature.pipeline.data.PipelineKeyRotator
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -1509,9 +1510,9 @@ private fun PipelineModeSelector(
         Spacer(Modifier.height(4.dp))
         Text(
             text = when (currentMode) {
-                com.opuside.app.feature.pipeline.data.PipelineMode.ONLINE ->
+                PipelineMode.ONLINE ->
                     "Прямые коммиты в GitHub — по одному на файл. Может ловить rate limit при параллелизме 5+."
-                com.opuside.app.feature.pipeline.data.PipelineMode.OFFLINE ->
+                PipelineMode.OFFLINE ->
                     "Клонируем репозиторий локально, правим все файлы, в конце — один коммит и push. Безопасно от rate limit."
             },
             color = PipelineColors.textTertiary,
