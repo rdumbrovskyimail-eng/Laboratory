@@ -232,7 +232,19 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
 
         val result = buildString {
             var loadedCount = 0
+
+            // ✅ ДОБАВЛЕНО: Список расширений, которые нельзя читать как текст
+            val binaryExtensions = setOf("png", "jpg", "jpeg", "webp", "gif", "jar", "keystore", "jks", "zip", "aar", "so", "ttf")
+
             for (path in paths) {
+                // ✅ ДОБАВЛЕНО: Проверка на бинарный файл
+                val ext = path.substringAfterLast('.', "").lowercase()
+                if (ext in binaryExtensions) {
+                    appendLine("### File: `$path` — ERROR: Cannot read binary files (images, archives, etc.)")
+                    appendLine()
+                    continue
+                }
+
                 try {
                     val content = gitHubClient.getFileContentDecoded(path).getOrNull()
                     if (content != null) {
