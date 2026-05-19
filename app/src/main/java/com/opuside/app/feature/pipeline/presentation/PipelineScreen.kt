@@ -1539,16 +1539,16 @@ private fun LocalCloneStatusSection(
 ) {
     val sizeKb = (status.sizeBytes / 1024.0).toInt()
     val sizeFormatted = when {
-        sizeKb &lt; 1024 -> "$sizeKb KB"
-        else -> "${ "%.1f".format(sizeKb / 1024.0) } MB"
+        sizeKb < 1024 -> "$sizeKb KB"
+        else -> "${"%.1f".format(sizeKb / 1024.0)} MB"
     }
     val ageSec = if (status.lastSyncMs > 0)
         ((System.currentTimeMillis() - status.lastSyncMs) / 1000).coerceAtLeast(0)
     else -1L
     val ageStr = when {
-        ageSec &lt; 0 -> "ни разу"
-        ageSec &lt; 60 -> "${ageSec}с назад"
-        ageSec &lt; 3600 -> "${ageSec / 60}мин назад"
+        ageSec < 0 -> "ни разу"
+        ageSec < 60 -> "${ageSec}с назад"
+        ageSec < 3600 -> "${ageSec / 60}мин назад"
         else -> "${ageSec / 3600}ч назад"
     }
 
