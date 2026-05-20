@@ -37,10 +37,6 @@ import com.opuside.app.core.security.BiometricAuthHelper
 import com.opuside.app.core.security.GeminiKeyEntry
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
-import com.opuside.app.core.util.CrashTestUtil
-import com.opuside.app.core.util.LogContentDialog
-import com.opuside.app.core.util.LogFile
-import com.opuside.app.core.util.LogViewerDialog
 import com.opuside.app.dataStore
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -62,17 +58,12 @@ fun SettingsScreen(
     val gitHubConfig by viewModel.gitHubConfig.collectAsState(initial = SecureSettingsDataStore.GitHubConfig("", "", "main", ""))
     val githubStatus by viewModel.githubStatus.collectAsState()
     val repoInfo by viewModel.repoInfo.collectAsState()
-    val claudeStatus by viewModel.claudeStatus.collectAsState()
-    val deepSeekStatus by viewModel.deepSeekStatus.collectAsState()
     val geminiStatus by viewModel.geminiStatus.collectAsState()
 
     val githubOwnerInput by viewModel.githubOwnerInput.collectAsState()
     val githubRepoInput by viewModel.githubRepoInput.collectAsState()
     val githubTokenInput by viewModel.githubTokenInput.collectAsState()
     val githubBranchInput by viewModel.githubBranchInput.collectAsState()
-    val anthropicKeyInput by viewModel.anthropicKeyInput.collectAsState()
-    val claudeModelInput by viewModel.claudeModelInput.collectAsState()
-    val deepSeekKeyInput by viewModel.deepSeekKeyInput.collectAsState()
     val geminiKeyInput by viewModel.geminiKeyInput.collectAsState()
     val geminiModelInput by viewModel.geminiModelInput.collectAsState()
 
@@ -341,168 +332,6 @@ fun SettingsScreen(
             }
 
             // ═══════════════════════════════════════════════════════════════════════════
-            // ANTHROPIC / CLAUDE SETTINGS
-            // ═══════════════════════════════════════════════════════════════════════════
-            SettingsSection(title = "Claude API", icon = Icons.Default.Psychology) {
-                var showApiKey by remember { mutableStateOf(false) }
-                OutlinedTextField(
-                    value = anthropicKeyInput,
-                    onValueChange = viewModel::updateAnthropicKey,
-                    label = {
-                        Text(
-                            if (sensitiveFeatureDisabled) "API Key (Disabled - Root Access)"
-                            else if (!isUnlocked) "API Key (Locked)"
-                            else "API Key"
-                        )
-                    },
-                    placeholder = { Text("sk-ant-api03-xxxx") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = if (showApiKey && isUnlocked) VisualTransformation.None else PasswordVisualTransformation(),
-                    leadingIcon = { Icon(Icons.Default.Key, null) },
-                    trailingIcon = {
-                        IconButton(onClick = { showApiKey = !showApiKey }, enabled = isUnlocked) {
-                            Icon(if (showApiKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null)
-                        }
-                    },
-                    enabled = !sensitiveFeatureDisabled && isUnlocked
-                )
-                Spacer(Modifier.height(8.dp))
-
-                var modelExpanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(expanded = modelExpanded, onExpandedChange = { modelExpanded = it }) {
-                    OutlinedTextField(
-                        value = claudeModelInput,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Model") },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(modelExpanded) },
-                        enabled = !sensitiveFeatureDisabled && isUnlocked
-                    )
-                    ExposedDropdownMenu(expanded = modelExpanded, onDismissRequest = { modelExpanded = false }) {
-                        com.opuside.app.core.ai.ClaudeModelConfig.ClaudeModel.getAllModelsWithNames().forEach { (modelId, displayName) ->
-                            DropdownMenuItem(
-                                text = { Text(displayName) },
-                                onClick = { viewModel.updateClaudeModel(modelId); modelExpanded = false }
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(12.dp))
-
-                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                    ConnectionStatusBadge(status = claudeStatus)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(
-                            onClick = viewModel::testClaudeConnection,
-                            enabled = !sensitiveFeatureDisabled && claudeStatus !is ConnectionStatus.Testing
-                        ) {
-                            if (claudeStatus is ConnectionStatus.Testing) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                                Spacer(Modifier.width(4.dp))
-                            }
-                            Text("Test")
-                        }
-                        Button(
-                            onClick = viewModel::saveAnthropicSettings,
-                            enabled = !isSaving && !sensitiveFeatureDisabled && isUnlocked
-                        ) { Text("Save") }
-                    }
-                }
-
-                when (val status = claudeStatus) {
-                    is ConnectionStatus.Connected -> {
-                        Spacer(Modifier.height(8.dp))
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                        ) {
-                            Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.CheckCircle, null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Connection successful!", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                            }
-                        }
-                    }
-                    is ConnectionStatus.Error -> {
-                        Spacer(Modifier.height(8.dp))
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Error, null, tint = MaterialTheme.colorScheme.error)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("Test Failed", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error)
-                                }
-                                Spacer(Modifier.height(4.dp))
-                                Text(status.message, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onErrorContainer)
-                            }
-                        }
-                    }
-                    else -> {}
-                }
-
-                if (!sensitiveFeatureDisabled) {
-                    Spacer(Modifier.height(8.dp))
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = when {
-                                activity == null -> MaterialTheme.colorScheme.errorContainer
-                                !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.tertiaryContainer
-                                else -> MaterialTheme.colorScheme.primaryContainer
-                            }
-                        )
-                    ) {
-                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                when {
-                                    activity == null -> Icons.Default.Warning
-                                    !SecurityUtils.isDeviceSecure(context) -> Icons.Default.Lock
-                                    else -> Icons.Default.Fingerprint
-                                },
-                                null,
-                                modifier = Modifier.size(20.dp),
-                                tint = when {
-                                    activity == null -> MaterialTheme.colorScheme.error
-                                    !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.onTertiaryContainer
-                                    else -> MaterialTheme.colorScheme.primary
-                                }
-                            )
-                            Spacer(Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    when {
-                                        activity == null -> "⚠️ Biometric unavailable (restart app)"
-                                        !SecurityUtils.isDeviceSecure(context) -> "⚠️ Set up lock screen first"
-                                        else -> "✅ Biometric protection enabled"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = when {
-                                        activity == null -> MaterialTheme.colorScheme.onErrorContainer
-                                        !SecurityUtils.isDeviceSecure(context) -> MaterialTheme.colorScheme.onTertiaryContainer
-                                        else -> MaterialTheme.colorScheme.onPrimaryContainer
-                                    }
-                                )
-                                if (activity != null && SecurityUtils.isDeviceSecure(context)) {
-                                    Text(
-                                        "API key protected by fingerprint/face",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-
-
-            // ═══════════════════════════════════════════════════════════════════════════
             // GEMINI SETTINGS
             // ═══════════════════════════════════════════════════════════════════════════
             SettingsSection(title = "Gemini API", icon = Icons.Default.AutoAwesomeMotion) {
@@ -754,10 +583,6 @@ fun SettingsScreen(
                 }
             }
 
-
-
-
-
             // ═══════════════════════════════════════════════════════════════════════════
             // APP INFO
             // ═══════════════════════════════════════════════════════════════════════════
@@ -793,8 +618,6 @@ fun SettingsScreen(
                     Text("Save All")
                 }
             }
-
-
 
             Spacer(Modifier.height(32.dp))
         }
