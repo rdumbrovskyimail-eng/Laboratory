@@ -5,8 +5,6 @@ import com.opuside.app.BuildConfig
 import com.opuside.app.core.ai.RepoIndexManager
 import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.network.anthropic.ClaudeApiClient
-import com.opuside.app.core.network.anthropic.ResilientStreamingClient
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
 import com.opuside.app.core.security.SecureSettingsDataStore
@@ -61,21 +59,6 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object NetworkModule {
 
-    @OptIn(ExperimentalSerializationApi::class)
-
-                }
-                level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
-                sanitizeHeader { name -> name.equals("x-api-key", ignoreCase = true) }
-            }
-
-            install(HttpTimeout) {
-                requestTimeoutMillis = null  // null = бесконечный timeout для SSE стриминга
-                connectTimeoutMillis = 30_000
-                socketTimeoutMillis = null   // null = бесконечный timeout для SSE стриминга
-            }
-        }
-    }
-
     @Provides
     @Singleton
     @Named("github")
@@ -109,28 +92,6 @@ object NetworkModule {
                 socketTimeoutMillis = 30_000
             }
         }
-    }
-
-    @Provides
-    @Singleton
-    fun provideClaudeApiClient(
-        @Named("anthropic") httpClient: HttpClient,
-        json: Json,
-        @Named("anthropicApiUrl") apiUrl: String,
-        secureSettings: SecureSettingsDataStore,
-        appSettings: AppSettings
-    ): ClaudeApiClient {
-        return ClaudeApiClient(httpClient, json, apiUrl, secureSettings, appSettings)
-    }
-
-    // ★ NEW: ResilientStreamingClient для автоматического retry при обрывах сети
-    @Provides
-    @Singleton
-    fun provideResilientStreamingClient(
-        @ApplicationContext context: Context,
-        claudeClient: ClaudeApiClient
-    ): ResilientStreamingClient {
-        return ResilientStreamingClient(context, claudeClient)
     }
 
     @Provides
