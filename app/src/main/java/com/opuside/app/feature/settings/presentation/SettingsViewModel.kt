@@ -6,7 +6,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.BuildConfig
 import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.GitHubRepository
 import com.opuside.app.core.security.GeminiKeyEntry
@@ -40,8 +39,7 @@ class SettingsViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val appSettings: AppSettings,
     private val secureSettings: SecureSettingsDataStore,
-    private val gitHubClient: GitHubApiClient,
-    private val claudeClient: ClaudeApiClient
+    private val gitHubClient: GitHubApiClient
 ) : ViewModel() {
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -624,26 +622,6 @@ class SettingsViewModel @Inject constructor(
             } catch (e: Exception) {
                 _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
                 _message.value = "❌ GitHub test error: ${e.message}"
-            }
-        }
-    }
-
-    fun testClaudeConnection() {
-        viewModelScope.launch {
-            _claudeStatus.value = ConnectionStatus.Testing
-            try {
-                claudeClient.testConnection()
-                    .onSuccess { message ->
-                        _claudeStatus.value = ConnectionStatus.Connected
-                        _message.value = "✅ $message"
-                    }
-                    .onFailure { e ->
-                        _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                        _message.value = "❌ ${e.message}"
-                    }
-            } catch (e: Exception) {
-                _claudeStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                _message.value = "❌ Connection error: ${e.message}"
             }
         }
     }

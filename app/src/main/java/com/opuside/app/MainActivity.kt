@@ -20,7 +20,6 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.network.anthropic.ClaudeApiClient
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.security.SecurityUtils
 import com.opuside.app.core.ui.theme.OpusIDETheme
@@ -52,9 +51,6 @@ val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "ap
 @AndroidEntryPoint
 class MainActivity : FragmentActivity() {
 
-    @Inject
-    lateinit var claudeApiClient: ClaudeApiClient
-    
     @Inject
     lateinit var gitHubApiClient: GitHubApiClient
     
