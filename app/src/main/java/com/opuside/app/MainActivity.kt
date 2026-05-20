@@ -96,7 +96,7 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
 
         setContent {
-            var selectedTheme by remember { mutableStateOf(AppTheme.GRAPHITE) }
+            var selectedTheme by remember { mutableStateOf<AppTheme>(AppTheme.GRAPHITE) }
             OpusIDETheme(appTheme = selectedTheme) {
                 var showRootDialogSetting by remember { mutableStateOf(true) }
                 var isLoading by remember { mutableStateOf(true) }
