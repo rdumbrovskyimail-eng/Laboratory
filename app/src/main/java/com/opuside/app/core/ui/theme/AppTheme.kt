@@ -13,12 +13,21 @@ data class MinimalistColors(
     val surface: Color,
     val text: Color,
     val accent: Color,
-    val isDark: Boolean
+    val isDark: Boolean,
+    val purple: Color = Color(0xFFA855F7),
+    val green: Color = Color(0xFF22C55E),
+    val text1: Color = Color(0xFF111827),
+    val text2: Color = Color(0xFF4B5563),
+    val surfaceVariant: Color = Color(0xFFF3F4F6),
+    val border: Color = Color(0xFFE5E7EB),
+    val red: Color = Color(0xFFEF4444)
 )
 
 enum class AppTheme(val config: MinimalistColors) {
-    LIGHT(MinimalistColors(Color(0xFFFFFFFF), Color(0xFFF5F5F5), Color(0xFF000000), Color(0xFF000000), false)),
-    DARK(MinimalistColors(Color(0xFF000000), Color(0xFF121212), Color(0xFFFFFFFF), Color(0xFFFFFFFF), true))
+    LIGHT(MinimalistColors(Color(0xFFFFFFFF), Color(0xFFF9FAFB), Color(0xFF111827), Color(0xFF111827), false)),
+    DARK(MinimalistColors(Color(0xFFFFFFFF), Color(0xFFF9FAFB), Color(0xFF111827), Color(0xFF111827), false)),
+    GRAPHITE(MinimalistColors(Color(0xFFFFFFFF), Color(0xFFF9FAFB), Color(0xFF111827), Color(0xFF111827), false)),
+    CLOUD(MinimalistColors(Color(0xFFFFFFFF), Color(0xFFF9FAFB), Color(0xFF111827), Color(0xFF111827), false))
 }
 
 fun AppTheme.toColorScheme() = if (config.isDark) {
