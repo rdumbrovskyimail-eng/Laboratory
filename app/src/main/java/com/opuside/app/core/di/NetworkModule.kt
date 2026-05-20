@@ -61,6 +61,16 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    fun provideJson(): Json {
+        return Json {
+            ignoreUnknownKeys = true
+            coerceInputValues = true
+            isLenient = true
+        }
+    }
+
+    @Provides
+    @Singleton
     @Named("github")
     fun provideGitHubHttpClient(json: Json): HttpClient {
         return HttpClient(OkHttp) {
