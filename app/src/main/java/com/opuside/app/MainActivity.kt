@@ -140,9 +140,7 @@ class MainActivity : FragmentActivity() {
                         color = MaterialTheme.colorScheme.background
                     ) {
                         OpusIDENavigation(
-                            sensitiveFeatureDisabled = sensitiveFeatureDisabled,
-                            selectedTheme = selectedTheme,
-                            onThemeChange = { selectedTheme = it }
+                            sensitiveFeatureDisabled = sensitiveFeatureDisabled
                         )
                     }
                 }
@@ -188,41 +186,9 @@ class MainActivity : FragmentActivity() {
             android.util.Log.d("MainActivity", "━".repeat(80))
             
             // ═══════════════════════════════════════════════════════════
-            // ПРОВЕРКА CLAUDE API
-            // ═══════════════════════════════════════════════════════════
-            android.util.Log.d("MainActivity", "  ├─ Claude API:")
-            
-            val isClaudeReady = try {
-                val hasKey = claudeApiClient.validateApiKey()
-                
-                if (!hasKey) {
-                    android.util.Log.w("MainActivity", "  │  └─ ⚠️ API key not configured")
-                    false
-                } else {
-                    android.util.Log.d("MainActivity", "  │  └─ ✅ API key found")
-                    true
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("MainActivity", "  │  └─ ❌ Error: ${e.message}", e)
-                false
-            }
-            
-            if (isClaudeReady) {
-                android.util.Log.i("MainActivity", "  │")
-                android.util.Log.i("MainActivity", "  ├─ ✅ Claude API: READY")
-                android.util.Log.i("MainActivity", "  │  • API key configured")
-                android.util.Log.i("MainActivity", "  │  • Analyzer tab will connect on first use")
-            } else {
-                android.util.Log.w("MainActivity", "  │")
-                android.util.Log.w("MainActivity", "  ├─ ⚠️ Claude API: NOT CONFIGURED")
-                android.util.Log.w("MainActivity", "  │  • Please configure API key in Settings")
-                android.util.Log.w("MainActivity", "  │  • Click 'Test' button to verify connection")
-            }
-            
-            // ═══════════════════════════════════════════════════════════
             // ПРОВЕРКА GITHUB API
             // ═══════════════════════════════════════════════════════════
-            android.util.Log.d("MainActivity", "  │")
+            android.util.Log.d("MainActivity", "  ├─ GitHub API:")
             android.util.Log.d("MainActivity", "  ├─ GitHub API:")
             
             val gitHubConfig = try {
@@ -265,37 +231,17 @@ class MainActivity : FragmentActivity() {
             // ═══════════════════════════════════════════════════════════
             android.util.Log.d("MainActivity", "  │")
             android.util.Log.d("MainActivity", "━".repeat(80))
-            when {
-                isClaudeReady && isGitHubReady -> {
-                    android.util.Log.i("MainActivity", "🎉 ALL SYSTEMS READY")
-                    android.util.Log.i("MainActivity", "   ✅ Claude API configured")
-                    android.util.Log.i("MainActivity", "   ✅ GitHub API configured")
-                    android.util.Log.i("MainActivity", "")
-                    android.util.Log.i("MainActivity", "💡 NEXT STEPS:")
-                    android.util.Log.i("MainActivity", "   → Open Creator tab to load repository files")
-                    android.util.Log.i("MainActivity", "   → Open Analyzer tab to start chatting with Claude")
-                }
-                isClaudeReady -> {
-                    android.util.Log.i("MainActivity", "⚡ PARTIAL READY - Analyzer available")
-                    android.util.Log.i("MainActivity", "   ✅ Claude API configured")
-                    android.util.Log.i("MainActivity", "   ⚠️ GitHub API needs configuration")
-                    android.util.Log.i("MainActivity", "")
-                    android.util.Log.i("MainActivity", "💡 TIP: Configure GitHub in Settings for Creator tab")
-                }
-                isGitHubReady -> {
-                    android.util.Log.i("MainActivity", "⚡ PARTIAL READY - Creator available")
-                    android.util.Log.i("MainActivity", "   ⚠️ Claude API needs configuration")
-                    android.util.Log.i("MainActivity", "   ✅ GitHub API configured")
-                    android.util.Log.i("MainActivity", "")
-                    android.util.Log.i("MainActivity", "💡 TIP: Configure Claude API in Settings for Analyzer tab")
-                }
-                else -> {
-                    android.util.Log.w("MainActivity", "⚠️ CONFIGURATION REQUIRED")
-                    android.util.Log.w("MainActivity", "   ⚠️ Claude API needs configuration")
-                    android.util.Log.w("MainActivity", "   ⚠️ GitHub API needs configuration")
-                    android.util.Log.w("MainActivity", "")
-                    android.util.Log.w("MainActivity", "💡 TIP: Go to Settings tab to configure both APIs")
-                }
+            if (isGitHubReady) {
+                android.util.Log.i("MainActivity", "🎉 SYSTEMS READY")
+                android.util.Log.i("MainActivity", "   ✅ GitHub API configured")
+                android.util.Log.i("MainActivity", "")
+                android.util.Log.i("MainActivity", "💡 NEXT STEPS:")
+                android.util.Log.i("MainActivity", "   → Open Creator tab to load repository files")
+            } else {
+                android.util.Log.w("MainActivity", "⚠️ CONFIGURATION REQUIRED")
+                android.util.Log.w("MainActivity", "   ⚠️ GitHub API needs configuration")
+                android.util.Log.w("MainActivity", "")
+                android.util.Log.w("MainActivity", "💡 TIP: Go to Settings tab to configure GitHub API")
             }
             android.util.Log.d("MainActivity", "━".repeat(80))
         }
