@@ -65,19 +65,6 @@ class SettingsViewModel @Inject constructor(
     val repoInfo: StateFlow<GitHubRepository?> = _repoInfo.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE — Anthropic / Claude
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private val _anthropicKeyInput = MutableStateFlow("")
-    val anthropicKeyInput: StateFlow<String> = _anthropicKeyInput.asStateFlow()
-
-    private val _claudeModelInput = MutableStateFlow("claude-opus-4-6")
-    val claudeModelInput: StateFlow<String> = _claudeModelInput.asStateFlow()
-
-    private val _claudeStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
-    val claudeStatus: StateFlow<ConnectionStatus> = _claudeStatus.asStateFlow()
-
-    // ═════════════════════════════════════════════════════════════════════════
     // STATE — Gemini
     // ═════════════════════════════════════════════════════════════════════════
 
@@ -171,16 +158,6 @@ class SettingsViewModel @Inject constructor(
                     ""
                 }
 
-                // Anthropic key
-                val anthropicKey = try {
-                    secureSettings.getAnthropicApiKey().first().also { key ->
-                        android.util.Log.d(TAG, "  ├─ Anthropic: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  ❌ Failed to decrypt Anthropic key", e)
-                    ""
-                }
-
                 // Gemini key
                 val geminiKey = try {
                     secureSettings.getGeminiApiKey().first().also { key ->
@@ -207,14 +184,6 @@ class SettingsViewModel @Inject constructor(
                     viewModelScope.launch { secureSettings.setGeminiApiKeys(migrated) }
                 }
 
-                // Claude model
-                val claudeModel = try {
-                    appSettings.claudeModel.first()
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  ❌ Failed to load Claude model", e)
-                    "claude-opus-4-6"
-                }
-
                 // Gemini model
                 val geminiModel = try {
                     appSettings.geminiModel.first()
@@ -228,9 +197,7 @@ class SettingsViewModel @Inject constructor(
                 _githubRepoInput.value = githubConfig.repo
                 _githubBranchInput.value = githubConfig.branch
                 _githubTokenInput.value = githubToken
-                _anthropicKeyInput.value = anthropicKey
                 _geminiKeyInput.value = geminiKey
-                _claudeModelInput.value = claudeModel
                 _geminiModelInput.value = geminiModel
 
                 android.util.Log.d(TAG, "✅ Settings loaded successfully")
@@ -321,8 +288,6 @@ class SettingsViewModel @Inject constructor(
                     config.githubRepo?.let { _githubRepoInput.value = it }
                     config.githubBranch?.let { _githubBranchInput.value = it }
                     config.githubToken?.let { _githubTokenInput.value = it }
-                    config.claudeApiKey?.let { _anthropicKeyInput.value = it }
-                    config.claudeModel?.let { _claudeModelInput.value = it }
 
                     android.util.Log.d(TAG, "✅ Configuration applied")
                     _message.value = "✅ Configuration imported!\n\n${config.toSummary()}\n\n⚠️ Don't forget to click Save!"
@@ -346,9 +311,7 @@ class SettingsViewModel @Inject constructor(
             githubOwner = _githubOwnerInput.value,
             githubRepo = _githubRepoInput.value,
             githubBranch = _githubBranchInput.value,
-            githubToken = _githubTokenInput.value,
-            claudeApiKey = _anthropicKeyInput.value,
-            claudeModel = _claudeModelInput.value
+            githubToken = _githubTokenInput.value
         )
     }
 
@@ -382,16 +345,6 @@ class SettingsViewModel @Inject constructor(
     fun updateGitHubBranch(branch: String) {
         if (!checkUnlocked()) return
         _githubBranchInput.value = branch
-    }
-
-    fun updateAnthropicKey(key: String) {
-        if (!checkUnlocked()) return
-        _anthropicKeyInput.value = key
-        android.util.Log.d(TAG, "🔄 Anthropic Key updated: ${key.take(8)}***")
-    }
-
-    fun updateClaudeModel(model: String) {
-        _claudeModelInput.value = model
     }
 
     fun updateGeminiKey(key: String) {
@@ -500,34 +453,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun saveAnthropicSettings() {
-        if (!checkUnlocked()) return
-
-        viewModelScope.launch {
-            _isSaving.value = true
-            android.util.Log.d(TAG, "💾 SAVING ANTHROPIC SETTINGS")
-
-            try {
-                if (_anthropicKeyInput.value.isBlank()) {
-                    _message.value = "❌ API Key cannot be empty"
-                    return@launch
-                }
-
-                secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
-                appSettings.setClaudeModel(_claudeModelInput.value)
-
-                _message.value = "✅ Claude settings saved successfully"
-                android.util.Log.d(TAG, "✅ ANTHROPIC SETTINGS SAVED")
-
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
-                _message.value = "❌ Failed to save: ${e.message}"
-            } finally {
-                _isSaving.value = false
-            }
-        }
-    }
-
     fun saveGeminiSettings() {
         if (!checkUnlocked()) return
 
@@ -567,9 +492,9 @@ class SettingsViewModel @Inject constructor(
 
             try {
                 if (_githubOwnerInput.value.isBlank() || _githubRepoInput.value.isBlank() ||
-                    _githubTokenInput.value.isBlank() || _anthropicKeyInput.value.isBlank()
+                    _githubTokenInput.value.isBlank()
                 ) {
-                    _message.value = "❌ GitHub and Claude fields are required"
+                    _message.value = "❌ GitHub fields are required"
                     return@launch
                 }
 
@@ -579,8 +504,6 @@ class SettingsViewModel @Inject constructor(
                     repo = _githubRepoInput.value,
                     branch = _githubBranchInput.value
                 )
-                secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
-                appSettings.setClaudeModel(_claudeModelInput.value)
 
                 if (_geminiKeys.value.isNotEmpty()) {
                     secureSettings.setGeminiApiKeys(_geminiKeys.value)
@@ -732,7 +655,6 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun resetToDefaults() {
-        _claudeModelInput.value = "claude-opus-4-6"
         _geminiModelInput.value = com.opuside.app.core.ai.GeminiModelConfig.GeminiModel.getDefault().modelId
         _message.value = "⚠️ Settings reset to defaults (not saved)"
     }
