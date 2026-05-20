@@ -345,14 +345,6 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
-    fun setModelOverrideEnabled(enabled: Boolean) {
-        if (_state.value.isRunning) return
-        _state.update { it.copy(modelOverrideEnabled = enabled) }
-    }
-    fun setModelOverrideName(name: String) {
-        if (_state.value.isRunning) return
-        _state.update { it.copy(modelOverrideName = name) }
-    }
     fun setSelectedModel(apiId: String) {
         if (_state.value.isRunning) return
         _state.update { it.copy(selectedModelApiId = apiId) }
@@ -398,8 +390,6 @@ class PipelineViewModel @Inject constructor(
             }
         }
     }
-
-
 
     // ═══════════════════════════════════════════════════════════════════════
     // STEP 1: PLAN
@@ -874,8 +864,7 @@ class PipelineViewModel @Inject constructor(
         var receivedFinal = false
         var receivedFatal = false
         val overrideApiId = _state.value.effectiveModelApiId
-        val isLiteActive = !_state.value.modelOverrideEnabled &&
-                _state.value.selectedModelApiId == "gemini-3.1-flash-lite-preview"
+        val isLiteActive = _state.value.selectedModelApiId == "gemini-3.1-flash-lite-preview"
         val thinkingLevel = if (isLiteActive) _state.value.liteThinkingLevel else null
         val isOffline = _state.value.pipelineMode == PipelineMode.OFFLINE
 
@@ -1061,11 +1050,13 @@ class PipelineViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val index = repoIndexManager.getOrRefresh() ?: return@launch
-                val content = index.nodes.filter { it.isFile }.joinToString("\n\n") { node ->
-                    "--- ${node.path} ---\n${node.content}"
+                val sb = java.lang.StringBuilder()
+                index.nodes.filter { it.isFile }.forEach { node ->
+                    val content = localRepoManager.readFile(node.path).getOrNull() ?: ""
+                    sb.append("--- ").append(node.path).append(" ---\n").append(content).append("\n\n")
                 }
                 val file = java.io.File(context.cacheDir, "repo_export.txt")
-                file.writeText(content)
+                file.writeText(sb.toString())
                 appendRepoLog(RepoLogEvent(type = RepoEventType.INFO, icon = "💾", message = "Репо экспортировано в ${file.absolutePath}"))
             } catch (e: Exception) {
                 _userError.value = "Ошибка экспорта: ${e.message}"
