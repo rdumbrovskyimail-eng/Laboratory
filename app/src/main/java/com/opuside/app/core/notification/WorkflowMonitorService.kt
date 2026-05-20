@@ -149,18 +149,19 @@ class WorkflowMonitorService : Service() {
         val duration = calcDuration(run.runStartedAt, run.updatedAt)
 
         when (run.conclusion) {
-                "success" -> {
-                    WorkflowNotificationManager.notifySuccess(
-                        context      = applicationContext,
-                        workflowName = name,
-                        duration     = duration
-                    )
-                }
+            "success" -> {
+                WorkflowNotificationManager.notifySuccess(
+                    context      = applicationContext,
+                    workflowName = name,
+                    duration     = duration
+                )
             }
-            "failure" -> WorkflowNotificationManager.notifyFailure(
-                context      = applicationContext,
-                workflowName = name
-            )
+            "failure" -> {
+                WorkflowNotificationManager.notifyFailure(
+                    context      = applicationContext,
+                    workflowName = name
+                )
+            }
             else -> Log.d(TAG, "Ignoring conclusion: ${run.conclusion}")
         }
     }
