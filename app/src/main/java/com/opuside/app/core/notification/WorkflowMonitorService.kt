@@ -149,14 +149,12 @@ class WorkflowMonitorService : Service() {
         val duration = calcDuration(run.runStartedAt, run.updatedAt)
 
         when (run.conclusion) {
-            "success" -> {
-                WorkflowNotificationManager.notifySuccess(
-                    context      = applicationContext,
-                    workflowName = name,
-                    duration     = duration
-                )
-                scope.launch {
-                    triggerAutoInstall(run)
+                "success" -> {
+                    WorkflowNotificationManager.notifySuccess(
+                        context      = applicationContext,
+                        workflowName = name,
+                        duration     = duration
+                    )
                 }
             }
             "failure" -> WorkflowNotificationManager.notifyFailure(
@@ -164,23 +162,6 @@ class WorkflowMonitorService : Service() {
                 workflowName = name
             )
             else -> Log.d(TAG, "Ignoring conclusion: ${run.conclusion}")
-        }
-    }
-
-    private suspend fun triggerAutoInstall(run: WorkflowRun) {
-        try {
-            val releases = gitHubApiClient.getReleases().getOrNull() ?: return
-            val matchedRelease = releases.find { it.body?.contains(run.headSha) == true }
-            val asset = matchedRelease?.assets?.find { it.name.endsWith(".apk", ignoreCase = true) }
-                ?: return
-
-            val downloadUrl = gitHubApiClient
-                .getReleaseAssetDownloadUrl(asset.id)
-                .getOrNull() ?: return
-
-            ApkInstallManager.downloadAndInstall(applicationContext, downloadUrl, asset.name)
-        } catch (e: Exception) {
-            Log.e(TAG, "Auto-install failed", e)
         }
     }
 

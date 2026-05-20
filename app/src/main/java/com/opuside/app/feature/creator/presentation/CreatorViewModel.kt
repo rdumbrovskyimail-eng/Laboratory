@@ -492,6 +492,36 @@ class CreatorViewModel @Inject constructor(
         }
     }
 
+    fun deleteSelectedItems() {
+        val selectedItems = _contents.value.filter { it.path in _selectedPaths.value }
+        if (selectedItems.isEmpty()) return
+
+        viewModelScope.launch {
+            _isLoading.value = true
+            _error.value = null
+
+            android.util.Log.d("CreatorViewModel", "🗑️ Deleting ${selectedItems.size} selected items")
+
+            for (item in selectedItems) {
+                if (item.type == "dir") {
+                    deleteFolderRecursive(item.path)
+                } else {
+                    gitHubClient.deleteFile(
+                        path = item.path,
+                        message = "Delete ${item.name}",
+                        sha = item.sha,
+                        branch = _currentBranch.value
+                    )
+                }
+            }
+
+            repoIndexManager.invalidate()
+            exitSelectionMode()
+            refresh()
+            _isLoading.value = false
+        }
+    }
+
     private suspend fun deleteFolderRecursive(path: String): Int {
         var deletedCount = 0
         val contents = gitHubClient.getContent(path, _currentBranch.value).getOrNull() ?: return 0

@@ -1,6 +1,5 @@
 package com.opuside.app.navigation
 
-import com.opuside.app.core.ui.theme.AppTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -47,7 +46,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import com.opuside.app.feature.analyzer.presentation.AnalyzerScreen
 import com.opuside.app.feature.creator.presentation.CreatorScreen
 import com.opuside.app.feature.creator.presentation.CreatorViewModel
 import com.opuside.app.feature.pipeline.presentation.PipelineScreen
@@ -82,13 +80,6 @@ sealed class Screen(
         unselectedIcon = Icons.Outlined.Code
     )
 
-    data object Analyzer : Screen(
-        route = "analyzer",
-        title = "Analyzer",
-        selectedIcon = Icons.Filled.Analytics,
-        unselectedIcon = Icons.Outlined.Analytics
-    )
-
     data object Workflows : Screen(
         route = "workflows",
         title = "Actions",
@@ -113,7 +104,6 @@ sealed class Screen(
 
 val bottomNavItems = listOf(
     Screen.Creator,
-    Screen.Analyzer,
     Screen.Workflows,
     Screen.Pipeline,
     Screen.Scratch,
@@ -126,9 +116,7 @@ val bottomNavItems = listOf(
 
 @Composable
 fun OpusIDENavigation(
-    sensitiveFeatureDisabled: Boolean = false,
-    selectedTheme: AppTheme = AppTheme.GRAPHITE,
-    onThemeChange: (AppTheme) -> Unit = {}
+    sensitiveFeatureDisabled: Boolean = false
 ) {
     val context = LocalContext.current
     val navController = rememberNavController()
@@ -210,16 +198,11 @@ fun OpusIDENavigation(
             ) {
                 composable(Screen.Scratch.route) { ScratchScreen() }
                 composable(Screen.Creator.route) { CreatorScreen(viewModel = creatorViewModel) }
-                composable(Screen.Analyzer.route) {
-                    AnalyzerScreen(selectedTheme = selectedTheme, onThemeChange = onThemeChange)
-                }
                 composable(Screen.Workflows.route) { WorkflowsScreen() }
                 composable(Screen.Pipeline.route) { PipelineScreen() }
                 composable(Screen.Settings.route) {
                     SettingsScreen(
-                        sensitiveFeatureDisabled = sensitiveFeatureDisabled,
-                        selectedTheme = selectedTheme,
-                        onThemeChange = onThemeChange
+                        sensitiveFeatureDisabled = sensitiveFeatureDisabled
                     )
                 }
             }

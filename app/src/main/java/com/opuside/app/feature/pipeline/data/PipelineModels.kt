@@ -23,11 +23,8 @@ data class PipelineState(
     val pipelineRunId: String = UUID.randomUUID().toString().take(8),
     val maxParallelTasks: Int = 3,
     val logFilterTaskId: String? = null,
-    // НОВОЕ: Override модели Gemini
-    val modelOverrideEnabled: Boolean = false,
-    val modelOverrideName: String = "",
-    // Дефолтная модель из списка (если override OFF)
-    val selectedModelApiId: String = "gemini-3-flash-preview",
+    // Дефолтная модель из списка
+    val selectedModelApiId: String = "gemini-2.0-flash-exp",
     // Thinking-уровень для Lite модели (low / medium / high)
     val liteThinkingLevel: String = "high",
     // Режим работы пайплайна: Online = коммиты напрямую через GitHub API,
@@ -66,12 +63,7 @@ data class PipelineState(
         else -> OverallStatus.SUCCESS_PARTIAL
     }
 
-    /** Какую модель отправлять в Gemini API. Override-поле приоритетнее селектора. */
-    val effectiveModelApiId: String get() =
-        if (modelOverrideEnabled && modelOverrideName.isNotBlank())
-            modelOverrideName.trim()
-        else
-            selectedModelApiId
+    val effectiveModelApiId: String get() = selectedModelApiId
 }
 
 enum class OverallStatus {

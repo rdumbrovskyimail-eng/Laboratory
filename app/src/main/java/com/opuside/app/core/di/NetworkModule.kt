@@ -62,65 +62,7 @@ import javax.inject.Singleton
 object NetworkModule {
 
     @OptIn(ExperimentalSerializationApi::class)
-    @Provides
-    @Singleton
-    fun provideJson(): Json {
-        return Json {
-            ignoreUnknownKeys = true
-            isLenient = true
-            encodeDefaults = false
-            explicitNulls = false
-            prettyPrint = false
-            coerceInputValues = true
-        }
-    }
 
-    @Provides
-    @Singleton
-    @Named("anthropicApiUrl")
-    fun provideAnthropicApiUrl(): String {
-        return BuildConfig.ANTHROPIC_API_URL.ifBlank {
-            "https://api.anthropic.com/v1/messages"
-        }
-    }
-
-    /**
-     * HTTP клиент для Claude API.
-     *
-     * КРИТИЧНО для стабильности SSE стриминга:
-     * - readTimeout = 0 (бесконечный) — SSE может ждать сколько угодно между чанками
-     * - writeTimeout = 0 (бесконечный) — отправка больших файлов без ограничений
-     * - pingInterval = 20s — keep-alive для долгих соединений
-     * - Ktor requestTimeout = null (INFINITE) — не обрывает долгие запросы
-     * - Ktor socketTimeout = null (INFINITE) — матчит readTimeout=0
-     *
-     * Защита от зависания: MAX_STREAMING_TIME_MS = 90 минут в ClaudeApiClient
-     */
-    @Provides
-    @Singleton
-    @Named("anthropic")
-    fun provideAnthropicHttpClient(json: Json): HttpClient {
-        return HttpClient(OkHttp) {
-            engine {
-                config {
-                    connectTimeout(30, TimeUnit.SECONDS)
-                    readTimeout(0, TimeUnit.SECONDS)       // 0 = бесконечный (SSE стрим)
-                    writeTimeout(0, TimeUnit.SECONDS)      // ✅ ИСПРАВЛЕНИЕ #5: было 120s, стало 0 (бесконечный)
-                    pingInterval(20, TimeUnit.SECONDS)     // ✅ ИСПРАВЛЕНИЕ #2: добавлено для keep-alive
-                    retryOnConnectionFailure(false)        // Нет скрытых retry
-                }
-            }
-
-            install(ContentNegotiation) {
-                json(json)
-            }
-
-            install(Logging) {
-                logger = object : Logger {
-                    override fun log(message: String) {
-                        // Не логируем тела ответов (SSE flood)
-                        android.util.Log.d("Claude-HTTP", message)
-                    }
                 }
                 level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
                 sanitizeHeader { name -> name.equals("x-api-key", ignoreCase = true) }

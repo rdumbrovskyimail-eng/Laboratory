@@ -200,24 +200,15 @@ fun PipelineScreen(
 
             DefaultModelSelector(
                 selected = state.selectedModelApiId,
-                interactive = !state.isRunning && !state.modelOverrideEnabled,
+                interactive = !state.isRunning,
                 onSelect = viewModel::setSelectedModel
             )
             // Thinking-уровень показывается ТОЛЬКО когда выбрана Lite
-            if (state.selectedModelApiId == "gemini-3.1-flash-lite-preview"
-                && !state.modelOverrideEnabled) {
-                LiteThinkingSelector(
-                    selected = state.liteThinkingLevel,
-                    interactive = !state.isRunning,
-                    onSelect = viewModel::setLiteThinkingLevel
-                )
-            }
-            ModelOverrideSection(
-                modelName = state.modelOverrideName,
-                enabled = state.modelOverrideEnabled,
+            LiteThinkingSelector(
+                selected = state.liteThinkingLevel,
+                isLite = state.selectedModelApiId == "gemini-3.1-flash-lite-preview",
                 interactive = !state.isRunning,
-                onModelNameChange = viewModel::setModelOverrideName,
-                onToggle = viewModel::setModelOverrideEnabled
+                onSelect = viewModel::setLiteThinkingLevel
             )
 
             // ═══ STATUS BUTTON + STOP ═════════════════════════════════════
@@ -228,7 +219,8 @@ fun PipelineScreen(
                 onPlan = { viewModel.plan() },
                 onStart = { viewModel.start() },
                 onStop = { viewModel.stop() },
-                onReset = { viewModel.reset() }
+                onReset = { viewModel.reset() },
+                onExport = { viewModel.exportReport() }
             )
 
             // ═══ PROGRESS BAR + TASK CHIPS ════════════════════════════════
@@ -496,7 +488,8 @@ private fun StatusBar(
     onPlan: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    onExport: () -> Unit
 ) {
     val statusColor by animateColorAsState(
         targetValue = when (state.overallStatus) {
@@ -574,6 +567,19 @@ private fun StatusBar(
                         contentDescription = "Stop",
                         tint = Color.White
                     )
+                }
+            }
+            if (state.phase == PipelinePhase.DONE) {
+                Spacer(Modifier.width(8.dp))
+                IconButton(
+                    onClick = onExport,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(PipelineColors.surfaceElevated)
+                        .border(1.dp, PipelineColors.borderSubtle, RoundedCornerShape(12.dp))
+                ) {
+                    Text("📤", fontSize = 20.sp)
                 }
             }
         }
@@ -1208,89 +1214,7 @@ private fun KeyRow(
 }
 
 @Composable
-private fun ModelOverrideSection(
-    modelName: String,
-    enabled: Boolean,
-    interactive: Boolean,
-    onModelNameChange: (String) -> Unit,
-    onToggle: (Boolean) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(PipelineColors.surfaceElevated)
-            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Text(
-            "🧠 Override модели Gemini",
-            color = PipelineColors.textPrimary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
-        OutlinedTextField(
-            value = modelName,
-            onValueChange = onModelNameChange,
-            enabled = interactive && enabled,
-            placeholder = {
-                Text(
-                    "gemini-2.5-pro / gemini-flash-latest / ...",
-                    color = PipelineColors.textTertiary,
-                    fontSize = 11.sp
-                )
-            },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            textStyle = androidx.compose.ui.text.TextStyle(
-                fontFamily = FontFamily.Monospace, fontSize = 12.sp,
-                color = PipelineColors.textPrimary
-            ),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = PipelineColors.surfaceDark,
-                unfocusedContainerColor = PipelineColors.surfaceDark,
-                disabledContainerColor = PipelineColors.surfaceDark,
-                focusedBorderColor = PipelineColors.accentBlue,
-                unfocusedBorderColor = PipelineColors.borderSubtle
-            )
-        )
-        Spacer(Modifier.height(6.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ToggleButton(
-                label = "ON",
-                active = enabled,
-                enabledColor = PipelineColors.accentGreen,
-                interactive = interactive,
-                onClick = { onToggle(true) },
-                modifier = Modifier.weight(1f)
-            )
-            ToggleButton(
-                label = "OFF",
-                active = !enabled,
-                enabledColor = PipelineColors.accentRed,
-                interactive = interactive,
-                onClick = { onToggle(false) },
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = if (enabled) {
-                if (modelName.isBlank()) "⚠️ Введите apiId модели, иначе используется дефолтная"
-                else "✓ Будет использована: $modelName"
-            } else "Используется дефолтная: gemini-3.1-flash-lite-preview",
-            color = if (enabled && modelName.isBlank()) PipelineColors.accentYellow
-                    else PipelineColors.textTertiary,
-            fontSize = 10.sp
-        )
-    }
-}
+
 
 @Composable
 private fun ToggleButton(
@@ -1394,9 +1318,11 @@ private fun DefaultModelSelector(
 @Composable
 private fun LiteThinkingSelector(
     selected: String,
+    isLite: Boolean,
     interactive: Boolean,
     onSelect: (String) -> Unit
 ) {
+    if (!isLite) return
     val options = listOf(
         "low" to "🌱 LOW",
         "medium" to "⚙️ MEDIUM",

@@ -1033,7 +1033,9 @@ class PipelineViewModel @Inject constructor(
         pipelineJob?.cancel()
         pipelineJob = null
         val savedParallel = _state.value.maxParallelTasks
+        val savedPrompt = _userPrompt.value
         _state.value = PipelineState(maxParallelTasks = savedParallel)
+        _userPrompt.value = savedPrompt
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
         _totalCostEur.value = 0.0
@@ -1045,12 +1047,30 @@ class PipelineViewModel @Inject constructor(
 
     private fun resetForNewRun() {
         val savedParallel = _state.value.maxParallelTasks
+        val savedPrompt = _userPrompt.value
         _state.value = PipelineState(maxParallelTasks = savedParallel)
+        _userPrompt.value = savedPrompt
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
         _totalCostEur.value = 0.0
         _totalTokens.value = 0
         _userError.value = null
+    }
+
+    fun exportRepoToTxt(context: android.content.Context) {
+        viewModelScope.launch {
+            try {
+                val index = repoIndexManager.getOrRefresh() ?: return@launch
+                val content = index.nodes.filter { it.isFile }.joinToString("\n\n") { node ->
+                    "--- ${node.path} ---\n${node.content}"
+                }
+                val file = java.io.File(context.cacheDir, "repo_export.txt")
+                file.writeText(content)
+                appendRepoLog(RepoLogEvent(type = RepoEventType.INFO, icon = "💾", message = "Репо экспортировано в ${file.absolutePath}"))
+            } catch (e: Exception) {
+                _userError.value = "Ошибка экспорта: ${e.message}"
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════

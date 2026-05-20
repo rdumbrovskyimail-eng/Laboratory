@@ -80,16 +80,6 @@ class SettingsViewModel @Inject constructor(
     val claudeStatus: StateFlow<ConnectionStatus> = _claudeStatus.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE — DeepSeek
-    // ═════════════════════════════════════════════════════════════════════════
-
-    private val _deepSeekKeyInput = MutableStateFlow("")
-    val deepSeekKeyInput: StateFlow<String> = _deepSeekKeyInput.asStateFlow()
-
-    private val _deepSeekStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
-    val deepSeekStatus: StateFlow<ConnectionStatus> = _deepSeekStatus.asStateFlow()
-
-    // ═════════════════════════════════════════════════════════════════════════
     // STATE — Gemini
     // ═════════════════════════════════════════════════════════════════════════
 
@@ -193,16 +183,6 @@ class SettingsViewModel @Inject constructor(
                     ""
                 }
 
-                // DeepSeek key
-                val deepSeekKey = try {
-                    secureSettings.getDeepSeekApiKey().first().also { key ->
-                        android.util.Log.d(TAG, "  ├─ DeepSeek: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  ❌ Failed to decrypt DeepSeek key", e)
-                    ""
-                }
-
                 // Gemini key
                 val geminiKey = try {
                     secureSettings.getGeminiApiKey().first().also { key ->
@@ -251,7 +231,6 @@ class SettingsViewModel @Inject constructor(
                 _githubBranchInput.value = githubConfig.branch
                 _githubTokenInput.value = githubToken
                 _anthropicKeyInput.value = anthropicKey
-                _deepSeekKeyInput.value = deepSeekKey
                 _geminiKeyInput.value = geminiKey
                 _claudeModelInput.value = claudeModel
                 _geminiModelInput.value = geminiModel
@@ -417,12 +396,6 @@ class SettingsViewModel @Inject constructor(
         _claudeModelInput.value = model
     }
 
-    fun updateDeepSeekKey(key: String) {
-        if (!checkUnlocked()) return
-        _deepSeekKeyInput.value = key
-        android.util.Log.d(TAG, "🔄 DeepSeek Key updated: ${key.take(8)}***")
-    }
-
     fun updateGeminiKey(key: String) {
         if (!checkUnlocked()) return
         _geminiKeyInput.value = key
@@ -557,33 +530,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun saveDeepSeekSettings() {
-        if (!checkUnlocked()) return
-
-        viewModelScope.launch {
-            _isSaving.value = true
-            android.util.Log.d(TAG, "💾 SAVING DEEPSEEK SETTINGS")
-
-            try {
-                if (_deepSeekKeyInput.value.isBlank()) {
-                    _message.value = "❌ DeepSeek API Key cannot be empty"
-                    return@launch
-                }
-
-                secureSettings.setDeepSeekApiKey(_deepSeekKeyInput.value)
-
-                _message.value = "✅ DeepSeek settings saved successfully"
-                android.util.Log.d(TAG, "✅ DEEPSEEK SETTINGS SAVED")
-
-            } catch (e: Exception) {
-                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
-                _message.value = "❌ Failed to save: ${e.message}"
-            } finally {
-                _isSaving.value = false
-            }
-        }
-    }
-
     fun saveGeminiSettings() {
         if (!checkUnlocked()) return
 
@@ -637,10 +583,6 @@ class SettingsViewModel @Inject constructor(
                 )
                 secureSettings.setAnthropicApiKey(_anthropicKeyInput.value, useBiometric = true)
                 appSettings.setClaudeModel(_claudeModelInput.value)
-
-                if (_deepSeekKeyInput.value.isNotBlank()) {
-                    secureSettings.setDeepSeekApiKey(_deepSeekKeyInput.value)
-                }
 
                 if (_geminiKeys.value.isNotEmpty()) {
                     secureSettings.setGeminiApiKeys(_geminiKeys.value)
@@ -706,38 +648,6 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    fun testDeepSeekConnection() {
-        val key = _deepSeekKeyInput.value.trim()
-        if (key.isBlank()) {
-            _message.value = "❌ Введите DeepSeek API key перед тестом"
-            return
-        }
-
-        viewModelScope.launch {
-            _deepSeekStatus.value = ConnectionStatus.Testing
-            android.util.Log.d(TAG, "🧪 Testing DeepSeek connection...")
-
-            try {
-                val result = withContext(Dispatchers.IO) {
-                    testDeepSeekApi(key)
-                }
-                if (result) {
-                    _deepSeekStatus.value = ConnectionStatus.Connected
-                    _message.value = "✅ DeepSeek connected successfully"
-                    android.util.Log.d(TAG, "✅ DeepSeek test passed")
-                } else {
-                    _deepSeekStatus.value = ConnectionStatus.Error("Неверный ответ от API")
-                    _message.value = "❌ DeepSeek: неверный ответ от API"
-                }
-            } catch (e: Exception) {
-                val msg = e.message ?: "Unknown error"
-                _deepSeekStatus.value = ConnectionStatus.Error(msg)
-                _message.value = "❌ DeepSeek test failed: $msg"
-                android.util.Log.e(TAG, "❌ DeepSeek test failed", e)
-            }
-        }
-    }
-
     fun testGeminiConnection() {
         val activeKeys = _geminiKeys.value
         val activeIdx = _geminiActiveKeyIndex.value
@@ -777,43 +687,6 @@ class SettingsViewModel @Inject constructor(
     // ═════════════════════════════════════════════════════════════════════════
     // INTERNAL API TEST HELPERS
     // ═════════════════════════════════════════════════════════════════════════
-
-    private fun testDeepSeekApi(apiKey: String): Boolean {
-        val url = "https://api.deepseek.com/v1/chat/completions"
-        val body = JSONObject().apply {
-            put("model", "deepseek-chat")
-            put("max_tokens", 8)
-            put("messages", JSONArray().apply {
-                put(JSONObject().apply {
-                    put("role", "user")
-                    put("content", "Hi")
-                })
-            })
-        }
-
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Authorization", "Bearer $apiKey")
-            connectTimeout = 20_000
-            readTimeout = 30_000
-            doOutput = true
-        }
-
-        connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-
-        val code = connection.responseCode
-        if (code !in 200..299) {
-            val err = connection.errorStream?.let {
-                BufferedReader(InputStreamReader(it)).use { r -> r.readText() }
-            } ?: "HTTP $code"
-            throw Exception(parseApiErrorMessage(code, err))
-        }
-
-        val response = BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
-        val json = JSONObject(response)
-        return json.has("choices")
-    }
 
     private fun testGeminiApi(apiKey: String, modelId: String): Boolean {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelId:generateContent"

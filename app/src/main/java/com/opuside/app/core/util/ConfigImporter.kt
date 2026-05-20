@@ -31,17 +31,11 @@ object ConfigImporter {
         val githubBranch: String? = null,
         val githubToken: String? = null,
         
-        // Claude
-        val claudeApiKey: String? = null,
-        val claudeModel: String? = null
     ) {
         val isGitHubComplete: Boolean
             get() = !githubOwner.isNullOrBlank() && 
                     !githubRepo.isNullOrBlank() && 
                     !githubToken.isNullOrBlank()
-        
-        val isClaudeComplete: Boolean
-            get() = !claudeApiKey.isNullOrBlank()
         
         fun toSummary(): String {
             val parts = mutableListOf<String>()
@@ -50,12 +44,6 @@ object ConfigImporter {
                 parts.add("✅ GitHub: $githubOwner/$githubRepo")
             } else {
                 parts.add("⚠️ GitHub: Incomplete")
-            }
-            
-            if (isClaudeComplete) {
-                parts.add("✅ Claude API: Configured")
-            } else {
-                parts.add("⚠️ Claude API: Missing")
             }
             
             return parts.joinToString("\n")
@@ -85,8 +73,6 @@ object ConfigImporter {
             android.util.Log.d(TAG, "   GitHub Repo: ${config.githubRepo ?: "[MISSING]"}")
             android.util.Log.d(TAG, "   GitHub Branch: ${config.githubBranch ?: "[MISSING]"}")
             android.util.Log.d(TAG, "   GitHub Token: ${if (config.githubToken != null) "[${config.githubToken.take(10)}...]" else "[MISSING]"}")
-            android.util.Log.d(TAG, "   Claude API: ${if (config.claudeApiKey != null) "[${config.claudeApiKey.take(10)}...]" else "[MISSING]"}")
-            android.util.Log.d(TAG, "   Claude Model: ${config.claudeModel ?: "[MISSING]"}")
             android.util.Log.d(TAG, "━".repeat(80))
             android.util.Log.d(TAG, "✅ IMPORT SUCCESSFUL")
             android.util.Log.d(TAG, "━".repeat(80))
@@ -132,11 +118,7 @@ object ConfigImporter {
             githubOwner = config["github.owner"],
             githubRepo = config["github.repository"],
             githubBranch = config["github.branch"] ?: "main",
-            githubToken = config["github.token"],
-            
-            // Claude
-            claudeApiKey = config["claude.api_key"],
-            claudeModel = config["claude.model"] ?: "claude-sonnet-4-5-20250929"
+            githubToken = config["github.token"]
         )
     }
     
@@ -147,9 +129,7 @@ object ConfigImporter {
         githubOwner: String,
         githubRepo: String,
         githubBranch: String,
-        githubToken: String,
-        claudeApiKey: String,
-        claudeModel: String
+        githubToken: String
     ): String {
         return buildString {
             appendLine("# OpusIDE Configuration File")
@@ -160,10 +140,6 @@ object ConfigImporter {
             appendLine("repository=$githubRepo")
             appendLine("branch=$githubBranch")
             appendLine("token=$githubToken")
-            appendLine()
-            appendLine("[Claude]")
-            appendLine("api_key=$claudeApiKey")
-            appendLine("model=$claudeModel")
         }
     }
 }

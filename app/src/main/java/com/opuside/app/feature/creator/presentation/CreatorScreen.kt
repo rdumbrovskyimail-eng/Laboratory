@@ -580,6 +580,10 @@ private fun SelectionToolbar(
                     Text("Переместить", style = MaterialTheme.typography.labelMedium)
                 }
 
+                IconButton(onClick = onCollectTxt) {
+                    Icon(Icons.Default.Delete, "Удалить", tint = MaterialTheme.colorScheme.error)
+                }
+
                 FilledTonalButton(
                     onClick        = onCollectTxt,
                     enabled        = selectedCount > 0 && !isMoving,
@@ -732,7 +736,7 @@ private fun FileItem(
                         Icon(
                             imageVector        = if (isDir) Icons.Default.Folder else Icons.Default.Description,
                             contentDescription = null,
-                            tint               = if (isDir) MaterialTheme.colorScheme.primary
+                            tint               = if (isDir) androidx.compose.ui.graphics.Color(0xFFE0E0E0)
                                                  else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier           = Modifier.size(24.dp)
                         )
