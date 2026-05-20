@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -113,6 +114,7 @@ fun PipelineScreen(
     modifier: Modifier = Modifier,
     viewModel: PipelineViewModel = hiltViewModel()
 ) {
+    val context = LocalContext.current
     val state by viewModel.state.collectAsStateWithLifecycle()
     val userPrompt by viewModel.userPrompt.collectAsStateWithLifecycle()
     val geminiLog by viewModel.visibleGeminiLog.collectAsStateWithLifecycle()
@@ -220,7 +222,7 @@ fun PipelineScreen(
                 onStart = { viewModel.start() },
                 onStop = { viewModel.stop() },
                 onReset = { viewModel.reset() },
-                onExport = { viewModel.exportReport() }
+                onExport = { viewModel.exportRepoToTxt(context) }
             )
 
             // ═══ PROGRESS BAR + TASK CHIPS ════════════════════════════════
@@ -496,8 +498,7 @@ private fun StatusBar(
             OverallStatus.RUNNING -> PipelineColors.accentBlue
             OverallStatus.SUCCESS_ALL -> PipelineColors.accentGreen
             OverallStatus.SUCCESS_PARTIAL -> PipelineColors.accentYellow
-            OverallStatus.FAILED_ALL -> PipelineColors.accentRed
-            OverallStatus.FATAL -> PipelineColors.accentRed
+            OverallStatus.FAILED_ALL, OverallStatus.FATAL -> PipelineColors.accentRed
             OverallStatus.CANCELLED -> PipelineColors.textSecondary
         },
         label = "statusColor"
@@ -1214,9 +1215,6 @@ private fun KeyRow(
 }
 
 @Composable
-
-
-@Composable
 private fun ToggleButton(
     label: String,
     active: Boolean,
@@ -1304,11 +1302,7 @@ private fun DefaultModelSelector(
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            text = if (interactive)
-                "Используется когда Override OFF. Temperature=0.0, Thinking=HIGH."
-            else if (!interactive && selected.isNotBlank())
-                "Override включён — используется поле выше"
-            else "",
+            text = "Используется когда Override OFF. Temperature=0.0, Thinking=HIGH.",
             color = PipelineColors.textTertiary,
             fontSize = 10.sp
         )
