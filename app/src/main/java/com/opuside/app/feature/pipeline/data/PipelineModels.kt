@@ -24,9 +24,9 @@ data class PipelineState(
     val maxParallelTasks: Int = 3,
     val logFilterTaskId: String? = null,
     // Дефолтная модель из списка
-    val selectedModelApiId: String = "gemini-2.0-flash-exp",
+    val selectedModelApiId: String = "gemini-3.1-flash-lite",
     // Thinking-уровень для Lite модели (low / medium / high)
-    val liteThinkingLevel: String = "high",
+    val liteThinkingLevel: String = "medium",
     // Режим работы пайплайна: Online = коммиты напрямую через GitHub API,
     // Offline = клонируем репо локально, правим, в конце один коммит + push
     val pipelineMode: PipelineMode = PipelineMode.ONLINE
@@ -42,7 +42,6 @@ data class PipelineState(
 
     val estimatedCost: Double get() {
         val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
-        // DELETE и CREATE не делают AI-вызов, не тратят токены
         return modifyCount * 0.00002 + 0.00004
     }
 
@@ -161,7 +160,6 @@ enum class RepoEventType {
     FILE_READ, FILE_COMMITTED, COMMIT_CONFLICT, CONFLICT_RESOLVED,
     WORKFLOW_TRIGGERED, WORKFLOW_PROGRESS, WORKFLOW_SUCCESS, WORKFLOW_FAILURE,
     INDEX_INVALIDATED, INFO, ERROR,
-    // OFFLINE-режим события
     CLONE_START, CLONE_PROGRESS, CLONE_DONE,
     LOCAL_WRITE, LOCAL_COMMIT, PUSH_START, PUSH_DONE, PUSH_FAILED
 }
@@ -230,7 +228,6 @@ data class RepoStats(
             .take(limit)
             .map { it.key to it.value }
 
-    /** ВСЕ расширения — для expandable секции со скроллом */
     fun allExtensions(): List<Pair<String, Int>> =
         byExtension.entries
             .filter { it.key.isNotBlank() }
