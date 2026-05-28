@@ -192,24 +192,24 @@ object GeminiModelConfig {
             emoji = "🔧"
         ),
 
-        // ── Gemini 3 Flash Preview ──────────────────────────────────
-        // Pricing: $0.50/$3.00 FLAT (no long context tier)
-        // Output includes thinking at $3.00
-        GEMINI_3_FLASH(
-            modelId = "gemini-3-flash-preview",
-            displayName = "3 Flash Preview",
-            description = "Frontier speed + intelligence, flat pricing",
+        // ── Gemini 3.5 Flash ──────────────────────────────────
+        // Pricing: $1.50/$9.00 FLAT
+        // Output includes thinking
+        GEMINI_3_5_FLASH(
+            modelId = "gemini-3.5-flash",
+            displayName = "3.5 Flash",
+            description = "Stable agent-first model, fast & versatile",
             contextWindow = 1_000_000,
             maxOutputTokens = 65_536,
-            inputPricePerM = 0.50,
-            outputPricePerM = 3.00,
-            longInputPricePerM = 0.50,
-            longOutputPricePerM = 3.00,
+            inputPricePerM = 1.50,
+            outputPricePerM = 9.00,
+            longInputPricePerM = 1.50,
+            longOutputPricePerM = 9.00,
             longContextThreshold = Int.MAX_VALUE,
-            cacheReadPricePerM = 0.05,
+            cacheReadPricePerM = 0.15,
             cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
-            thinkingOutputPricePerM = 3.00,
+            thinkingOutputPricePerM = 9.00,
             supportsGrounding = true,
             supportsCodeExecution = true,
             supportsFunctionCalling = true,
@@ -220,16 +220,15 @@ object GeminiModelConfig {
             supportsSeed = true,
             supportsResponseMimeType = true,
             supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.HIGH,
-            speedRating = 7,
+            defaultThinkingLevel = ThinkingLevel.LOW,
+            speedRating = 9,
             emoji = "⚡"
         ),
 
-        // ── Gemini 3.1 Flash-Lite Preview ───────────────────────────
-        // Pricing: $0.25/$1.50 FLAT (verified 2026-04-06)
-        // Supports thinking: minimal(default), low, medium, high
+        // ── Gemini 3.1 Flash-Lite ───────────────────────────
+        // Pricing: $0.25/$1.50 FLAT (GA)
         GEMINI_3_1_FLASH_LITE(
-            modelId = "gemini-3.1-flash-lite-preview",
+            modelId = "gemini-3.1-flash-lite",
             displayName = "3.1 Flash-Lite",
             description = "Cost-efficient, high volume, flat pricing",
             contextWindow = 1_000_000,
@@ -253,7 +252,7 @@ object GeminiModelConfig {
             supportsSeed = false,
             supportsResponseMimeType = true,
             supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.MINIMAL,
+            defaultThinkingLevel = ThinkingLevel.MEDIUM,
             speedRating = 9,
             emoji = "💨"
         ),
@@ -432,6 +431,7 @@ object GeminiModelConfig {
             val withoutCacheCostUSD = if (cachedReadTokens > 0)
                 (cachedReadTokens / 1_000_000.0) * actualInputPrice else 0.0
             val savingsUSD = withoutCacheCostUSD - cacheReadCostUSD
+            val savingsEUR = savingsUSD * usdToEur
 
             return GeminiCost(
                 model = this,
@@ -443,7 +443,7 @@ object GeminiModelConfig {
                 totalCostUSD = totalCostUSD,
                 totalCostEUR = totalCostUSD * usdToEur,
                 cacheSavingsUSD = savingsUSD,
-                cacheSavingsEUR = savingsUSD * usdToEur
+                cacheSavingsEUR = savingsEUR
             )
         }
 
@@ -451,7 +451,7 @@ object GeminiModelConfig {
             fun fromModelId(modelId: String): GeminiModel? =
                 entries.find { it.modelId == modelId }
 
-            fun getDefault(): GeminiModel = GEMINI_2_5_FLASH
+            fun getDefault(): GeminiModel = GEMINI_3_1_FLASH_LITE
 
             fun getActiveModels(): List<GeminiModel> =
                 entries.filter { !it.deprecated }
