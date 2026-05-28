@@ -49,10 +49,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Глобальный форматтер времени для логов. SimpleDateFormat не thread-safe,
- * но Compose composables вызываются на main thread.
- */
 private val LOG_TIME_FORMATTER = SimpleDateFormat("HH:mm:ss", Locale.US)
 
 private fun formatLogTime(timestamp: Long): String =
@@ -62,29 +58,7 @@ private fun formatLogTime(timestamp: Long): String =
  * ═══════════════════════════════════════════════════════════════════════════
  * PIPELINE SCREEN — UI для G-конвейера
  * ═══════════════════════════════════════════════════════════════════════════
- *
- * Layout C (гибрид):
- *   ┌─────────────────────────────┐
- *   │ Header: репо + статистика   │
- *   ├─────────────────────────────┤
- *   │ Prompt (collapsible)         │
- *   ├─────────────────────────────┤
- *   │ Status button + Stop        │
- *   ├─────────────────────────────┤
- *   │ Progress bar + Task chips   │
- *   ├─────────────────────────────┤
- *   │ ┌──Gemini─┐ ┌──Repo──────┐  │
- *   │ │ live    │ │ live       │  │
- *   │ │ log     │ │ log        │  │
- *   │ └─────────┘ └────────────┘  │
- *   ├─────────────────────────────┤
- *   │ Final report (when DONE)    │
- *   └─────────────────────────────┘
  */
-
-// ═══════════════════════════════════════════════════════════════════════════
-// COLOR PALETTE (consistent с EditColors)
-// ═══════════════════════════════════════════════════════════════════════════
 
 private object PipelineColors {
     val backgroundDark = Color(0xFF0A0A0F)
@@ -133,14 +107,12 @@ fun PipelineScreen(
 
     var promptExpanded by remember { mutableStateOf(true) }
 
-    // Auto-collapse промпта когда запустился конвейер
     LaunchedEffect(state.phase) {
         if (state.isRunning && promptExpanded) {
             promptExpanded = false
         }
     }
 
-    // Snackbar для ошибок
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(userError) {
         userError?.let {
@@ -160,7 +132,6 @@ fun PipelineScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
-            // ═══ HEADER ═══════════════════════════════════════════════════
             PipelineHeader(repoStats = repoStats, runId = state.pipelineRunId)
 
             PipelineModeSelector(
@@ -179,7 +150,6 @@ fun PipelineScreen(
                 )
             }
 
-            // ═══ PROMPT (collapsible) ═════════════════════════════════════
             PromptSection(
                 prompt = userPrompt,
                 onPromptChange = viewModel::onPromptChange,
@@ -189,7 +159,6 @@ fun PipelineScreen(
                 phase = state.phase
             )
 
-            // ═══ PIPELINE KEYS ════════════════════════════════════════════
             PipelineKeysSection(
                 keyA = pipelineKeyA,
                 keyB = pipelineKeyB,
@@ -205,15 +174,14 @@ fun PipelineScreen(
                 interactive = !state.isRunning,
                 onSelect = viewModel::setSelectedModel
             )
-            // Thinking-уровень показывается ТОЛЬКО когда выбрана Lite
+
             LiteThinkingSelector(
                 selected = state.liteThinkingLevel,
-                isLite = state.selectedModelApiId == "gemini-3.1-flash-lite-preview",
+                isLite = state.selectedModelApiId == "gemini-3.1-flash-lite" || state.selectedModelApiId == "gemini-3.5-flash",
                 interactive = !state.isRunning,
                 onSelect = viewModel::setLiteThinkingLevel
             )
 
-            // ═══ STATUS BUTTON + STOP ═════════════════════════════════════
             StatusBar(
                 state = state,
                 totalCost = totalCost,
@@ -225,14 +193,12 @@ fun PipelineScreen(
                 onExport = { viewModel.exportRepoToTxt(context) }
             )
 
-            // ═══ PROGRESS BAR + TASK CHIPS ════════════════════════════════
             if (state.tasks.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 ProgressSection(
                     state = state,
                     onRemoveTask = { taskId -> viewModel.removeTask(taskId) },
                     onTaskChipClick = { taskId ->
-                        // Toggle log filter: same chip -> clear, different -> set
                         viewModel.setLogFilter(
                             if (state.logFilterTaskId == taskId) null else taskId
                         )
@@ -241,8 +207,6 @@ fun PipelineScreen(
                 )
             }
 
-            // ═══ LIVE LOGS (Gemini + Repo) ═══════════════════════════════
-            // geminiLog/repoLog уже отфильтрованы во ViewModel через combine+stateIn
             if (rawGeminiSize.isNotEmpty() || rawRepoSize.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
                 if (state.logFilterTaskId != null) {
@@ -255,7 +219,6 @@ fun PipelineScreen(
                 LiveLogsSection(geminiLog = geminiLog, repoLog = repoLog)
             }
 
-            // ═══ FINAL REPORT ═════════════════════════════════════════════
             state.finalReport?.let { report ->
                 Spacer(Modifier.height(12.dp))
                 FinalReportSection(
@@ -264,7 +227,6 @@ fun PipelineScreen(
                 )
             }
 
-            // ═══ FATAL ERROR ═════════════════════════════════════════════
             state.fatalError?.takeIf { state.phase == PipelinePhase.FATAL }?.let { err ->
                 Spacer(Modifier.height(12.dp))
                 FatalErrorCard(err)
@@ -300,7 +262,6 @@ private fun PipelineHeader(repoStats: RepoStats?, runId: String) {
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
-            // Letter "G" logo
             Box(
                 modifier = Modifier
                     .size(44.dp)
@@ -350,7 +311,6 @@ private fun PipelineHeader(repoStats: RepoStats?, runId: String) {
         }
     }
 
-    // Stats inline под header'ом
     repoStats?.let { stats ->
         Row(
             modifier = Modifier
@@ -407,7 +367,6 @@ private fun PromptSection(
             .background(PipelineColors.surfaceElevated)
             .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(12.dp))
     ) {
-        // Header (clickable)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -479,7 +438,7 @@ private fun PromptSection(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STATUS BAR (главные кнопки + стоимость)
+// STATUS BAR
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -513,7 +472,6 @@ private fun StatusBar(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Main action button (зависит от phase)
             val (actionLabel, actionEnabled, actionHandler) = when (state.phase) {
                 PipelinePhase.IDLE -> Triple("📋 Спланировать", true, onPlan)
                 PipelinePhase.PLANNING -> Triple("⏳ Планируется...", false, {})
@@ -585,7 +543,6 @@ private fun StatusBar(
             }
         }
 
-        // Стоимость / токены
         if (totalCost > 0 || totalTokens > 0) {
             Spacer(Modifier.height(6.dp))
             Row(
@@ -618,7 +575,7 @@ private fun StatusBar(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// PROGRESS SECTION (bar + chips)
+// PROGRESS SECTION
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -646,7 +603,6 @@ private fun ProgressSection(
             drawStopIndicator = {}
         )
 
-        // ── Parallelism slider — только в IDLE/REVIEWING ──────────────────
         if (state.phase == PipelinePhase.REVIEWING || state.phase == PipelinePhase.IDLE) {
             Spacer(Modifier.height(6.dp))
             Row(
@@ -664,7 +620,7 @@ private fun ProgressSection(
                     value = state.maxParallelTasks.toFloat(),
                     onValueChange = { onChangeMaxParallel(it.toInt()) },
                     valueRange = 1f..8f,
-                    steps = 6,    // discrete: 1,2,3,4,5,6,7,8
+                    steps = 6,
                     modifier = Modifier.weight(1f).height(28.dp),
                     colors = SliderDefaults.colors(
                         thumbColor = PipelineColors.accentBlue,
@@ -675,7 +631,6 @@ private fun ProgressSection(
             }
         }
 
-        // ── Status filter pills — только если задач >= 10 ─────────────────
         if (state.tasks.size >= 10 && state.phase != PipelinePhase.IDLE) {
             Spacer(Modifier.height(6.dp))
             Row(
@@ -716,7 +671,6 @@ private fun ProgressSection(
 
         Spacer(Modifier.height(8.dp))
 
-        // ── Task chips ─────────────────────────────────────────────────────
         val visibleTasks = remember(state.tasks, statusFilter) {
             if (statusFilter == null) state.tasks
             else if (statusFilter == TaskStatus.PROCESSING)
@@ -844,13 +798,11 @@ private fun TaskChip(
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Иконка статуса (⏸/⏳/✅/❌/...)
         Text(
             text = task.status.emoji,
             fontSize = 14.sp
         )
         Spacer(Modifier.width(4.dp))
-        // Иконка операции (✏️ MODIFY / ➕ CREATE) — показываем только если PENDING/PROCESSING
         if (task.status == TaskStatus.PENDING || task.status == TaskStatus.PROCESSING) {
             Text(
                 text = task.operation.emoji,
@@ -882,7 +834,7 @@ private fun TaskChip(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LIVE LOGS (Gemini + Repo, side by side)
+// LIVE LOGS
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -1215,45 +1167,14 @@ private fun KeyRow(
 }
 
 @Composable
-private fun ToggleButton(
-    label: String,
-    active: Boolean,
-    enabledColor: Color,
-    interactive: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val bg = if (active) enabledColor else PipelineColors.surfaceDark
-    val fg = if (active) Color.White else PipelineColors.textSecondary
-    val border = if (active) enabledColor else PipelineColors.borderSubtle
-    Box(
-        modifier = modifier
-            .height(36.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(bg)
-            .border(1.dp, border, RoundedCornerShape(8.dp))
-            .clickable(enabled = interactive, onClick = onClick),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            label,
-            color = fg,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 13.sp,
-            fontFamily = FontFamily.Monospace
-        )
-    }
-}
-
-@Composable
 private fun DefaultModelSelector(
     selected: String,
     interactive: Boolean,
     onSelect: (String) -> Unit
 ) {
     val options = listOf(
-        "gemini-3-flash-preview" to "⚡ 3 Flash",
-        "gemini-3.1-flash-lite-preview" to "🪶 3.1 Flash-Lite"
+        "gemini-3.1-flash-lite" to "🪶 3.1 Flash-Lite",
+        "gemini-3.5-flash" to "⚡ 3.5 Flash"
     )
     Column(
         modifier = Modifier
@@ -1332,7 +1253,7 @@ private fun LiteThinkingSelector(
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         Text(
-            "🧠 Thinking для Flash-Lite",
+            "🧠 Thinking для выбранной модели",
             color = PipelineColors.textPrimary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
