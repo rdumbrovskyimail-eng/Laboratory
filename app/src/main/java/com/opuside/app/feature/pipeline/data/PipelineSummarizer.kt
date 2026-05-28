@@ -20,7 +20,7 @@ class PipelineSummarizer @Inject constructor(
     companion object {
         private const val TAG = "PipelineSummarizer"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val MODEL = "gemini-3.1-flash-lite-preview"
+        private const val MODEL = "gemini-3.1-flash-lite"
         private const val MAX_OUTPUT_TOKENS = 4096
 
         private val SUMMARIZER_PROMPT = """
@@ -54,7 +54,6 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         totalTokens: Int
     ): String = withContext(Dispatchers.IO) {
         try {
-            // Получаем активный ключ через ротатор
             var currentKeyInfo = keyRotator.currentKey()
                 ?: return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
 
@@ -92,14 +91,12 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                 }
             }
 
-            // Цикл попыток с ротацией ключей при 429
             var attempts = 0
             while (attempts < 2) {
                 val (apiKey, idx) = currentKeyInfo!!
                 val result = callOnce(apiKey, userMessage)
                 if (result != null) return@withContext result
 
-                // Запрос упал — пробуем понять, был ли это 429
                 val next = keyRotator.burnAndRotate(idx)
                 if (next == null) break
                 currentKeyInfo = next
@@ -112,7 +109,6 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         }
     }
 
-    /** Один HTTP-запрос к Gemini. null = ошибка (включая 429). */
     private fun callOnce(apiKey: String, userMessage: String): String? {
         var connection: HttpURLConnection? = null
         return try {
