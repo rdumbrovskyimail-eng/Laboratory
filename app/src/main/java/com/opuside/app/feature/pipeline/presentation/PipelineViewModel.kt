@@ -57,20 +57,6 @@ import com.opuside.app.feature.pipeline.service.PipelineForegroundService
  * Оркестратор всего G-конвейера. Управляет state machine, агрегирует
  * события из двух источников (Gemini + Repo), управляет жизненным циклом
  * watcher'ов workflows.
- *
- * Главный цикл:
- *   1. plan(userPrompt) — Gemini-планировщик возвращает список задач
- *   2. REVIEWING — пользователь видит план, может удалить лишнее
- *   3. start() — главный проход по задачам (executeTask × N)
- *   4. После основного прохода — второй проход по DEFERRED задачам с retry
- *   5. summarize() — финальный AI-отчёт
- *   6. DONE
- *
- * Stop handling: cancel главного Job → текущая задача доделывается через
- * structured concurrency, остальные не запускаются.
- *
- * Workflow watchers запускаются параллельно после каждого успешного коммита
- * и эмитят события в repoLog независимо от основного цикла.
  */
 @HiltViewModel
 class PipelineViewModel @Inject constructor(
@@ -105,7 +91,6 @@ class PipelineViewModel @Inject constructor(
     private val _pipelineActiveKey = MutableStateFlow(0)
     val pipelineActiveKey: StateFlow<Int> = _pipelineActiveKey.asStateFlow()
 
-    /** Статус локального клона для UI (см. PipelineModeSelector в Screen) */
     val localRepoStatus: StateFlow<LocalRepoManager.RepoStatus>
         get() = localRepoManager.status
     val localRepoProgress: StateFlow<String?>
@@ -117,11 +102,6 @@ class PipelineViewModel @Inject constructor(
     private val _repoLog = MutableStateFlow<List<RepoLogEvent>>(emptyList())
     val repoLog: StateFlow<List<RepoLogEvent>> = _repoLog.asStateFlow()
 
-    /**
-     * Логи, отфильтрованные по logFilterTaskId. Фильтрация выполняется
-     * в фоновом виде (не на Main Thread) через combine + stateIn.
-     * UI подписывается на это, а не делает remember{ filter() }.
-     */
     val visibleGeminiLog: StateFlow<List<GeminiLogEvent>> = combine(
         _geminiLog, _state
     ) { logs, st ->
@@ -156,34 +136,20 @@ class PipelineViewModel @Inject constructor(
     private val _userError = MutableStateFlow<String?>(null)
     val userError: StateFlow<String?> = _userError.asStateFlow()
 
-    /** Главный job выполнения (для cancel) */
     private var pipelineJob: Job? = null
 
     companion object {
-        /** Максимум событий в каждом логе (FIFO) */
         private const val LOG_CAP = 2500
-        /** Сколько событий сбрасывать когда достигнут CAP */
         private const val LOG_DROP_BATCH = 250
-        /** Default параллелизм. Можно поменять через setMaxParallel(). */
         private const val DEFAULT_MAX_PARALLEL = 3
-        /** Минимальная и максимальная допустимая параллельность */
         const val MIN_PARALLEL = 1
         const val MAX_PARALLEL = 8
-        /** Jitter delay между задачами (анти-flake GitHub) */
         private const val JITTER_BASE_MS = 600L
-        /** Per-task timeout (защита от вечного зависания) */
         private const val TASK_TIMEOUT_MS = 5 * 60_000L
-        /** Tag for logs */
         private const val TAG = "PipelineViewModel"
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // INIT
-    // ═══════════════════════════════════════════════════════════════════════
-
     init {
-        // Подписываемся на настройки и ждём 500мс, чтобы токен успел расшифроваться.
-        // Как только конфигурация готова (есть owner, repo и token) — загружаем статистику.
         viewModelScope.launch {
             appSettings.gitHubConfig
                 .debounce(500)
@@ -216,7 +182,7 @@ class PipelineViewModel @Inject constructor(
                     try {
                         repoIndexManager.invalidate()
                         loadRepoStats()
-                    } catch (_: Exception) { /* тихо */ }
+                    } catch (_: Exception) {}
                 }
             }
         }
@@ -266,20 +232,12 @@ class PipelineViewModel @Inject constructor(
         _userError.value = null
     }
 
-    /**
-     * Изменить параллелизм (количество одновременных задач).
-     * Можно вызывать только в IDLE или REVIEWING. Во время выполнения игнорируется.
-     */
     fun setMaxParallel(value: Int) {
         if (_state.value.isRunning) return
         val clamped = value.coerceIn(MIN_PARALLEL, MAX_PARALLEL)
         _state.update { it.copy(maxParallelTasks = clamped) }
     }
 
-    /**
-     * Фильтрует логи по конкретной задаче (null = показать все).
-     * UI вызывает при клике на task chip.
-     */
     fun setLogFilter(taskId: String?) {
         _state.update { it.copy(logFilterTaskId = taskId) }
     }
@@ -299,14 +257,13 @@ class PipelineViewModel @Inject constructor(
     }
 
     fun setPipelineMode(mode: PipelineMode) {
-        if (_state.value.isRunning) return  // во время выполнения переключение запрещено
+        if (_state.value.isRunning) return
         _state.update { it.copy(pipelineMode = mode) }
         viewModelScope.launch {
             secureSettings.setPipelineMode(mode.name.lowercase())
         }
     }
 
-    /** Ручная синхронизация локального клона (кнопка в UI). */
     fun syncLocalRepo() {
         if (_state.value.isRunning) return
         viewModelScope.launch {
@@ -333,7 +290,6 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
-    /** Удалить локальный клон (кнопка в UI). */
     fun deleteLocalClone() {
         if (_state.value.isRunning) return
         viewModelScope.launch {
@@ -356,17 +312,10 @@ class PipelineViewModel @Inject constructor(
         _state.update { it.copy(liteThinkingLevel = normalized) }
     }
 
-    /**
-     * Обновить статистику репо (для шапки экрана).
-     * Безопасно получает индекс через RepoIndexManager.
-     */
     fun loadRepoStats() {
         viewModelScope.launch {
             try {
-                // Если индекс уже грузится в Creator'е, этот метод просто подождёт
-                // и возьмёт готовый благодаря Mutex внутри RepoIndexManager
                 val index = repoIndexManager.getOrRefresh()
-                
                 if (index == null) {
                     _userError.value = "Не удалось загрузить индекс репозитория. Проверьте токен и доступ."
                     return@launch
@@ -395,10 +344,6 @@ class PipelineViewModel @Inject constructor(
     // STEP 1: PLAN
     // ═══════════════════════════════════════════════════════════════════════
 
-    /**
-     * Запустить планировщик. После успеха — переход в REVIEWING.
-     * Можно нажать Plan повторно — переплан перетирает старый.
-     */
     fun plan() {
         val prompt = _userPrompt.value.trim()
         if (prompt.isBlank()) {
@@ -417,7 +362,6 @@ class PipelineViewModel @Inject constructor(
                 PipelineForegroundService.start(appContext, "Pipeline: планирование", "Анализ промпта...")
                 _state.update { it.copy(phase = PipelinePhase.PLANNING) }
 
-                // Дедупликация: объединяем задачи с одинаковым filePath
                 val deduped = _state.value.tasks
                     .groupBy { it.filePath }
                     .map { (_, group) ->
@@ -443,16 +387,13 @@ class PipelineViewModel @Inject constructor(
                     message = "Планировщик: анализ промпта (${prompt.length}ch)..."
                 ))
 
-                // ─── Получаем список путей файлов через встроенный RepoIndexManager ──
                 val repoIndex = repoIndexManager.getOrRefresh()
-                
                 if (repoIndex == null) {
                     _userError.value = "Не удалось загрузить индекс репозитория. Проверь настройки GitHub."
                     _state.update { it.copy(phase = PipelinePhase.IDLE) }
                     return@launch
                 }
                 
-                // Получаем пути только для файлов (исключая папки)
                 val filePaths = repoIndex.nodes.filter { it.isFile }.map { it.path }
 
                 val plan = planner.plan(prompt, filePaths).getOrElse { e ->
@@ -478,7 +419,6 @@ class PipelineViewModel @Inject constructor(
                 _totalCostEur.update { it + plan.costEur }
                 _totalTokens.update { it + plan.tokensUsed }
 
-                // Конвертим PlannedTask → FileTask (включая operation и content для CREATE)
                 val tasks = plan.tasks.mapIndexed { idx, planned ->
                     FileTask(
                         operation = planned.operation,
@@ -498,7 +438,6 @@ class PipelineViewModel @Inject constructor(
                         currentTaskIndex = -1
                     )
                 }
-                // План готов, но юзер ещё смотрит — сервис не нужен пока не нажмут Start
                 PipelineForegroundService.stop(appContext)
 
             } catch (e: CancellationException) {
@@ -513,9 +452,6 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Удалить задачу из плана (пользователь решил не трогать этот файл).
-     */
     fun removeTask(taskId: String) {
         if (_state.value.phase != PipelinePhase.REVIEWING) return
         _state.update { state ->
@@ -549,7 +485,6 @@ class PipelineViewModel @Inject constructor(
                 val maxParallel = _state.value.maxParallelTasks
                 val isOffline = _state.value.pipelineMode == PipelineMode.OFFLINE
 
-                // ═══ OFFLINE PRE-FLIGHT: клонируем/обновляем репо ═══════════
                 if (isOffline) {
                     appendRepoLog(RepoLogEvent(
                         type = RepoEventType.CLONE_START, icon = "📥",
@@ -582,7 +517,6 @@ class PipelineViewModel @Inject constructor(
                             "параллелизм=$maxParallel, режим=${if (isOffline) "Offline" else "Online"}"
                 ))
 
-                // ═══ ПЕРВЫЙ ПРОХОД (параллельно) ════════════════════════════
                 val initialTasks = _state.value.tasks.toList()
                 val fatalRef = AtomicBoolean(false)
 
@@ -599,7 +533,6 @@ class PipelineViewModel @Inject constructor(
                     return@launch
                 }
 
-                // ═══ ВТОРОЙ ПРОХОД (DEFERRED tasks, тоже параллельно) ═══════
                 val deferredTasks = _state.value.tasks.filter { it.status == TaskStatus.DEFERRED }
                 if (deferredTasks.isNotEmpty()) {
                     _state.update { it.copy(phase = PipelinePhase.DEFERRED_PASS) }
@@ -609,7 +542,6 @@ class PipelineViewModel @Inject constructor(
                         message = "Второй проход: ${deferredTasks.size} отложенных задач(а)"
                     ))
 
-                    // Сброс статусов перед retry
                     for (task in deferredTasks) {
                         updateTask(task.id) { it.copy(status = TaskStatus.PENDING) }
                     }
@@ -627,7 +559,6 @@ class PipelineViewModel @Inject constructor(
                         return@launch
                     }
 
-                    // Всё что осталось DEFERRED → FAILED_FINAL
                     val stillDeferred = _state.value.tasks.filter { it.status == TaskStatus.DEFERRED }
                     for (task in stillDeferred) {
                         updateTask(task.id) {
@@ -636,7 +567,6 @@ class PipelineViewModel @Inject constructor(
                     }
                 }
 
-                // ═══ ФИНАЛЬНЫЙ ОТЧЁТ ═══════════════════════════════════════
                 _state.update { it.copy(phase = PipelinePhase.FINALIZING) }
                 appendGeminiLog(GeminiLogEvent(
                     type = GeminiEventType.SUMMARY_START,
@@ -658,7 +588,6 @@ class PipelineViewModel @Inject constructor(
                     message = "Отчёт готов"
                 ))
 
-                // ═══ OFFLINE POST-FLIGHT: один коммит + push ════════════════
                 if (isOffline) {
                     val tasks = _state.value.tasks
                     val successfulFiles = tasks
@@ -698,14 +627,12 @@ class PipelineViewModel @Inject constructor(
                                 message = "Локальный коммит: ${sha.take(8)}",
                                 commitSha = sha
                             ))
-                            // Заменяем pending-batch на реальный sha во всех задачах
                             _state.update { st ->
                                 st.copy(tasks = st.tasks.map { t ->
                                     if (t.commitSha == "pending-batch") t.copy(commitSha = sha) else t
                                 })
                             }
 
-                            // Push
                             appendRepoLog(RepoLogEvent(
                                 type = RepoEventType.PUSH_START, icon = "🚀",
                                 message = "Push в origin..."
@@ -724,7 +651,6 @@ class PipelineViewModel @Inject constructor(
                                     message = "Push успешен: ${successfulFiles.size} файл(ов) одним коммитом",
                                     commitSha = sha
                                 ))
-                                // Запускаем watcher на финальный коммит
                                 viewModelScope.launch {
                                     try {
                                         workflowWatcher.watch(sha, null).collect { evt ->
@@ -776,19 +702,6 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Параллельный планировщик задач через Semaphore.
-     *
-     * Запускает все task'и одновременно как async-корутины, но каждая ждёт
-     * пермит из Semaphore(maxParallel). Это обеспечивает что в каждый момент
-     * времени выполняется не более maxParallel задач.
-     *
-     * Особенности:
-     * - Каждая задача делает jitter delay перед стартом — анти-flake GitHub
-     * - При FATAL ставится fatalRef=true, оставшиеся задачи тихо завершаются
-     * - currentTaskIndex обновляется на индекс последней начатой задачи (для UI)
-     * - runningTaskIds содержит ID всех текущих параллельных задач
-     */
     private suspend fun CoroutineScope.runTasksInParallel(
         tasks: List<FileTask>,
         maxParallel: Int,
@@ -802,14 +715,11 @@ class PipelineViewModel @Inject constructor(
         coroutineScope {
             tasks.mapIndexed { localIdx, task ->
                 async {
-                    // Если уже был FATAL — пропускаем
                     if (fatalRef.get()) return@async
 
                     semaphore.withPermit {
-                        // Re-check после ожидания пермита
                         if (fatalRef.get()) return@withPermit
 
-                        // Jitter delay — без него GitHub может ответить 409 на быстрые PUT
                         if (localIdx > 0) {
                             val scale = kotlin.math.sqrt(maxParallel.toDouble()).coerceAtLeast(1.0)
                             val jitterMin = (JITTER_BASE_MS * scale).toLong()
@@ -817,7 +727,6 @@ class PipelineViewModel @Inject constructor(
                             delay(Random.nextLong(jitterMin, jitterMax))
                         }
 
-                        // Mark as running
                         _state.update {
                             val realIdx = it.tasks.indexOfFirst { t -> t.id == task.id }
                             it.copy(
@@ -828,7 +737,7 @@ class PipelineViewModel @Inject constructor(
 
                         try {
                             val realIdx = _state.value.tasks.indexOfFirst { it.id == task.id }
-                            if (realIdx < 0) return@withPermit  // была удалена
+                            if (realIdx < 0) return@withPermit
                             val isFatal = runOneTask(realIdx, task, isRetryPass, watcherScope)
                             if (isFatal) fatalRef.set(true)
                         } finally {
@@ -842,14 +751,6 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Выполнить одну задачу и обновить state.
-     * Возвращает true если получили FATAL (надо остановить конвейер).
-     *
-     * watcherScope — отдельный scope для запуска WorkflowWatcher'ов.
-     * Они НЕ должны быть детьми async-задачи, иначе awaitAll будет ждать
-     * watcher 3 минуты после завершения задачи.
-     */
     private suspend fun runOneTask(
         idx: Int,
         task: FileTask,
@@ -864,8 +765,8 @@ class PipelineViewModel @Inject constructor(
         var receivedFinal = false
         var receivedFatal = false
         val overrideApiId = _state.value.effectiveModelApiId
-        val isLiteActive = _state.value.selectedModelApiId == "gemini-3.1-flash-lite-preview"
-        val thinkingLevel = if (isLiteActive) _state.value.liteThinkingLevel else null
+        val hasThinking = _state.value.selectedModelApiId == "gemini-3.1-flash-lite" || _state.value.selectedModelApiId == "gemini-3.5-flash"
+        val thinkingLevel = if (hasThinking) _state.value.liteThinkingLevel else null
         val isOffline = _state.value.pipelineMode == PipelineMode.OFFLINE
 
         try {
@@ -950,8 +851,6 @@ class PipelineViewModel @Inject constructor(
                         status = TaskStatus.SUCCESS,
                         commitSha = result.commitSha,
                         resolvedConflict = result.resolvedConflict,
-                        // Накапливаем токены: если в первом проходе было DEFERRED с токенами,
-                        // и затем retry-pass завершился SUCCESS — суммируем оба.
                         tokensUsed = it.tokensUsed + result.tokensUsed,
                         durationMs = duration
                     )
@@ -1015,9 +914,6 @@ class PipelineViewModel @Inject constructor(
         PipelineForegroundService.stop(appContext)
     }
 
-    /**
-     * Полный сброс конвейера в IDLE. Промпт сохраняется. Сохраняется и параллелизм.
-     */
     fun reset() {
         pipelineJob?.cancel()
         pipelineJob = null
@@ -1070,7 +966,6 @@ class PipelineViewModel @Inject constructor(
 
     private fun appendGeminiLog(event: GeminiLogEvent) {
         _geminiLog.update { current ->
-            // Ограничиваем размер лога (FIFO) — поднято до 2500 для 50+ задач
             if (current.size >= LOG_CAP) (current.drop(LOG_DROP_BATCH) + event)
             else (current + event)
         }
