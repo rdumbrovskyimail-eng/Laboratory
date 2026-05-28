@@ -26,7 +26,7 @@ import javax.inject.Singleton
  *       ...
  *   ] }
  *
- * Использует Gemini 3.1 Flash-Lite Preview (та же модель что в AI Edit) с
+ * Использует Gemini 3.1 Flash-Lite (та же модель что в AI Edit) с
  * responseMimeType="application/json" + responseJsonSchema — это гарантирует
  * валидный JSON на выходе.
  *
@@ -44,7 +44,7 @@ class PipelinePlanner @Inject constructor(
     companion object {
         private const val TAG = "PipelinePlanner"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val PLANNER_MODEL = "gemini-3.1-flash-lite-preview"
+        private const val PLANNER_MODEL = "gemini-3.1-flash-lite"
         private const val MAX_OUTPUT_TOKENS = 16384      // плана хватит
         private const val MAX_TASKS_LIMIT = 100          // макс задач за один прогон
 
@@ -177,7 +177,7 @@ No markdown. No code fences. No commentary. Pure JSON.
 
     // ═══════════════════════════════════════════════════════════════════════
     // RESPONSE SCHEMA — гарантия валидного JSON
-    // ═══════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════
 
     private val responseSchema = buildJsonObject {
         put("type", "object")
@@ -196,9 +196,6 @@ No markdown. No code fences. No commentary. Pure JSON.
                             )))
                             put("description", "Type of operation on the file")
                         })
-                        // file, content, package — все просто string и НЕ обязательны.
-                        // Парсер трактует пустые/отсутствующие как null.
-                        // Это работает универсально и для responseJsonSchema, и для responseSchema.
                         put("file", buildJsonObject {
                             put("type", "string")
                             put("description", "Full repository path (empty for create-by-package)")
@@ -340,13 +337,10 @@ No markdown. No code fences. No commentary. Pure JSON.
     ): List<PlannedTask> {
         val seen = mutableSetOf<String>()
         val result = mutableListOf<PlannedTask>()
-        // Pre-build path set для O(1) lookup точных совпадений
         val pathSet: Set<String> = filePaths.toSet()
-        // Pre-build name index для O(1) fuzzy lookup
         val nameToFullPaths: Map<String, List<String>> = filePaths.groupBy {
             it.substringAfterLast('/')
         }
-        // Source root (например "app/src/main/java/") — выводим из реальных путей
         val sourceRoot = detectSourceRoot(filePaths)
 
         for ((idx, task) in plannedTasks.withIndex()) {
@@ -365,7 +359,6 @@ No markdown. No code fences. No commentary. Pure JSON.
                 }
                 TaskOperation.DELETE -> {
                     val resolved = resolveModifyPath(task, pathSet, nameToFullPaths)
-                    // Если резолв не нашёл реального пути — пропускаем (страховка от удаления случайного файла)
                     if (resolved.file !in pathSet) {
                         Log.w(TAG, "Skipping DELETE task #$idx: path '${resolved.file}' not found in repo")
                         continue
@@ -434,20 +427,16 @@ No markdown. No code fences. No commentary. Pure JSON.
         val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim().ifBlank { null }
         val providedPkg = task.packageName?.trim()?.ifBlank { null }
 
-        // Извлекаем package из самого контента (как fallback и для валидации)
         val pkgFromContent = extractPackageFromContent(content)
         val effectivePkg = providedPkg ?: pkgFromContent
 
-        // Имя файла
         val nameFromPath = rawPath?.substringAfterLast('/')?.takeIf {
-            it.contains('.') // Принимаем абсолютно любые файлы с расширением (.json, .txt, .kts и т.д.)
+            it.contains('.')
         }
         val nameFromContent = deriveFileNameFromContent(content)
         val finalName = nameFromPath ?: nameFromContent ?: "GeneratedFile${index + 1}.kt"
 
-        // Финальный путь
         val finalPath: String = when {
-            // Полный путь предоставлен и валиден
             rawPath != null && nameFromPath != null -> {
                 if (effectivePkg != null && !pathMatchesPackage(rawPath, effectivePkg)) {
                     Log.w(TAG, "⚠️ Path/package mismatch: path='$rawPath' vs package='$effectivePkg' — using path")
@@ -587,7 +576,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                 )))
                 put("generationConfig", buildJsonObject {
                     put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                    put("temperature", 0.0)               // максимальная детерминированность
+                    put("temperature", 0.0)
                     put("topP", 0.95)
                     put("responseMimeType", "application/json")
                     put("responseJsonSchema", responseSchema)
@@ -597,7 +586,7 @@ No markdown. No code fences. No commentary. Pure JSON.
             connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("x-goog-api-key", apiKey)  // безопаснее чем ?key=...
+                setRequestProperty("x-goog-api-key", apiKey)
                 setRequestProperty("Accept", "application/json")
                 connectTimeout = 30_000
                 readTimeout = 120_000
@@ -622,18 +611,16 @@ No markdown. No code fences. No commentary. Pure JSON.
                 .use { it.readText() }
             val json = Json.parseToJsonElement(responseBody).jsonObject
 
-            // Извлекаем текст ответа (это будет JSON план)
             val candidates = json["candidates"]?.jsonArray
                 ?: return Result.failure(Exception("Planner: no candidates in response"))
             if (candidates.isEmpty()) {
                 return Result.failure(Exception("Planner: empty candidates"))
             }
 
-            // Проверка finishReason — если SAFETY/RECITATION, response может быть пустой
             val finishReason = candidates[0].jsonObject["finishReason"]
                 ?.jsonPrimitive?.contentOrNull
             if (finishReason != null && finishReason != "STOP" && finishReason != "MAX_TOKENS") {
-                return Result.failure(Exception("Planner отклонил запрос: finishReason=$finishReason"))
+                return Result.failure(Exception("Planner rejected request: finishReason=$finishReason"))
             }
 
             val content = candidates[0].jsonObject["content"]?.jsonObject
@@ -649,7 +636,6 @@ No markdown. No code fences. No commentary. Pure JSON.
                 return Result.failure(Exception("Planner returned empty response"))
             }
 
-            // Usage metadata
             val usage = json["usageMetadata"]?.jsonObject
             val inputTokens = usage?.get("promptTokenCount")?.jsonPrimitive?.intOrNull ?: 0
             val outputTokens = usage?.get("candidatesTokenCount")?.jsonPrimitive?.intOrNull ?: 0
@@ -671,8 +657,6 @@ No markdown. No code fences. No commentary. Pure JSON.
 
     private fun parsePlanResponse(rawJson: String): Result<List<PlannedTask>> {
         return try {
-            // Иногда Gemini в structured-output режиме всё равно может обернуть в фенсы.
-            // Очищаем на всякий случай.
             val cleaned = rawJson.trim()
                 .removePrefix("```json").removePrefix("```")
                 .removeSuffix("```")
@@ -685,7 +669,6 @@ No markdown. No code fences. No commentary. Pure JSON.
             val tasks = tasksArray.mapNotNull { element ->
                 val obj = element.jsonObject
 
-                // Operation: modify / create (default modify для backward-compat)
                 val opStr = obj["operation"]?.jsonPrimitive?.contentOrNull?.lowercase()
                 val operation = when (opStr) {
                     "create" -> TaskOperation.CREATE
@@ -697,7 +680,6 @@ No markdown. No code fences. No commentary. Pure JSON.
                     }
                 }
 
-                // File path может быть null для CREATE (когда только package)
                 val file = obj["file"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
                 val instructions = obj["instructions"]?.jsonPrimitive?.contentOrNull ?: ""
                 val content = obj["content"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
@@ -705,7 +687,6 @@ No markdown. No code fences. No commentary. Pure JSON.
 
                 when (operation) {
                     TaskOperation.MODIFY -> {
-                        // MODIFY требует file + instructions
                         if (file == null || instructions.isBlank()) {
                             Log.w(TAG, "Skipping invalid MODIFY task: file=$file, instr=${instructions.length}ch")
                             null
@@ -718,15 +699,13 @@ No markdown. No code fences. No commentary. Pure JSON.
                         }
                     }
                     TaskOperation.CREATE -> {
-                        // CREATE требует content (file/package будет разрешён в resolveCreatePath)
                         if (content == null) {
                             Log.w(TAG, "Skipping CREATE task without content")
                             null
                         } else {
-                            // file может быть null — будет вычислен в resolvePaths
                             PlannedTask(
                                 operation = TaskOperation.CREATE,
-                                file = file ?: "",   // пустой = нужно вычислить
+                                file = file ?: "",
                                 instructions = instructions,
                                 content = content,
                                 packageName = pkg
