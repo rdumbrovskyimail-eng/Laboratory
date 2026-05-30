@@ -3,6 +3,8 @@ package com.opuside.app.feature.workflows.presentation
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -52,6 +54,17 @@ fun WorkflowsScreen(
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
     var selectedTabIndex by remember { mutableStateOf(0) }
+    val createFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        uri?.let { viewModel.saveRepositoryText(context, it) }
+            ?: viewModel.clearRepositoryContent()
+    }
+    LaunchedEffect(state.repositoryTextContent) {
+        if (state.repositoryTextContent != null) {
+            createFileLauncher.launch("repository_code.txt")
+        }
+    }
     
     // Загружаем релизы при переходе на вкладку
     LaunchedEffect(selectedTabIndex) {
@@ -99,11 +112,15 @@ fun WorkflowsScreen(
                             }
 
                             // Кнопка скачивания репозитория
-                            IconButton(onClick = { viewModel.downloadRepository(context) }) {
-                                Icon(
-                                    imageVector = Icons.Default.Download,
-                                    contentDescription = "Download Repository as ZIP"
-                                )
+                            IconButton(
+                                onClick = { viewModel.downloadAndProcessRepository() },
+                                enabled = !state.isProcessingRepository
+                            ) {
+                                if (state.isProcessingRepository) {
+                                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                } else {
+                                    Icon(Icons.Default.Download, contentDescription = "Export repo as TXT")
+                                }
                             }
                         }
                     }
