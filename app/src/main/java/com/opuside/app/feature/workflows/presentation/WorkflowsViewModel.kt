@@ -466,7 +466,13 @@ class WorkflowsViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isProcessingRepository = true) }
             try {
-                val bytes = gitHubApiClient.downloadRepositoryZip().bytes()
+                val config = appSettings.gitHubConfig.first()
+                val zipUrl = "https://github.com/${config.owner}/${config.repo}/archive/refs/heads/${config.branch}.zip"
+                val connection = java.net.URL(zipUrl).openConnection() as java.net.HttpURLConnection
+                connection.instanceFollowRedirects = true
+                connection.connect()
+                val bytes = connection.inputStream.readBytes()
+                connection.disconnect()
                 val sb = StringBuilder()
                 ZipInputStream(bytes.inputStream()).use { zis ->
                     var entry = zis.nextEntry
