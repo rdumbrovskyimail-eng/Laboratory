@@ -134,6 +134,16 @@ fun PipelineScreen(
         ) {
             PipelineHeader(repoStats = repoStats, runId = state.pipelineRunId)
 
+            PipelineKeysSection(
+                keyA = pipelineKeyA,
+                keyB = pipelineKeyB,
+                activeIndex = pipelineActiveKey,
+                enabled = !state.isRunning,
+                onKeyAChange = viewModel::setPipelineKeyA,
+                onKeyBChange = viewModel::setPipelineKeyB,
+                onActiveChange = viewModel::setPipelineActiveKey
+            )
+
             PipelineModeSelector(
                 currentMode = state.pipelineMode,
                 interactive = !state.isRunning,
@@ -159,28 +169,7 @@ fun PipelineScreen(
                 phase = state.phase
             )
 
-            PipelineKeysSection(
-                keyA = pipelineKeyA,
-                keyB = pipelineKeyB,
-                activeIndex = pipelineActiveKey,
-                enabled = !state.isRunning,
-                onKeyAChange = viewModel::setPipelineKeyA,
-                onKeyBChange = viewModel::setPipelineKeyB,
-                onActiveChange = viewModel::setPipelineActiveKey
-            )
 
-            DefaultModelSelector(
-                selected = state.selectedModelApiId,
-                interactive = !state.isRunning,
-                onSelect = viewModel::setSelectedModel
-            )
-
-            LiteThinkingSelector(
-                selected = state.liteThinkingLevel,
-                isLite = state.selectedModelApiId == "gemini-3.1-flash-lite" || state.selectedModelApiId == "gemini-3.5-flash",
-                interactive = !state.isRunning,
-                onSelect = viewModel::setLiteThinkingLevel
-            )
 
             StatusBar(
                 state = state,
