@@ -6,6 +6,8 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
+import kotlinx.coroutines.Dispatchers
+import java.util.zip.ZipInputStream
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.GitHubApiClient
@@ -459,6 +461,49 @@ class WorkflowsViewModel @Inject constructor(
             }
         }
     }
+
+    fun downloadAndProcessRepository() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _state.update { it.copy(isProcessingRepository = true) }
+            try {
+                val bytes = gitHubApiClient.downloadRepositoryZip().bytes()
+                val sb = StringBuilder()
+                ZipInputStream(bytes.inputStream()).use { zis ->
+                    var entry = zis.nextEntry
+                    while (entry != null) {
+                        if (!entry.isDirectory && !entry.name.endsWith(".jar")) {
+                            try {
+                                val text = zis.readBytes().toString(Charsets.UTF_8)
+                                if (sb.isNotEmpty()) sb.append(" ")
+                                sb.append(text)
+                            } catch (_: Exception) {}
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+                _state.update { it.copy(isProcessingRepository = false, repositoryTextContent = sb.toString()) }
+            } catch (e: Exception) {
+                _state.update { it.copy(isProcessingRepository = false, message = "Ошибка: ${e.message}") }
+            }
+        }
+    }
+
+    fun saveRepositoryText(context: Context, uri: Uri) {
+        val content = _state.value.repositoryTextContent ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                context.contentResolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+                _state.update { it.copy(repositoryTextContent = null, message = "Файл сохранён") }
+            } catch (e: Exception) {
+                _state.update { it.copy(message = "Ошибка: ${e.message}") }
+            }
+        }
+    }
+
+    fun clearRepositoryContent() {
+        _state.update { it.copy(repositoryTextContent = null) }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -479,7 +524,9 @@ data class WorkflowsState(
     val artifacts: List<ArtifactItem> = emptyList(),
     val isLoadingArtifacts: Boolean = false,
     val releaseForWorkflow: ReleaseItem? = null,
-    val isLoadingReleaseForWorkflow: Boolean = false
+    val isLoadingReleaseForWorkflow: Boolean = false,
+    val repositoryTextContent: String? = null,
+    val isProcessingRepository: Boolean = false
 )
 
 data class ReleaseItem(
