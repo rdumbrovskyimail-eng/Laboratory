@@ -657,6 +657,11 @@ class PipelineViewModel @Inject constructor(
                                             appendRepoLog(evt)
                                         }
                                     } catch (_: Exception) {}
+                                    localRepoManager.deleteClone()
+                                    appendRepoLog(RepoLogEvent(
+                                        type = RepoEventType.INFO, icon = "🗑",
+                                        message = "Локальный клон удалён после успешного push"
+                                    ))
                                 }
                             }
                         }
@@ -933,7 +938,13 @@ class PipelineViewModel @Inject constructor(
     private fun resetForNewRun() {
         val savedParallel = _state.value.maxParallelTasks
         val savedPrompt = _userPrompt.value
-        _state.value = PipelineState(maxParallelTasks = savedParallel)
+        val savedMode = _state.value.pipelineMode
+        _state.value = PipelineState(
+            maxParallelTasks = savedParallel,
+            pipelineMode = savedMode,
+            selectedModelApiId = "gemini-3.1-flash-lite",
+            liteThinkingLevel = "medium"
+        )
         _userPrompt.value = savedPrompt
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
