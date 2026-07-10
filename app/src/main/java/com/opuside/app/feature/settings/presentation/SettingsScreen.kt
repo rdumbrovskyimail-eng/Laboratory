@@ -33,7 +33,6 @@ import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.lifecycleScope
-import com.opuside.app.core.security.BiometricAuthHelper
 import com.opuside.app.core.security.GeminiKeyEntry
 import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.security.SecurityUtils
@@ -86,6 +85,11 @@ fun SettingsScreen(
         } else {
             android.util.Log.d("SettingsScreen", "✅ FragmentActivity: ${activity.javaClass.simpleName}")
         }
+        
+        // Автоматически запрашиваем разблокировку при открытии экрана
+        if (!sensitiveFeatureDisabled && !isUnlocked) {
+            viewModel.requestUnlock()
+        }
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -97,16 +101,10 @@ fun SettingsScreen(
         }
     }
 
-    if (biometricAuthRequest && activity != null) {
-        val currentActivity: FragmentActivity = activity
+    // Автоматически подтверждаем "биометрию" без показа окна
+    if (biometricAuthRequest) {
         LaunchedEffect(Unit) {
-            BiometricAuthHelper.authenticate(
-                activity = currentActivity,
-                title = "Unlock Settings",
-                subtitle = "Authentication required to access sensitive settings",
-                onSuccess = { viewModel.onBiometricSuccess() },
-                onError = { error -> viewModel.onBiometricError(error) }
-            )
+            viewModel.onBiometricSuccess()
         }
     }
 
