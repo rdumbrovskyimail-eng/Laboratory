@@ -55,13 +55,13 @@ private object EditColors {
 
 private val CreatorAIEditService.AiModel.accentColor: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.blue
+        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.geminiFlash
         CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlash
     }
 
 private val CreatorAIEditService.AiModel.accentBg: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.blueBg
+        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.geminiFlashBg
         CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlashBg
     }
 
