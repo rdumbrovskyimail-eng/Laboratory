@@ -49,15 +49,6 @@ import com.opuside.app.feature.pipeline.data.PipelineMode
 import com.opuside.app.feature.pipeline.data.PipelineKeyRotator
 import com.opuside.app.feature.pipeline.service.PipelineForegroundService
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * PIPELINE VIEW MODEL v1.0
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Оркестратор всего G-конвейера. Управляет state machine, агрегирует
- * события из двух источников (Gemini + Repo), управляет жизненным циклом
- * watcher'ов workflows.
- */
 @HiltViewModel
 class PipelineViewModel @Inject constructor(
     @dagger.hilt.android.qualifiers.ApplicationContext private val appContext: android.content.Context,
@@ -71,10 +62,6 @@ class PipelineViewModel @Inject constructor(
     private val keyRotator: PipelineKeyRotator,
     private val localRepoManager: LocalRepoManager
 ) : ViewModel() {
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // STATE
-    // ═══════════════════════════════════════════════════════════════════════
 
     private val _state = MutableStateFlow(PipelineState())
     val state: StateFlow<PipelineState> = _state.asStateFlow()
@@ -172,7 +159,15 @@ class PipelineViewModel @Inject constructor(
                 "offline" -> PipelineMode.OFFLINE
                 else -> PipelineMode.ONLINE
             }
-            _state.update { it.copy(pipelineMode = mode) }
+            val savedModel = try { secureSettings.pipelineGeminiModel.first() } catch (_: Exception) { "" }
+            val effectiveModel = if (savedModel.isNotBlank()) savedModel else "gemini-3.8-flash"
+            _state.update {
+                it.copy(
+                    pipelineMode = mode,
+                    selectedModelApiId = effectiveModel,
+                    liteThinkingLevel = "low"
+                )
+            }
         }
 
         viewModelScope.launch {
@@ -219,10 +214,6 @@ class PipelineViewModel @Inject constructor(
             }
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // INPUT HANDLERS
-    // ═══════════════════════════════════════════════════════════════════════
 
     fun onPromptChange(text: String) {
         _userPrompt.value = text
@@ -304,7 +295,11 @@ class PipelineViewModel @Inject constructor(
     fun setSelectedModel(apiId: String) {
         if (_state.value.isRunning) return
         _state.update { it.copy(selectedModelApiId = apiId) }
+        viewModelScope.launch {
+            secureSettings.setPipelineGeminiModel(apiId)
+        }
     }
+
     fun setLiteThinkingLevel(level: String) {
         if (_state.value.isRunning) return
         val normalized = level.lowercase().trim()
@@ -339,10 +334,6 @@ class PipelineViewModel @Inject constructor(
             }
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // STEP 1: PLAN
-    // ═══════════════════════════════════════════════════════════════════════
 
     fun plan() {
         val prompt = _userPrompt.value.trim()
@@ -458,10 +449,6 @@ class PipelineViewModel @Inject constructor(
             state.copy(tasks = state.tasks.filterNot { it.id == taskId })
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // STEP 2: START EXECUTION
-    // ═══════════════════════════════════════════════════════════════════════
 
     fun start() {
         if (!_state.value.canStart) {
@@ -770,7 +757,9 @@ class PipelineViewModel @Inject constructor(
         var receivedFinal = false
         var receivedFatal = false
         val overrideApiId = _state.value.effectiveModelApiId
-        val hasThinking = _state.value.selectedModelApiId == "gemini-3.1-flash-lite" || _state.value.selectedModelApiId == "gemini-3.5-flash"
+        val hasThinking = _state.value.selectedModelApiId.startsWith("gemini-3") ||
+                _state.value.selectedModelApiId == "gemini-2.5-flash" ||
+                _state.value.selectedModelApiId == "gemini-2.5-pro"
         val thinkingLevel = if (hasThinking) _state.value.liteThinkingLevel else null
         val isOffline = _state.value.pipelineMode == PipelineMode.OFFLINE
 
@@ -792,7 +781,6 @@ class PipelineViewModel @Inject constructor(
                                                 appendRepoLog(evt)
                                             }
                                         } catch (e: CancellationException) {
-                                            // нормально
                                         } catch (e: Exception) {
                                             appendRepoLog(RepoLogEvent(
                                                 type = RepoEventType.INFO, icon = "ℹ️",
@@ -902,10 +890,6 @@ class PipelineViewModel @Inject constructor(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // STOP / RESET
-    // ═══════════════════════════════════════════════════════════════════════
-
     fun stop() {
         if (!_state.value.canStop) return
         pipelineJob?.cancel()
@@ -924,7 +908,15 @@ class PipelineViewModel @Inject constructor(
         pipelineJob = null
         val savedParallel = _state.value.maxParallelTasks
         val savedPrompt = _userPrompt.value
-        _state.value = PipelineState(maxParallelTasks = savedParallel)
+        val savedMode = _state.value.pipelineMode
+        val currentModel = _state.value.selectedModelApiId.ifBlank { "gemini-3.8-flash" }
+        val currentThinking = _state.value.liteThinkingLevel.ifBlank { "low" }
+        _state.value = PipelineState(
+            maxParallelTasks = savedParallel,
+            pipelineMode = savedMode,
+            selectedModelApiId = currentModel,
+            liteThinkingLevel = currentThinking
+        )
         _userPrompt.value = savedPrompt
         _geminiLog.value = emptyList()
         _repoLog.value = emptyList()
@@ -939,11 +931,13 @@ class PipelineViewModel @Inject constructor(
         val savedParallel = _state.value.maxParallelTasks
         val savedPrompt = _userPrompt.value
         val savedMode = _state.value.pipelineMode
+        val currentModel = _state.value.selectedModelApiId.ifBlank { "gemini-3.8-flash" }
+        val currentThinking = _state.value.liteThinkingLevel.ifBlank { "low" }
         _state.value = PipelineState(
             maxParallelTasks = savedParallel,
             pipelineMode = savedMode,
-            selectedModelApiId = "gemini-3.1-flash-lite",
-            liteThinkingLevel = "medium"
+            selectedModelApiId = currentModel,
+            liteThinkingLevel = currentThinking
         )
         _userPrompt.value = savedPrompt
         _geminiLog.value = emptyList()
@@ -970,10 +964,6 @@ class PipelineViewModel @Inject constructor(
             }
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // HELPERS
-    // ═══════════════════════════════════════════════════════════════════════
 
     private fun appendGeminiLog(event: GeminiLogEvent) {
         _geminiLog.update { current ->
