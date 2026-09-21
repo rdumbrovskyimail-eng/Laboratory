@@ -20,7 +20,7 @@ class PipelineSummarizer @Inject constructor(
     companion object {
         private const val TAG = "PipelineSummarizer"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val MODEL = "gemini-3.1-flash-lite"
+        private const val MODEL = "gemini-3.8-flash"
         private const val MAX_OUTPUT_TOKENS = 4096
 
         private val SUMMARIZER_PROMPT = """
@@ -129,6 +129,9 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                 put("generationConfig", buildJsonObject {
                     put("maxOutputTokens", MAX_OUTPUT_TOKENS)
                     put("temperature", 0.3)
+                    put("thinkingConfig", buildJsonObject {
+                        put("thinkingLevel", JsonPrimitive("LOW"))
+                    })
                 })
             }
 
