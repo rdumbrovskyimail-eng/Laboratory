@@ -34,7 +34,7 @@ class PipelineExecutor @Inject constructor(
         private const val CONFLICT_RETRY_MAX = 3
         private const val NETWORK_RETRY_MAX = 2
         private const val INTER_FILE_DELAY_MS = 1500L
-        private val MODEL = CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE
+        private val MODEL = CreatorAIEditService.AiModel.GEMINI_3_8_FLASH
 
         private const val RETRY_HINT_PREFIX = """
 [RETRY ATTEMPT — previous edit failed]
@@ -51,12 +51,10 @@ You MUST:
 """
     }
 
-    // ─── Per-file Mutex для сериализации задач на один файл ───
     private val fileLocks = ConcurrentHashMap<String, Mutex>()
     fun lockFor(path: String): Mutex = fileLocks.computeIfAbsent(path) { Mutex() }
     fun clearFileLocks() { fileLocks.clear() }
 
-    // ─── Глобальный GitHub write throttle ───
     private val githubWriteMutex = Mutex()
     @Volatile private var lastGithubWriteMs: Long = 0L
     private suspend fun throttleGithubWrite() {
@@ -87,10 +85,6 @@ You MUST:
         data class DeferrableErr(val code: TaskErrorCode, val message: String) : CommitOutcome()
     }
 
-    /**
-     * @param overrideModelApiId если не null — будет использован как Gemini model apiId
-     *                            вместо дефолтного GEMINI_3_1_FLASH_LITE
-     */
     fun executeTask(
         task: FileTask,
         isRetryPass: Boolean,
@@ -258,7 +252,6 @@ You MUST:
             )))
 
             if (offlineMode) {
-                // OFFLINE — пишем в локальный клон, без коммита/пуша.
                 val writeRes = localRepoManager.writeFile(task.filePath, applyResult.newContent)
                 if (writeRes.isFailure) {
                     val e = writeRes.exceptionOrNull()
@@ -277,14 +270,13 @@ You MUST:
                     taskId = taskId
                 )))
                 send(ExecutorEvent.Final(TaskExecutionResult.Success(
-                    commitSha = "pending-batch",   // будет заменено реальным sha после push
+                    commitSha = "pending-batch",
                     resolvedConflict = false,
                     tokensUsed = tokensTotal,
                     costEur = editResult.costEUR,
                     editResult = editResult
                 )))
             } else {
-                // ONLINE — как было: commit через GitHub API.
                 val outcome = commit(
                     path = task.filePath,
                     content = applyResult.newContent,
@@ -370,7 +362,7 @@ You MUST:
                           else "Путь свободен: ${task.filePath}",
                 taskId = taskId
             )))
-        } catch (_: Exception) { /* commit() обработает */ }
+        } catch (_: Exception) { }
 
         val outcome = commit(
             path = task.filePath,
@@ -404,10 +396,6 @@ You MUST:
             ))
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // OFFLINE — чтение/создание через локальный клон
-    // ═══════════════════════════════════════════════════════════════════════
 
     private suspend fun readFileOffline(path: String): ReadOutcome {
         val result = localRepoManager.readFile(path)
@@ -626,10 +614,6 @@ You MUST:
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // DELETE TASK — Online (через GitHub API) и Offline (через LocalRepoManager)
-    // ═══════════════════════════════════════════════════════════════════════
-
     private suspend fun kotlinx.coroutines.channels.ProducerScope<ExecutorEvent>.executeDeleteTaskOnline(
         task: FileTask, taskId: String, startTime: Long
     ) {
@@ -647,7 +631,6 @@ You MUST:
             taskId = taskId
         )))
 
-        // 1) Получаем актуальный SHA файла
         val fileInfo = gitHubClient.getFileContent(task.filePath, cfg.branch).getOrNull()
         if (fileInfo == null) {
             send(ExecutorEvent.Repo(RepoLogEvent(
@@ -660,7 +643,6 @@ You MUST:
             return
         }
 
-        // 2) Throttle и удаление
         throttleGithubWrite()
         val result = gitHubClient.deleteFileExt(
             owner = cfg.owner,
