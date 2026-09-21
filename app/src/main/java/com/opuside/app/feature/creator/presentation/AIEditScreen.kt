@@ -22,10 +22,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.feature.creator.data.CreatorAIEditService
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ЦВЕТОВАЯ ПАЛИТРА
-// ═══════════════════════════════════════════════════════════════════════════
-
 private object EditColors {
     val bg = Color(0xFF0D1117)
     val surface = Color(0xFF161B22)
@@ -53,30 +49,22 @@ private object EditColors {
     val orange = Color(0xFFF0883E)
     val orangeBg = Color(0xFF2D1A00)
 
-    // Gemini brand colors
     val geminiFlash = Color(0xFF81C995)
     val geminiFlashBg = Color(0xFF0D2418)
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MODEL METADATA
-// ═══════════════════════════════════════════════════════════════════════════
-
 private val CreatorAIEditService.AiModel.accentColor: Color
     get() = when (this) {
+        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.blue
         CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlash
     }
 
 private val CreatorAIEditService.AiModel.accentBg: Color
     get() = when (this) {
+        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.blueBg
         CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlashBg
     }
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * AIEditScreen v2.4 — Gemini 3.1 Flash-Lite Preview
- * ═══════════════════════════════════════════════════════════════════════════
- */
 @Composable
 fun AIEditScreen(
     fileName: String,
@@ -99,10 +87,6 @@ fun AIEditScreen(
             .fillMaxSize()
             .background(EditColors.bg)
     ) {
-        // ═══════════════════════════════════════════════════════
-        // HEADER
-        // ═══════════════════════════════════════════════════════
-
         Surface(
             color = EditColors.surface,
             shadowElevation = 4.dp,
@@ -135,7 +119,6 @@ fun AIEditScreen(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                // Model badge
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = selectedModel.accentBg,
@@ -165,10 +148,6 @@ fun AIEditScreen(
         }
 
         HorizontalDivider(color = EditColors.border, thickness = 1.dp)
-
-        // ═══════════════════════════════════════════════════════
-        // MAIN CONTENT
-        // ═══════════════════════════════════════════════════════
 
         Column(
             modifier = Modifier
@@ -211,10 +190,6 @@ fun AIEditScreen(
             }
         }
 
-        // ═══════════════════════════════════════════════════════
-        // BOTTOM BAR
-        // ═══════════════════════════════════════════════════════
-
         BottomBar(
             editStatus = editStatus,
             selectedModel = selectedModel,
@@ -225,10 +200,6 @@ fun AIEditScreen(
         )
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// INSTRUCTIONS INPUT
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun InstructionsSection(
@@ -322,10 +293,6 @@ private fun InstructionsSection(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// FILE INFO
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun FileInfoChip(
     fileName: String,
@@ -358,10 +325,6 @@ private fun FileInfoChip(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PROCESSING
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun ProcessingIndicator(model: CreatorAIEditService.AiModel) {
@@ -400,10 +363,6 @@ private fun ProcessingIndicator(model: CreatorAIEditService.AiModel) {
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// EDIT RESULT
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun EditResultSection(
@@ -623,10 +582,6 @@ private fun DiffCodeBlock(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ERROR / HINT
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun ErrorSection(message: String) {
     Surface(
@@ -662,7 +617,7 @@ private fun HintSection() {
                 "📝" to "Опишите изменения на любом языке",
                 "📋" to "Скопируйте инструкции из чата AI и вставьте",
                 "🔄" to "Несколько замен — AI создаст отдельные блоки",
-                "⚡" to "Gemini 3.1 Flash-Lite Preview — быстро, точно, дёшево",
+                "⚡" to "Gemini 3.8 Flash — высокая точность, глубокий кодинг",
                 "👁️" to "Превью diff перед применением + статус матчинга",
                 "✅" to "Нажмите «Применить» после проверки блоков"
             ).forEach { (emoji, text) ->
@@ -677,10 +632,6 @@ private fun HintSection() {
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// BOTTOM BAR
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun BottomBar(
