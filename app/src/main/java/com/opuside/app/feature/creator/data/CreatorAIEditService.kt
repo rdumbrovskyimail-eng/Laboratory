@@ -22,10 +22,6 @@ class CreatorAIEditService @Inject constructor(
     private val pipelineKeyRotator: com.opuside.app.feature.pipeline.data.PipelineKeyRotator
 ) {
 
-    // ═══════════════════════════════════════════════════════════════
-    // MODELS
-    // ═══════════════════════════════════════════════════════════════
-
     enum class AiModel(
         val displayName: String,
         val apiId: String,
@@ -33,6 +29,13 @@ class CreatorAIEditService @Inject constructor(
         val costPerMInputUsd: Double,
         val costPerMOutputUsd: Double
     ) {
+        GEMINI_3_8_FLASH(
+            displayName = "Gemini 3.8 Flash",
+            apiId = "gemini-3.8-flash",
+            badge = "⚡ G3.8 Flash",
+            costPerMInputUsd = 0.75,
+            costPerMOutputUsd = 3.75
+        ),
         GEMINI_3_1_FLASH_LITE(
             displayName = "Gemini 3.1 Flash-Lite Preview",
             apiId = "gemini-3.1-flash-lite-preview",
@@ -107,44 +110,8 @@ RULE 7 — INDENTATION PRESERVATION:
 RULE 8 — LANGUAGE AWARENESS:
 - Respect language syntax: matching brackets, semicolons, commas in lists.
 - When removing a function, remove the ENTIRE function including annotations and docs above it.
-
-═══ EXAMPLES ═══
-
-Example 1 — Simple rename:
-<edits>
-<block>
-<search>
-    val oldName = repository.getData()
-    processResult(oldName)
-</search>
-<replace>
-    val newName = repository.getData()
-    processResult(newName)
-</replace>
-</block>
-</edits>
-<summary>Renamed variable oldName to newName</summary>
-
-Example 2 — Delete a function:
-<edits>
-<block>
-<search>
-    /** Legacy processor - deprecated */
-    private fun processLegacy(data: String): Boolean {
-        return data.isNotEmpty()
-    }
-</search>
-<replace>
-</replace>
-</block>
-</edits>
-<summary>Deleted function processLegacy</summary>
 """.trimIndent()
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // DATA MODELS
-    // ═══════════════════════════════════════════════════════════════════
 
     data class EditBlock(
         val search: String,
@@ -189,15 +156,11 @@ Example 2 — Delete a function:
             }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // MAIN API CALL
-    // ═══════════════════════════════════════════════════════════════════
-
     suspend fun processEdit(
         fileContent: String,
         fileName: String,
         instructions: String,
-        model: AiModel = AiModel.GEMINI_3_1_FLASH_LITE,
+        model: AiModel = AiModel.GEMINI_3_8_FLASH,
         usePipelineKeys: Boolean = false,
         customModelApiId: String? = null,
         thinkingLevelOverride: String? = null
@@ -206,12 +169,12 @@ Example 2 — Delete a function:
             val lineCount = fileContent.lines().size
             val useLineNumbers = lineCount > LINE_NUMBER_THRESHOLD
             val effectiveApiId = customModelApiId?.trim()?.ifBlank { null } ?: model.apiId
+            val activeModel = AiModel.entries.find { it.apiId == effectiveApiId } ?: model
             Log.d(TAG, "📤 Edit: $fileName ($lineCount lines, model=$effectiveApiId)")
 
             val systemPrompt = buildSystemPrompt(useLineNumbers)
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
-            // Определяем источник ключа
             var currentApiKey: String
             var currentKeyIdx: Int
             if (usePipelineKeys) {
@@ -229,7 +192,6 @@ Example 2 — Delete a function:
                 }
             }
 
-            // Цикл с ротацией при 429 (только если usePipelineKeys)
             var rawResponse: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
             while (true) {
@@ -251,13 +213,13 @@ Example 2 — Delete a function:
                 return@withContext Result.failure(it)
             }
 
-            val costUSD = (inputTokens * model.costPerMInputUsd +
-                          outputTokens * model.costPerMOutputUsd) / 1_000_000.0
+            val costUSD = (inputTokens * activeModel.costPerMInputUsd +
+                          outputTokens * activeModel.costPerMOutputUsd) / 1_000_000.0
             val costEUR = costUSD * 0.92
 
             Log.d(TAG, "✅ $effectiveApiId: ${inputTokens}in + ${outputTokens}out = €${String.format("%.5f", costEUR)}")
 
-            val result = parseEditResponse(content, inputTokens, outputTokens, costEUR, model)
+            val result = parseEditResponse(content, inputTokens, outputTokens, costEUR, activeModel)
             if (result.blocks.isEmpty()) Log.w(TAG, "⚠️ No blocks parsed. Summary: ${result.summary}")
             Result.success(result)
         } catch (e: java.net.SocketTimeoutException) {
@@ -269,10 +231,6 @@ Example 2 — Delete a function:
             Result.failure(e)
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // GEMINI API
-    // ═══════════════════════════════════════════════════════════════════
 
     private suspend fun callGeminiApi(
         systemPrompt: String,
@@ -301,11 +259,10 @@ Example 2 — Delete a function:
                 put("maxOutputTokens", MAX_OUTPUT_TOKENS)
                 put("temperature", 0.0)
                 put("topP", 0.95)
-                if (modelApiId.startsWith("gemini-3")) {
-                    // Lite — берём из override (low/medium/high), иначе всем 3.x по дефолту high
+                if (modelApiId.startsWith("gemini-3") || modelApiId.startsWith("gemini-2.5")) {
                     val level = thinkingLevelOverride?.trim()?.lowercase()?.takeIf {
                         it in listOf("low", "medium", "high")
-                    } ?: "high"
+                    } ?: "low"
                     put("thinkingConfig", JSONObject().apply {
                         put("thinkingLevel", level)
                     })
@@ -334,10 +291,6 @@ Example 2 — Delete a function:
             }
         )
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // SHARED HTTP EXECUTOR
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun executeRequest(
         url: String,
@@ -373,10 +326,6 @@ Example 2 — Delete a function:
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // BUILD MESSAGES
-    // ═══════════════════════════════════════════════════════════════════
-
     private fun buildUserMessage(
         fileContent: String,
         fileName: String,
@@ -410,10 +359,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
         } else SYSTEM_PROMPT
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // APPLY EDITS
-    // ═══════════════════════════════════════════════════════════════════
-
     fun applyEdits(content: String, blocks: List<EditBlock>): Result<ApplyResult> {
         var result = content
         val appliedBlocks = mutableListOf<EditBlock>()
@@ -427,14 +372,12 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
             if (cleanSearch.isBlank()) {
                 result = result.trimEnd() + "\n\n" + cleanReplace + "\n"
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.EXACT))
-                Log.d(TAG, "  ✓ Block $blockNum: appended to end")
                 return@forEachIndexed
             }
 
             if (cleanSearch in result) {
                 result = result.replaceFirst(cleanSearch, cleanReplace)
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.EXACT))
-                Log.d(TAG, "  ✓ Block $blockNum: EXACT")
                 return@forEachIndexed
             }
 
@@ -446,7 +389,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
                 if (originalRange != null) {
                     result = result.substring(0, originalRange.first) + cleanReplace + result.substring(originalRange.second)
                     appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.NORMALIZED))
-                    Log.d(TAG, "  ✓ Block $blockNum: NORMALIZED")
                     return@forEachIndexed
                 }
             }
@@ -455,7 +397,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
             if (fuzzyResult != null) {
                 result = fuzzyResult
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.FUZZY))
-                Log.d(TAG, "  ✓ Block $blockNum: FUZZY")
                 return@forEachIndexed
             }
 
@@ -463,18 +404,14 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
             if (lineRangeResult != null) {
                 result = lineRangeResult
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.LINE_RANGE))
-                Log.d(TAG, "  ✓ Block $blockNum: LINE_RANGE")
                 return@forEachIndexed
             }
 
             failedBlocks.add(blockNum to block)
             appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.NOT_FOUND))
-            Log.w(TAG, "  ✗ Block $blockNum: NOT FOUND — search: ${cleanSearch.take(120)}")
         }
 
         val totalApplied = appliedBlocks.count { it.matchStatus != EditBlock.MatchStatus.NOT_FOUND }
-        Log.d(TAG, "📊 Applied: $totalApplied/${blocks.size}")
-
         return Result.success(
             ApplyResult(
                 newContent = result,
@@ -485,10 +422,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
             )
         )
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // MATCHING HELPERS
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun normalizeWhitespace(text: String): String =
         text.lines().joinToString("\n") { it.trimEnd() }
@@ -585,10 +518,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
         } else text
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // PARSING
-    // ═══════════════════════════════════════════════════════════════════
-
     private fun parseEditResponse(
         response: String,
         inputTokens: Int,
@@ -615,7 +544,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
             .find(response)?.groupValues?.get(1)?.trim()
             ?: if (blocks.isEmpty()) "AI не вернул блоков замен" else "${blocks.size} блок(ов) замен"
 
-        Log.d(TAG, "📝 Parsed: ${blocks.size} blocks — $summary")
         return EditResult(blocks, summary, inputTokens, outputTokens, costEUR, model)
     }
 
@@ -626,16 +554,11 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
         return result
     }
 
-    // ═══════════════════════════════════════════════════════════════════
-    // ERROR FORMATTING
-    // ═══════════════════════════════════════════════════════════════════
-
     private fun formatApiError(code: Int, body: String): String {
         val msg = try {
             val json = JSONObject(body)
             json.optJSONObject("error")?.optString("message")
-                ?: json.optString("message", "")
-                    .ifBlank { body.take(200) }
+                ?: json.optString("message", "").ifBlank { body.take(200) }
         } catch (_: Exception) { body.take(200) }
 
         return when (code) {
