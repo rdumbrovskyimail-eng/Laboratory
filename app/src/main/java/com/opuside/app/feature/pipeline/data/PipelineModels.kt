@@ -23,12 +23,8 @@ data class PipelineState(
     val pipelineRunId: String = UUID.randomUUID().toString().take(8),
     val maxParallelTasks: Int = 3,
     val logFilterTaskId: String? = null,
-    // Дефолтная модель из списка
-    val selectedModelApiId: String = "gemini-3.1-flash-lite",
-    // Thinking-уровень для Lite модели (low / medium / high)
-    val liteThinkingLevel: String = "medium",
-    // Режим работы пайплайна: Online = коммиты напрямую через GitHub API,
-    // Offline = клонируем репо локально, правим, в конце один коммит + push
+    val selectedModelApiId: String = "gemini-3.8-flash",
+    val liteThinkingLevel: String = "low",
     val pipelineMode: PipelineMode = PipelineMode.ONLINE
 ) {
     val totalTasks: Int get() = tasks.size
@@ -42,7 +38,7 @@ data class PipelineState(
 
     val estimatedCost: Double get() {
         val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
-        return modifyCount * 0.00002 + 0.00004
+        return modifyCount * 0.00008 + 0.00005
     }
 
     val canStart: Boolean get() = phase == PipelinePhase.REVIEWING
