@@ -3,7 +3,6 @@ package com.opuside.app.feature.pipeline.data
 import android.util.Log
 import com.opuside.app.core.security.SecureSettingsDataStore
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import java.io.BufferedReader
@@ -13,28 +12,6 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * PIPELINE PLANNER v1.0
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * Первый Gemini-вызов в конвейере. Берёт большой промпт пользователя + список
- * всех файлов репозитория и возвращает структурированный JSON-план:
- *
- *   { "tasks": [
- *       { "file": "app/src/.../File.kt", "instructions": "..." },
- *       ...
- *   ] }
- *
- * Использует Gemini 3.1 Flash-Lite (та же модель что в AI Edit) с
- * responseMimeType="application/json" + responseJsonSchema — это гарантирует
- * валидный JSON на выходе.
- *
- * Если AI вернул короткий путь типа "MainActivity.kt" вместо полного,
- * выполняется fuzzy-resolve через RepoIndex.findByName().
- *
- * Стоимость одного планирования: ~5K input + ~2K output = €0.00002. Бесплатно.
- */
 @Singleton
 class PipelinePlanner @Inject constructor(
     private val secureSettings: SecureSettingsDataStore,
@@ -44,11 +21,10 @@ class PipelinePlanner @Inject constructor(
     companion object {
         private const val TAG = "PipelinePlanner"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val PLANNER_MODEL = "gemini-3.1-flash-lite"
-        private const val MAX_OUTPUT_TOKENS = 16384      // плана хватит
-        private const val MAX_TASKS_LIMIT = 100          // макс задач за один прогон
+        private const val PLANNER_MODEL = "gemini-3.8-flash"
+        private const val MAX_OUTPUT_TOKENS = 16384
+        private const val MAX_TASKS_LIMIT = 100
 
-        // Системный промпт планировщика. Жёсткие правила, чтобы AI не "креативил".
         private val PLANNER_SYSTEM_PROMPT = """
 You are a precision TASK PLANNER for a code modification pipeline.
 
@@ -63,7 +39,7 @@ ONE file with ONE operation extracted from the user prompt.
 
 ═══ TASK TYPES ═══
 
-Each task has an "operation" field — either "modify" or "create".
+Each task has an "operation" field — either "modify", "create", or "delete".
 
 ▸ MODIFY task (default):
   - Modifies an existing file in the repository
@@ -175,10 +151,6 @@ No markdown. No code fences. No commentary. Pure JSON.
 """.trimIndent()
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // RESPONSE SCHEMA — гарантия валидного JSON
-    // ═══════════════════════════════════════════════════════════════════
-
     private val responseSchema = buildJsonObject {
         put("type", "object")
         put("properties", buildJsonObject {
@@ -223,18 +195,6 @@ No markdown. No code fences. No commentary. Pure JSON.
         put("required", JsonArray(listOf(JsonPrimitive("tasks"))))
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // MAIN ENTRY
-    // ═══════════════════════════════════════════════════════════════════════
-
-    /**
-     * Запускает планирование.
-     *
-     * @param userPrompt сам промпт от пользователя
-     * @param filePaths полный список путей файлов в репозитории.
-     *                  ViewModel извлекает его из своего RepoIndexManager
-     *                  (этим избегаем зависимости Planner от внутренней структуры RepoIndex).
-     */
     suspend fun plan(
         userPrompt: String,
         filePaths: List<String>
@@ -251,7 +211,6 @@ No markdown. No code fences. No commentary. Pure JSON.
                 )
             }
 
-            // Получаем активный ключ из ротатора (Pair<String, Int>)
             var currentKeyInfo = keyRotator.currentKey()
                 ?: return@withContext Result.failure(
                     IllegalStateException("Добавьте Gemini API ключ на экране Pipeline.")
@@ -267,7 +226,6 @@ No markdown. No code fences. No commentary. Pure JSON.
             }
             Log.d(TAG, "📤 Planning: prompt=${userPrompt.length}ch, files=${filePaths.size}")
 
-            // Цикл с авто-ротацией ключей при 429
             var result: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
             while (attempts < 2) {
@@ -275,7 +233,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                 result = callGemini(apiKey, userMessage)
                 if (result.isSuccess) break
                 val errMsg = result.exceptionOrNull()?.message
-                if (!isQuotaError(errMsg)) break  // не 429 — не пробуем другой ключ
+                if (!isQuotaError(errMsg)) break
                 Log.w(TAG, "⚠️ Quota на ключе #$idx, переключаемся...")
                 val next = keyRotator.burnAndRotate(idx)
                 if (next == null) {
@@ -304,7 +262,7 @@ No markdown. No code fences. No commentary. Pure JSON.
             }
 
             val resolvedTasks = resolvePaths(plannedTasks, filePaths)
-            val cost = (inputTokens * 0.25 + outputTokens * 1.50) / 1_000_000.0 * 0.92
+            val cost = (inputTokens * 0.75 + outputTokens * 3.75) / 1_000_000.0 * 0.92
 
             Log.d(TAG, "✅ Planned ${resolvedTasks.size} tasks " +
                     "(${inputTokens}in+${outputTokens}out, €${String.format(java.util.Locale.US, "%.5f", cost)})")
@@ -323,14 +281,6 @@ No markdown. No code fences. No commentary. Pure JSON.
         }
     }
 
-    /**
-     * Резолвит fuzzy-пути от AI в реальные пути из индекса.
-     * Если AI дал короткий путь "MainActivity.kt", найдёт полный
-     * "app/src/main/java/.../MainActivity.kt".
-     *
-     * Если файл не найден вообще — задача всё равно включается, но с
-     * пометкой originalPathFromAi != filePath (UI покажет предупреждение).
-     */
     private fun resolvePaths(
         plannedTasks: List<PlannedTask>,
         filePaths: List<String>
@@ -371,8 +321,6 @@ No markdown. No code fences. No commentary. Pure JSON.
         return result
     }
 
-    // ─── MODIFY resolve ────────────────────────────────────────────────────
-
     private fun resolveModifyPath(
         task: PlannedTask,
         pathSet: Set<String>,
@@ -408,15 +356,6 @@ No markdown. No code fences. No commentary. Pure JSON.
         return task.copy(file = resolvedPath)
     }
 
-    // ─── CREATE resolve ────────────────────────────────────────────────────
-
-    /**
-     * Резолвит путь для CREATE-задачи на основе данных от AI:
-     * - явный path → используется как есть (с warning если не соответствует package)
-     * - только package → выводим путь
-     * - только content → извлекаем package из content + имя из объявления
-     * - ничего → fallback на sourceRoot + сгенерированное имя
-     */
     private fun resolveCreatePath(
         task: PlannedTask,
         index: Int,
@@ -462,18 +401,11 @@ No markdown. No code fences. No commentary. Pure JSON.
         )
     }
 
-    /**
-     * Извлекает package declaration из контента Kotlin/Java файла.
-     */
     private fun extractPackageFromContent(content: String): String? {
         val regex = Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE)
         return regex.find(content)?.groupValues?.get(1)?.trim()?.ifBlank { null }
     }
 
-    /**
-     * Пытается извлечь имя файла из содержимого:
-     * первый класс / object / interface / @Composable fun / top-level fun.
-     */
     private fun deriveFileNameFromContent(content: String): String? {
         val patterns = listOf(
             Regex("""(?:public\s+|internal\s+|private\s+)?(?:abstract\s+|sealed\s+|open\s+|data\s+|enum\s+)?class\s+(\w+)"""),
@@ -492,18 +424,11 @@ No markdown. No code fences. No commentary. Pure JSON.
         return null
     }
 
-    /**
-     * Проверяет соответствует ли путь package.
-     */
     private fun pathMatchesPackage(path: String, packageName: String): Boolean {
         val pkgAsPath = packageName.replace('.', '/')
         return path.contains("/$pkgAsPath/")
     }
 
-    /**
-     * Определяет source root репозитория из списка путей.
-     * Стратегия: берём первый .kt файл и обрезаем его путь до начала package.
-     */
     private fun detectSourceRoot(filePaths: List<String>): String {
         val packageRoots = setOf("com", "org", "io", "net", "ru", "de", "tech")
         for (path in filePaths) {
@@ -517,8 +442,6 @@ No markdown. No code fences. No commentary. Pure JSON.
         Log.w(TAG, "⚠️ Could not detect source root — falling back to default")
         return "app/src/main/java/"
     }
-
-    // ─── Dedup / merge ─────────────────────────────────────────────────────
 
     private fun addOrMerge(
         result: MutableList<PlannedTask>,
@@ -548,10 +471,6 @@ No markdown. No code fences. No commentary. Pure JSON.
         result.add(task)
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // GEMINI API CALL
-    // ═══════════════════════════════════════════════════════════════════════
-
     private fun callGemini(
         apiKey: String,
         userMessage: String
@@ -580,6 +499,9 @@ No markdown. No code fences. No commentary. Pure JSON.
                     put("topP", 0.95)
                     put("responseMimeType", "application/json")
                     put("responseJsonSchema", responseSchema)
+                    put("thinkingConfig", buildJsonObject {
+                        put("thinkingLevel", JsonPrimitive("LOW"))
+                    })
                 })
             }
 
@@ -650,10 +572,6 @@ No markdown. No code fences. No commentary. Pure JSON.
             } catch (_: Exception) { /* ignore */ }
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // PARSE PLAN JSON
-    // ═══════════════════════════════════════════════════════════════════════
 
     private fun parsePlanResponse(rawJson: String): Result<List<PlannedTask>> {
         return try {
@@ -733,10 +651,6 @@ No markdown. No code fences. No commentary. Pure JSON.
             Result.failure(Exception("Не удалось распарсить план: ${e.message}"))
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // ERROR FORMATTING
-    // ═══════════════════════════════════════════════════════════════════════
 
     private fun formatApiError(code: Int, body: String): String {
         val msg = try {
