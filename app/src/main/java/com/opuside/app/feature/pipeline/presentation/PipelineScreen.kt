@@ -54,12 +54,6 @@ private val LOG_TIME_FORMATTER = SimpleDateFormat("HH:mm:ss", Locale.US)
 private fun formatLogTime(timestamp: Long): String =
     synchronized(LOG_TIME_FORMATTER) { LOG_TIME_FORMATTER.format(Date(timestamp)) }
 
-/**
- * ═══════════════════════════════════════════════════════════════════════════
- * PIPELINE SCREEN — UI для G-конвейера
- * ═══════════════════════════════════════════════════════════════════════════
- */
-
 private object PipelineColors {
     val backgroundDark = Color(0xFF0A0A0F)
     val surfaceDark = Color(0xFF15151D)
@@ -160,6 +154,19 @@ fun PipelineScreen(
                 )
             }
 
+            DefaultModelSelector(
+                selected = state.selectedModelApiId,
+                interactive = !state.isRunning,
+                onSelect = viewModel::setSelectedModel
+            )
+
+            LiteThinkingSelector(
+                selected = state.liteThinkingLevel,
+                supportsThinking = state.selectedModelApiId.startsWith("gemini-3"),
+                interactive = !state.isRunning,
+                onSelect = viewModel::setLiteThinkingLevel
+            )
+
             PromptSection(
                 prompt = userPrompt,
                 onPromptChange = viewModel::onPromptChange,
@@ -168,8 +175,6 @@ fun PipelineScreen(
                 isRunning = state.isRunning,
                 phase = state.phase
             )
-
-
 
             StatusBar(
                 state = state,
@@ -225,10 +230,6 @@ fun PipelineScreen(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// HEADER
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun PipelineHeader(repoStats: RepoStats?, runId: String) {
@@ -335,10 +336,6 @@ private fun StatMicro(label: String, value: String) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PROMPT SECTION
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun PromptSection(
     prompt: String,
@@ -425,10 +422,6 @@ private fun PromptSection(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STATUS BAR
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun StatusBar(
@@ -562,10 +555,6 @@ private fun StatusBar(
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PROGRESS SECTION
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun ProgressSection(
@@ -822,10 +811,6 @@ private fun TaskChip(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// LIVE LOGS
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun LiveLogsSection(
     geminiLog: List<GeminiLogEvent>,
@@ -1023,10 +1008,6 @@ private fun repoAccentFor(type: RepoEventType): Color = when (type) {
     else -> PipelineColors.textSecondary
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// FINAL REPORT
-// ═══════════════════════════════════════════════════════════════════════════
-
 @Composable
 private fun FinalReportSection(report: String, status: OverallStatus) {
     val accentColor = when (status) {
@@ -1071,10 +1052,6 @@ private fun FinalReportSection(report: String, status: OverallStatus) {
         }
     }
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// FATAL ERROR
-// ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
 private fun FatalErrorCard(error: String) {
@@ -1162,8 +1139,9 @@ private fun DefaultModelSelector(
     onSelect: (String) -> Unit
 ) {
     val options = listOf(
-        "gemini-3.1-flash-lite" to "🪶 3.1 Flash-Lite",
-        "gemini-3.5-flash" to "⚡ 3.5 Flash"
+        "gemini-3.8-flash" to "⚡ 3.8 Flash",
+        "gemini-3.1-flash-lite" to "🪶 3.1 Lite",
+        "gemini-3.5-flash" to "🚀 3.5 Flash"
     )
     Column(
         modifier = Modifier
@@ -1175,7 +1153,7 @@ private fun DefaultModelSelector(
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         Text(
-            "📌 Дефолтная модель",
+            "📌 Модель Gemini (Режим G)",
             color = PipelineColors.textPrimary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
@@ -1204,15 +1182,21 @@ private fun DefaultModelSelector(
                         label,
                         color = fg,
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
         }
         Spacer(Modifier.height(4.dp))
         Text(
-            text = "Используется когда Override OFF. Temperature=0.0, Thinking=HIGH.",
+            text = when (selected) {
+                "gemini-3.8-flash" -> "Флагман Flash: максимальная точность правок кода и высокая скорость."
+                "gemini-3.1-flash-lite" -> "Минимум затрат токенов, высокая скорость."
+                else -> "Стабильная универсальная Flash-модель."
+            },
             color = PipelineColors.textTertiary,
             fontSize = 10.sp
         )
@@ -1222,11 +1206,11 @@ private fun DefaultModelSelector(
 @Composable
 private fun LiteThinkingSelector(
     selected: String,
-    isLite: Boolean,
+    supportsThinking: Boolean,
     interactive: Boolean,
     onSelect: (String) -> Unit
 ) {
-    if (!isLite) return
+    if (!supportsThinking) return
     val options = listOf(
         "low" to "🌱 LOW",
         "medium" to "⚙️ MEDIUM",
@@ -1242,7 +1226,7 @@ private fun LiteThinkingSelector(
             .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         Text(
-            "🧠 Thinking для выбранной модели",
+            "🧠 Уровень рассуждений (Thinking)",
             color = PipelineColors.textPrimary,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
@@ -1280,9 +1264,9 @@ private fun LiteThinkingSelector(
         Spacer(Modifier.height(4.dp))
         Text(
             text = when (selected) {
-                "low" -> "Минимум рассуждений — макс. экономия токенов, простые правки"
-                "medium" -> "Средний уровень — баланс цены и качества"
-                else -> "Максимум рассуждений — лучшее качество, больше TPM"
+                "low" -> "Режим LOW (по умолчанию): оптимален для сохранения квоты 2–5 RPM и быстрой генерации."
+                "medium" -> "Режим MEDIUM: баланс между объемом размышлений и скоростью."
+                else -> "Режим HIGH: глубокие рассуждения, требует больше времени и токенов."
             },
             color = PipelineColors.textTertiary,
             fontSize = 10.sp
