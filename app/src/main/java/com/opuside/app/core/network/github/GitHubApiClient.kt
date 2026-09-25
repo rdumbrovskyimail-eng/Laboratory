@@ -25,15 +25,12 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * GitHub API Client v2.1
+ * GitHub API Client v2.2 (Network Optimized)
  *
- * ✅ ДОБАВЛЕНО: getFullTree() — Git Trees API для загрузки полного дерева репозитория
- *    одним запросом. Используется RepoIndexManager для быстрой индексации.
- *
- * ✅ ДОБАВЛЕНО: getReleases(), getRelease(), getLatestRelease() — GitHub Releases API
- *    для работы с релизами и скачивания APK файлов.
- *
- * ✅ СОХРАНЕНО: Все оригинальные методы без изменений.
+ * Исправления и улучшения:
+ * - Гарантированный заголовок User-Agent для исключения 403 Forbidden
+ * - Очистка путей от двойных слэшей // (защита от 301/404)
+ * - Расширенные таймауты и корректная обработка редиректов
  */
 @Singleton
 class GitHubApiClient @Inject constructor(
@@ -47,51 +44,38 @@ class GitHubApiClient @Inject constructor(
         private const val API_VERSION = "2022-11-28"
     }
 
-    /**
-     * ✅ ИСПРАВЛЕНО: Возвращает null если настройки не заполнены
-     * Больше НЕ выбрасывает exception
-     */
     private suspend fun getConfig(): GitHubConfig? {
         val config = appSettings.gitHubConfig.first()
-        
         if (config.owner.isBlank() || config.repo.isBlank() || config.token.isBlank()) {
             Log.w(TAG, "GitHub not configured: owner=${config.owner.isNotBlank()}, repo=${config.repo.isNotBlank()}, token=${config.token.isNotBlank()}")
             return null
         }
-        
         return config
     }
 
-    /**
-     * ✅ НОВЫЙ МЕТОД: Проверка наличия конфигурации
-     */
-    suspend fun isConfigured(): Boolean {
-        return getConfig() != null
-    }
+    suspend fun isConfigured(): Boolean = getConfig() != null
 
     private fun encodePath(path: String): String {
-        return path.split("/")
+        val clean = path.trim().removePrefix("/").removePrefix("./")
+        if (clean.isEmpty()) return ""
+        return clean.split("/")
+            .filter { it.isNotEmpty() }
             .joinToString("/") { segment ->
-                URLEncoder.encode(segment, StandardCharsets.UTF_8.toString())
-                    .replace("+", "%20")
+                URLEncoder.encode(segment, StandardCharsets.UTF_8.toString()).replace("+", "%20")
             }
     }
 
+    private fun HttpRequestBuilder.setupHeaders(token: String) {
+        header("Authorization", "Bearer $token")
+        header("Accept", "application/vnd.github+json")
+        header("X-GitHub-Api-Version", API_VERSION)
+        header("User-Agent", "OpusIDE-Android-Client/1.0")
+    }
+
     // ═══════════════════════════════════════════════════════════════════════════
-    // ★ NEW: GIT TREES API — полное дерево одним запросом
+    // GIT TREES API
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Загрузить полное дерево репозитория одним запросом.
-     *
-     * GET /repos/{owner}/{repo}/git/trees/{branch}?recursive=1
-     *
-     * Возвращает ВСЕ файлы и директории за один HTTP запрос (~100-300ms).
-     * Используется RepoIndexManager для построения индекса.
-     *
-     * @param branch Ветка или SHA коммита
-     * @return GitHubTreeResponse с полным деревом
-     */
     suspend fun getFullTree(branch: String): Result<GitHubTreeResponse> {
         val config = getConfig()
             ?: return Result.failure(GitHubApiException(
@@ -144,8 +128,12 @@ class GitHubApiClient @Inject constructor(
                 message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
             ))
         
+        val ep = encodePath(path)
+        val url = if (ep.isEmpty()) "$BASE_URL/repos/${config.owner}/${config.repo}/contents"
+                  else "$BASE_URL/repos/${config.owner}/${config.repo}/contents/$ep"
+
         return apiCall {
-            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
+            httpClient.get(url) {
                 setupHeaders(config.token)
                 ref?.let { parameter("ref", it) }
             }
@@ -162,8 +150,12 @@ class GitHubApiClient @Inject constructor(
                 message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
             ))
         
+        val ep = encodePath(path)
+        val url = if (ep.isEmpty()) "$BASE_URL/repos/${config.owner}/${config.repo}/contents"
+                  else "$BASE_URL/repos/${config.owner}/${config.repo}/contents/$ep"
+
         return apiCall {
-            httpClient.get("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
+            httpClient.get(url) {
                 setupHeaders(config.token)
                 ref?.let { parameter("ref", it) }
             }
@@ -195,13 +187,11 @@ class GitHubApiClient @Inject constructor(
             ))
 
         val effectiveBranch = branch ?: config.branch
-        val currentSha = sha ?: getFileContent(path, effectiveBranch).getOrNull()?.sha
-
         val encodedContent = Base64.encodeToString(content.toByteArray(), Base64.NO_WRAP)
         val request = CreateOrUpdateFileRequest(
             message = message,
             content = encodedContent,
-            sha = currentSha,
+            sha = sha,
             branch = effectiveBranch
         )
         
@@ -228,12 +218,10 @@ class GitHubApiClient @Inject constructor(
             ))
 
         val effectiveBranch = branch ?: config.branch
-        val currentSha = sha ?: getFileContent(path, effectiveBranch).getOrNull()?.sha
-
         val request = CreateOrUpdateFileRequest(
             message = message,
             content = content,
-            sha = currentSha,
+            sha = sha,
             branch = effectiveBranch
         )
 
@@ -258,7 +246,7 @@ class GitHubApiClient @Inject constructor(
                 message = "GitHub not configured. Please set Owner, Repository, and Token in Settings."
             ))
         
-        return apiCall {
+        return apiCallUnit {
             httpClient.delete("$BASE_URL/repos/${config.owner}/${config.repo}/contents/${encodePath(path)}") {
                 setupHeaders(config.token)
                 contentType(ContentType.Application.Json)
@@ -482,6 +470,7 @@ class GitHubApiClient @Inject constructor(
                 conn.setRequestProperty("Authorization", "Bearer ${config.token}")
                 conn.setRequestProperty("Accept", "application/vnd.github+json")
                 conn.setRequestProperty("X-GitHub-Api-Version", API_VERSION)
+                conn.setRequestProperty("User-Agent", "OpusIDE-Android-Client/1.0")
                 conn.connect()
                 
                 val location = conn.getHeaderField("Location")
@@ -516,6 +505,7 @@ class GitHubApiClient @Inject constructor(
                 conn.setRequestProperty("Authorization", "Bearer ${config.token}")
                 conn.setRequestProperty("Accept", "application/octet-stream")
                 conn.setRequestProperty("X-GitHub-Api-Version", API_VERSION)
+                conn.setRequestProperty("User-Agent", "OpusIDE-Android-Client/1.0")
                 conn.connect()
 
                 val location = conn.getHeaderField("Location")
@@ -537,17 +527,9 @@ class GitHubApiClient @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // ★ NEW: GITHUB RELEASES
+    // GITHUB RELEASES
     // ═══════════════════════════════════════════════════════════════════════════
 
-    /**
-     * Получить все releases репозитория
-     * 
-     * GET /repos/{owner}/{repo}/releases
-     * 
-     * @param perPage Количество релизов на страницу (по умолчанию 30)
-     * @return Список релизов с assets (APK файлами)
-     */
     suspend fun getReleases(perPage: Int = 30): Result<List<GitHubRelease>> {
         val config = getConfig()
             ?: return Result.failure(GitHubApiException(
@@ -563,14 +545,6 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Получить конкретный release по тегу
-     * 
-     * GET /repos/{owner}/{repo}/releases/tags/{tag}
-     * 
-     * @param tag Тег релиза (например, "v1.0.0")
-     * @return Release с указанным тегом
-     */
     suspend fun getRelease(tag: String): Result<GitHubRelease> {
         val config = getConfig()
             ?: return Result.failure(GitHubApiException(
@@ -585,13 +559,6 @@ class GitHubApiClient @Inject constructor(
         }
     }
 
-    /**
-     * Получить последний release
-     * 
-     * GET /repos/{owner}/{repo}/releases/latest
-     * 
-     * @return Последний опубликованный release
-     */
     suspend fun getLatestRelease(): Result<GitHubRelease> {
         val config = getConfig()
             ?: return Result.failure(GitHubApiException(
@@ -628,12 +595,6 @@ class GitHubApiClient @Inject constructor(
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private fun HttpRequestBuilder.setupHeaders(token: String) {
-        header("Authorization", "Bearer $token")
-        header("Accept", "application/vnd.github+json")
-        header("X-GitHub-Api-Version", API_VERSION)
-    }
-
     private suspend inline fun <reified T> apiCall(
         maxRetries: Int = 3,
         initialDelayMs: Long = 1000,
@@ -659,11 +620,7 @@ class GitHubApiClient @Inject constructor(
 
                 if (response.status.value == 429) {
                     val retryAfter = response.headers["Retry-After"]?.toLongOrNull()
-                    val delayMs = if (retryAfter != null) {
-                        retryAfter * 1000
-                    } else {
-                        currentDelay
-                    }
+                    val delayMs = if (retryAfter != null) retryAfter * 1000 else currentDelay
                     delay(delayMs)
                     currentDelay = (delayMs * 2).coerceAtMost(60_000)
                 } else {
@@ -708,11 +665,7 @@ class GitHubApiClient @Inject constructor(
 
                 if (response.status.value == 429) {
                     val retryAfter = response.headers["Retry-After"]?.toLongOrNull()
-                    val delayMs = if (retryAfter != null) {
-                        retryAfter * 1000
-                    } else {
-                        currentDelay
-                    }
+                    val delayMs = if (retryAfter != null) retryAfter * 1000 else currentDelay
                     delay(delayMs)
                     currentDelay = (delayMs * 2).coerceAtMost(60_000)
                 } else {
@@ -755,7 +708,6 @@ class GitHubApiException(
     override val message: String,
     val statusCode: Int = 0
 ) : Exception("[$type] $message") {
-    
     val isNotFound: Boolean get() = statusCode == 404
     val isUnauthorized: Boolean get() = statusCode == 401
     val isForbidden: Boolean get() = statusCode == 403
