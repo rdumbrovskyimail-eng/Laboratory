@@ -79,15 +79,17 @@ class WorkflowMonitorService : Service() {
     private fun startScanning() {
         scope.launch {
             while (isActive) {
+                var hasActiveWorkflows = false
                 try {
                     val workflows = gitHubApiClient
-                        .getWorkflowRuns(perPage = 10)
+                        .getWorkflowRuns(perPage = 5)
                         .getOrNull()
                         ?.workflowRuns
 
                     val latest = workflows?.firstOrNull()
 
                     if (latest != null) {
+                        hasActiveWorkflows = latest.status == "in_progress" || latest.status == "queued"
                         updateMonitorNotif(
                             when {
                                 latest.status == "queued"      -> "⏳ В очереди: ${latest.name}"
@@ -99,7 +101,7 @@ class WorkflowMonitorService : Service() {
                         )
 
                         val isNewWorkflow = latest.id != lastSeenId
-                        val isRunning = latest.status == "in_progress" || latest.status == "queued"
+                        val isRunning = hasActiveWorkflows
                         val isCompleted = latest.status == "completed"
                         val alreadyNotified = latest.id == lastNotifiedId
 
@@ -138,7 +140,9 @@ class WorkflowMonitorService : Service() {
                     Log.w(TAG, "Scan error: ${e.message}")
                 }
 
-                delay(5_000)
+                // Экономия квоты: 5 сек во время активного билда, 45 сек в режиме покоя
+                val delayTime = if (hasActiveWorkflows) 5_000L else 45_000L
+                delay(delayTime)
             }
         }
     }
