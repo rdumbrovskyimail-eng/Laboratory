@@ -14,7 +14,7 @@ enum class PipelinePhase {
 }
 
 /**
- * Состояние конвейера Pipeline.
+ * Состояние конвейера Pipeline v3.2.
  * Управляет задачами, статусом, выбранной моделью и опциями бэкапа/отчёта.
  */
 data class PipelineState(
@@ -27,14 +27,14 @@ data class PipelineState(
     val pipelineRunId: String = UUID.randomUUID().toString().take(8),
     val maxParallelTasks: Int = 3,
     val logFilterTaskId: String? = null,
-    val selectedModelApiId: String = "gemini-3.5-flash-lite", // Модель по умолчанию
+    val selectedModelApiId: String = "gemini-3.5-flash-lite",
     val pipelineMode: PipelineMode = PipelineMode.ONLINE,
 
     // ── Независимые опции Бэкапа и TXT-отчёта ──────────────────────
-    val isDetailedReportEnabled: Boolean = false, // Галочка: подробный TXT-отчет
+    val isDetailedReportEnabled: Boolean = true, // Включено по умолчанию для гарантированного вывода полного текста
     val isBackupEnabled: Boolean = true,          // Галочка: создавать точку отката
     val currentBackupId: String? = null,          // ID текущего снимка
-    val detailedReportText: String? = null,       // Готовый TXT-отчет
+    val detailedReportText: String? = null,       // Готовый полный TXT-отчет
     val isRollingBack: Boolean = false            // Статус процесса отката
 ) {
     val totalTasks: Int get() = tasks.size
@@ -46,7 +46,6 @@ data class PipelineState(
     val deferredTasks: Int get() = tasks.count { it.status == TaskStatus.DEFERRED }
     val progress: Float get() = if (totalTasks == 0) 0f else completedTasks.toFloat() / totalTasks
 
-    // Стоимость по тарифам Flash-Lite ($0.25 - $0.30 за 1M)
     val estimatedCost: Double get() {
         val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
         return modifyCount * 0.00004 + 0.00002
@@ -71,10 +70,8 @@ data class PipelineState(
 
     val effectiveModelApiId: String get() = selectedModelApiId
 
-    // Автоматическая фиксация уровня Thinking под модель без ручных настроек:
-    // 3.1 Flash-Lite -> MEDIUM, 3.5 Flash-Lite -> LOW
-    val effectiveThinkingLevel: String
-        get() = if (selectedModelApiId.contains("3.1")) "medium" else "low"
+    // Фиксированный режим low для предотвращения задержек генерации
+    val effectiveThinkingLevel: String get() = "low"
 }
 
 enum class OverallStatus {
