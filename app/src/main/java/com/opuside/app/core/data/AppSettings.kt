@@ -8,6 +8,7 @@ import com.opuside.app.core.security.SecureSettingsDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -16,6 +17,14 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 typealias GitHubConfig = SecureSettingsDataStore.GitHubConfig
 
+/**
+ * ⚙️ APP SETTINGS v3.0
+ *
+ * Хранилище общих настроек приложения:
+ * - Модели строго: gemini-3.5-flash-lite (по умолчанию) и gemini-3.1-flash-lite
+ * - Сквозная синхронизация API-ключей с SecureSettingsDataStore
+ * - Сохранение состояния галочек бэкапа и TXT-отчета Pipeline
+ */
 @Singleton
 class AppSettings @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -32,18 +41,15 @@ class AppSettings @Inject constructor(
         val CLAUDE_MODEL = stringPreferencesKey("claude_model")
         val GEMINI_MODEL = stringPreferencesKey("gemini_model")
         val GEMINI_API_KEY = stringPreferencesKey("gemini_api_key")
-        val GEMINI_GENERATION_CONFIG = stringPreferencesKey("gemini_generation_config")
+
+        // ── Опции Pipeline (Бэкап и TXT-отчет) ────────────────────────
+        val PIPELINE_DETAILED_REPORT = booleanPreferencesKey("pipeline_detailed_report")
+        val PIPELINE_BACKUP_ENABLED = booleanPreferencesKey("pipeline_backup_enabled")
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // API KEYS (Delegated to SecureSettingsDataStore)
+    // GITHUB CONFIG & TOKENS (Делегировано в SecureSettingsDataStore)
     // ═══════════════════════════════════════════════════════════════════════════
-
-    val anthropicApiKey: Flow<String> = secureSettings.getAnthropicApiKey()
-
-    suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) {
-        secureSettings.setAnthropicApiKey(key, useBiometric)
-    }
 
     val gitHubToken: Flow<String> = secureSettings.getGitHubToken()
 
@@ -51,19 +57,17 @@ class AppSettings @Inject constructor(
         secureSettings.setGitHubToken(token, useBiometric)
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // GITHUB CONFIG
-    // ═══════════════════════════════════════════════════════════════════════════
-
     val gitHubConfig: Flow<GitHubConfig> = secureSettings.gitHubConfig
 
     suspend fun setGitHubConfig(owner: String, repo: String, branch: String = "main") {
         secureSettings.setGitHubConfig(owner, repo, branch)
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CLAUDE MODEL
-    // ═══════════════════════════════════════════════════════════════════════════
+    val anthropicApiKey: Flow<String> = secureSettings.getAnthropicApiKey()
+
+    suspend fun setAnthropicApiKey(key: String, useBiometric: Boolean = false) {
+        secureSettings.setAnthropicApiKey(key, useBiometric)
+    }
 
     val claudeModel: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
@@ -74,31 +78,60 @@ class AppSettings @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // GEMINI API KEY
+    // GEMINI SETTINGS (Синхронизировано)
     // ═══════════════════════════════════════════════════════════════════════════
 
     val geminiApiKey: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
-        .map { it[Keys.GEMINI_API_KEY] ?: "" }
+        .map { prefs ->
+            val stored = prefs[Keys.GEMINI_API_KEY] ?: ""
+            if (stored.isNotBlank()) stored else secureSettings.getActiveGeminiApiKey().first()
+        }
 
     suspend fun setGeminiApiKey(key: String) {
         dataStore.edit { it[Keys.GEMINI_API_KEY] = key }
+        secureSettings.setGeminiApiKey(key)
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // GEMINI MODEL
-    // ═══════════════════════════════════════════════════════════════════════════
-
+    // Модель по умолчанию строго gemini-3.5-flash-lite с авто-миграцией старых версий
     val geminiModel: Flow<String> = dataStore.data
         .catch { emit(emptyPreferences()) }
-        .map { it[Keys.GEMINI_MODEL] ?: "gemini-flash-latest" }
+        .map { prefs ->
+            val raw = prefs[Keys.GEMINI_MODEL]?.trim()?.lowercase() ?: ""
+            when {
+                raw.contains("3.1") -> "gemini-3.1-flash-lite"
+                else -> "gemini-3.5-flash-lite"
+            }
+        }
 
     suspend fun setGeminiModel(model: String) {
-        dataStore.edit { it[Keys.GEMINI_MODEL] = model }
+        val clean = model.trim().lowercase()
+        val validModel = if (clean.contains("3.1")) "gemini-3.1-flash-lite" else "gemini-3.5-flash-lite"
+        dataStore.edit { it[Keys.GEMINI_MODEL] = validModel }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // UI SETTINGS
+    // ОПЦИИ ПАЙПЛАЙНА (СОХРАНЕНИЕ МЕЖДУ СЕССИЯМИ)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    val pipelineDetailedReport: Flow<Boolean> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.PIPELINE_DETAILED_REPORT] ?: false }
+
+    suspend fun setPipelineDetailedReport(enabled: Boolean) {
+        dataStore.edit { it[Keys.PIPELINE_DETAILED_REPORT] = enabled }
+    }
+
+    val pipelineBackupEnabled: Flow<Boolean> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.PIPELINE_BACKUP_ENABLED] ?: true }
+
+    suspend fun setPipelineBackupEnabled(enabled: Boolean) {
+        dataStore.edit { it[Keys.PIPELINE_BACKUP_ENABLED] = enabled }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // UI НАСТРОЙКИ
     // ═══════════════════════════════════════════════════════════════════════════
 
     val darkTheme: Flow<Boolean?> = dataStore.data
@@ -124,7 +157,7 @@ class AppSettings @Inject constructor(
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // RESET & SECURITY
+    // СБРОС И ОЧИСТКА
     // ═══════════════════════════════════════════════════════════════════════════
 
     suspend fun clearAll() {
