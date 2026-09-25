@@ -346,7 +346,6 @@ private fun PipelineHeaderLight(
                     )
                 }
 
-                // Кнопка бэкапов со счетчиком
                 OutlinedButton(
                     onClick = onOpenBackups,
                     shape = RoundedCornerShape(10.dp),
@@ -422,7 +421,6 @@ private fun PipelineOptionsSection(
             Text("Опции аудита и безопасности", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
             Spacer(Modifier.height(10.dp))
 
-            // Галочка 1: Подробный TXT-отчет
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -446,7 +444,6 @@ private fun PipelineOptionsSection(
 
             Spacer(Modifier.height(4.dp))
 
-            // Галочка 2: Точка отката (Бэкап)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -734,7 +731,7 @@ private fun KeyInputField(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ВВОД ПРОМПТА
+// ВВОД ПРОМПТА (ИСПРАВЛЕНА СТРОКА 775: onValueChange = onPromptChange)
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -774,7 +771,7 @@ private fun PromptSectionLight(
             AnimatedVisibility(visible = expanded) {
                 OutlinedTextField(
                     value = prompt,
-                    onPromptChange = onPromptChange,
+                    onValueChange = onPromptChange, // ИСПРАВЛЕНО: было onPromptChange = onPromptChange
                     readOnly = isRunning,
                     placeholder = {
                         Text(
