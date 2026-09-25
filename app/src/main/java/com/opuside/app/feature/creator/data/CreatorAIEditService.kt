@@ -15,6 +15,18 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 🛠️ CREATOR AI EDIT SERVICE v3.0
+ *
+ * Специализированный сервис пофайловых AI-замен для редактора и пайплайна.
+ *
+ * Особенности:
+ * - Модели строго: 3.5 Flash-Lite (LOW thinking) и 3.1 Flash-Lite (MEDIUM thinking)
+ * - Автоматическая фильтрация частей "thought": true перед парсингом XML
+ * - Вывод до 65 536 токенов без обрезки кода
+ * - Единый каскадный резолвер API-ключей (Pipeline -> Settings -> AppSettings)
+ * - Умный fuzzy/normalized матчинг для безошибочного применения правок
+ */
 @Singleton
 class CreatorAIEditService @Inject constructor(
     private val appSettings: AppSettings,
@@ -27,22 +39,35 @@ class CreatorAIEditService @Inject constructor(
         val apiId: String,
         val badge: String,
         val costPerMInputUsd: Double,
-        val costPerMOutputUsd: Double
+        val costPerMOutputUsd: Double,
+        val forcedThinkingLevel: String
     ) {
-        GEMINI_3_8_FLASH(
-            displayName = "Gemini 3.8 Flash",
-            apiId = "gemini-3.8-flash",
-            badge = "⚡ G3.8 Flash",
-            costPerMInputUsd = 0.75,
-            costPerMOutputUsd = 3.75
+        GEMINI_3_5_FLASH_LITE(
+            displayName = "Gemini 3.5 Flash-Lite",
+            apiId = "gemini-3.5-flash-lite",
+            badge = "⚡ G3.5 Lite",
+            costPerMInputUsd = 0.30,
+            costPerMOutputUsd = 2.50,
+            forcedThinkingLevel = "LOW"
         ),
         GEMINI_3_1_FLASH_LITE(
-            displayName = "Gemini 3.1 Flash-Lite Preview",
-            apiId = "gemini-3.1-flash-lite-preview",
-            badge = "🪶 G3.1 Lite",
+            displayName = "Gemini 3.1 Flash-Lite",
+            apiId = "gemini-3.1-flash-lite",
+            badge = "💨 G3.1 Lite",
             costPerMInputUsd = 0.25,
-            costPerMOutputUsd = 1.50
-        )
+            costPerMOutputUsd = 1.50,
+            forcedThinkingLevel = "MEDIUM"
+        );
+
+        companion object {
+            fun fromApiId(id: String?): AiModel {
+                val clean = id?.trim()?.lowercase() ?: ""
+                return when {
+                    clean.contains("3.1") -> GEMINI_3_1_FLASH_LITE
+                    else -> GEMINI_3_5_FLASH_LITE
+                }
+            }
+        }
     }
 
     companion object {
@@ -160,7 +185,7 @@ RULE 8 — LANGUAGE AWARENESS:
         fileContent: String,
         fileName: String,
         instructions: String,
-        model: AiModel = AiModel.GEMINI_3_8_FLASH,
+        model: AiModel = AiModel.GEMINI_3_5_FLASH_LITE,
         usePipelineKeys: Boolean = false,
         customModelApiId: String? = null,
         thinkingLevelOverride: String? = null
@@ -168,45 +193,57 @@ RULE 8 — LANGUAGE AWARENESS:
         try {
             val lineCount = fileContent.lines().size
             val useLineNumbers = lineCount > LINE_NUMBER_THRESHOLD
-            val effectiveApiId = customModelApiId?.trim()?.ifBlank { null } ?: model.apiId
-            val activeModel = AiModel.entries.find { it.apiId == effectiveApiId } ?: model
-            Log.d(TAG, "📤 Edit: $fileName ($lineCount lines, model=$effectiveApiId)")
+            val activeModel = if (customModelApiId != null) AiModel.fromApiId(customModelApiId) else model
+
+            Log.d(TAG, "📤 AI Edit: $fileName ($lineCount строк, модель=${activeModel.displayName})")
 
             val systemPrompt = buildSystemPrompt(useLineNumbers)
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
+            // ── Каскадное получение API-ключа ─────────────────────────────
             var currentApiKey: String
-            var currentKeyIdx: Int
-            if (usePipelineKeys) {
-                val info = pipelineKeyRotator.currentKey()
-                    ?: return@withContext Result.failure(
-                        Exception("Добавьте Gemini API ключ на экране Pipeline")
-                    )
-                currentApiKey = info.first
-                currentKeyIdx = info.second
+            var currentKeyIdx = -1
+
+            val rotatorKeyInfo = pipelineKeyRotator.currentKey()
+            if (usePipelineKeys && rotatorKeyInfo != null) {
+                currentApiKey = rotatorKeyInfo.first
+                currentKeyIdx = rotatorKeyInfo.second
             } else {
-                currentApiKey = try { secureSettings.getGeminiApiKey().first() } catch (_: Exception) { "" }
-                currentKeyIdx = -1
+                currentApiKey = rotatorKeyInfo?.first
+                    ?: secureSettings.getActiveGeminiApiKey().first().ifBlank { "" }
                 if (currentApiKey.isBlank()) {
-                    return@withContext Result.failure(Exception("Gemini API key не настроен"))
+                    currentApiKey = secureSettings.getGeminiApiKey().first().ifBlank { "" }
                 }
+                if (currentApiKey.isBlank()) {
+                    currentApiKey = appSettings.geminiApiKey.first().ifBlank { "" }
+                }
+            }
+
+            if (currentApiKey.isBlank()) {
+                return@withContext Result.failure(Exception("Gemini API ключ не найден ни в настройках, ни в Pipeline"))
             }
 
             var rawResponse: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
+
             while (true) {
-                rawResponse = callGeminiApi(systemPrompt, userMessage, effectiveApiId, currentApiKey, thinkingLevelOverride)
+                rawResponse = callGeminiApi(systemPrompt, userMessage, activeModel, currentApiKey)
                 if (rawResponse.isSuccess) break
-                if (!usePipelineKeys || attempts >= 2) break
+
                 val errMsg = rawResponse.exceptionOrNull()?.message?.lowercase() ?: ""
-                val isQuota = "429" in errMsg || "rate limit" in errMsg ||
-                              "quota" in errMsg || "exceeded" in errMsg
-                if (!isQuota) break
-                Log.w(TAG, "⚠️ Quota на ключе #$currentKeyIdx, переключаемся...")
-                val next = pipelineKeyRotator.burnAndRotate(currentKeyIdx) ?: break
-                currentApiKey = next.first
-                currentKeyIdx = next.second
-                attempts++
+                val isQuota = "429" in errMsg || "rate limit" in errMsg || "quota" in errMsg || "exceeded" in errMsg
+
+                if (isQuota && attempts < 2) {
+                    Log.w(TAG, "⚠️ Превышена квота (429), пробуем ротацию ключа...")
+                    val next = pipelineKeyRotator.burnAndRotate(currentKeyIdx.coerceAtLeast(0))
+                    if (next != null) {
+                        currentApiKey = next.first
+                        currentKeyIdx = next.second
+                        attempts++
+                        continue
+                    }
+                }
+                break
             }
 
             val (content, inputTokens, outputTokens) = rawResponse.getOrElse {
@@ -214,35 +251,34 @@ RULE 8 — LANGUAGE AWARENESS:
             }
 
             val costUSD = (inputTokens * activeModel.costPerMInputUsd +
-                          outputTokens * activeModel.costPerMOutputUsd) / 1_000_000.0
+                    outputTokens * activeModel.costPerMOutputUsd) / 1_000_000.0
             val costEUR = costUSD * 0.92
 
-            Log.d(TAG, "✅ $effectiveApiId: ${inputTokens}in + ${outputTokens}out = €${String.format("%.5f", costEUR)}")
+            Log.d(TAG, "✅ ${activeModel.displayName}: ${inputTokens} in + ${outputTokens} out = €${String.format(java.util.Locale.US, "%.5f", costEUR)}")
 
             val result = parseEditResponse(content, inputTokens, outputTokens, costEUR, activeModel)
-            if (result.blocks.isEmpty()) Log.w(TAG, "⚠️ No blocks parsed. Summary: ${result.summary}")
+            if (result.blocks.isEmpty()) Log.w(TAG, "⚠️ Блоки не найдены. Сводка: ${result.summary}")
             Result.success(result)
         } catch (e: java.net.SocketTimeoutException) {
-            Result.failure(Exception("Таймаут. Попробуйте ещё раз."))
+            Result.failure(Exception("Таймаут соединения с Gemini API. Попробуйте снова."))
         } catch (e: java.net.UnknownHostException) {
-            Result.failure(Exception("Нет интернета."))
+            Result.failure(Exception("Нет подключения к интернету."))
         } catch (e: Exception) {
             Log.e(TAG, "❌ processEdit failed", e)
             Result.failure(e)
         }
     }
 
-    private suspend fun callGeminiApi(
+    private fun callGeminiApi(
         systemPrompt: String,
         userMessage: String,
-        modelApiId: String,
-        apiKey: String,
-        thinkingLevelOverride: String? = null
+        model: AiModel,
+        apiKey: String
     ): Result<Triple<String, Int, Int>> {
-        val url = "$GEMINI_API_BASE_URL/$modelApiId:generateContent?key=$apiKey"
+        val url = "$GEMINI_API_BASE_URL/${model.apiId}:generateContent"
 
         val requestBody = JSONObject().apply {
-            put("system_instruction", JSONObject().apply {
+            put("systemInstruction", JSONObject().apply {
                 put("parts", JSONArray().apply {
                     put(JSONObject().apply { put("text", systemPrompt) })
                 })
@@ -257,32 +293,34 @@ RULE 8 — LANGUAGE AWARENESS:
             })
             put("generationConfig", JSONObject().apply {
                 put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                put("temperature", 0.0)
+                put("temperature", 0.0) // 0.0 для максимальной детерминированности и точности замены
                 put("topP", 0.95)
-                if (modelApiId.startsWith("gemini-3") || modelApiId.startsWith("gemini-2.5")) {
-                    val level = thinkingLevelOverride?.trim()?.lowercase()?.takeIf {
-                        it in listOf("low", "medium", "high")
-                    } ?: "low"
-                    put("thinkingConfig", JSONObject().apply {
-                        put("thinkingLevel", level)
-                    })
-                }
+                put("thinkingConfig", JSONObject().apply {
+                    put("thinkingLevel", model.forcedThinkingLevel) // Штатно LOW (3.5) или MEDIUM (3.1)
+                })
             })
         }
 
         return executeRequest(
             url = url,
             body = requestBody,
-            headers = mapOf("Content-Type" to "application/json"),
+            apiKey = apiKey,
             parseResponse = { json ->
                 val candidates = json.getJSONArray("candidates")
                 val content = candidates.getJSONObject(0)
                     .getJSONObject("content")
                     .getJSONArray("parts")
                     .let { parts ->
-                        (0 until parts.length()).joinToString("") { i ->
-                            parts.getJSONObject(i).optString("text", "")
+                        val sb = StringBuilder()
+                        for (i in 0 until parts.length()) {
+                            val part = parts.getJSONObject(i)
+                            // КРИТИЧНО: фильтруем размышления (thought: true), чтобы не ломать XML замен
+                            if (part.optBoolean("thought", false)) {
+                                continue
+                            }
+                            sb.append(part.optString("text", ""))
                         }
+                        sb.toString()
                     }
                 val usage = json.optJSONObject("usageMetadata")
                 val inputTokens = usage?.optInt("promptTokenCount", 0) ?: 0
@@ -295,13 +333,15 @@ RULE 8 — LANGUAGE AWARENESS:
     private fun executeRequest(
         url: String,
         body: JSONObject,
-        headers: Map<String, String>,
+        apiKey: String,
         parseResponse: (JSONObject) -> Triple<String, Int, Int>
     ): Result<Triple<String, Int, Int>> {
         return try {
             val connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
-                headers.forEach { (k, v) -> setRequestProperty(k, v) }
+                setRequestProperty("Content-Type", "application/json; charset=utf-8")
+                setRequestProperty("x-goog-api-key", apiKey)
+                setRequestProperty("Accept", "application/json")
                 connectTimeout = 30_000
                 readTimeout = 120_000
                 doOutput = true
@@ -311,10 +351,10 @@ RULE 8 — LANGUAGE AWARENESS:
 
             val responseCode = connection.responseCode
             val responseBody = if (responseCode in 200..299) {
-                BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
+                BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { it.readText() }
             } else {
                 val errorBody = connection.errorStream?.let {
-                    BufferedReader(InputStreamReader(it)).use { r -> r.readText() }
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
                 } ?: "Unknown error"
                 Log.e(TAG, "❌ API error $responseCode: $errorBody")
                 return Result.failure(Exception(formatApiError(responseCode, errorBody)))
@@ -360,14 +400,14 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
     }
 
     fun applyEdits(content: String, blocks: List<EditBlock>): Result<ApplyResult> {
-        var result = content
+        var result = content.replace("\r\n", "\n")
         val appliedBlocks = mutableListOf<EditBlock>()
         val failedBlocks = mutableListOf<Pair<Int, EditBlock>>()
 
         blocks.forEachIndexed { index, block ->
             val blockNum = index + 1
-            val cleanSearch = stripLineNumbers(block.search)
-            val cleanReplace = stripLineNumbers(block.replace)
+            val cleanSearch = stripLineNumbers(block.search).replace("\r\n", "\n")
+            val cleanReplace = stripLineNumbers(block.replace).replace("\r\n", "\n")
 
             if (cleanSearch.isBlank()) {
                 result = result.trimEnd() + "\n\n" + cleanReplace + "\n"
@@ -525,13 +565,18 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
         costEUR: Double,
         model: AiModel
     ): EditResult {
+        // Очищаем от случайных markdown-блоков
+        val cleanResponse = response.trim()
+            .removePrefix("```xml").removePrefix("```")
+            .removeSuffix("```").trim()
+
         val blocks = mutableListOf<EditBlock>()
         val blockRegex = Regex(
             """<block>\s*<search>(.*?)</search>\s*<replace>(.*?)</replace>\s*</block>""",
             setOf(RegexOption.DOT_MATCHES_ALL)
         )
 
-        blockRegex.findAll(response).forEach { match ->
+        blockRegex.findAll(cleanResponse).forEach { match ->
             blocks.add(
                 EditBlock(
                     search = trimXmlNewlines(match.groupValues[1]),
@@ -541,7 +586,7 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
         }
 
         val summary = Regex("""<summary>\s*(.*?)\s*</summary>""", RegexOption.DOT_MATCHES_ALL)
-            .find(response)?.groupValues?.get(1)?.trim()
+            .find(cleanResponse)?.groupValues?.get(1)?.trim()
             ?: if (blocks.isEmpty()) "AI не вернул блоков замен" else "${blocks.size} блок(ов) замен"
 
         return EditResult(blocks, summary, inputTokens, outputTokens, costEUR, model)
@@ -562,13 +607,13 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
         } catch (_: Exception) { body.take(200) }
 
         return when (code) {
-            400 -> "Ошибка запроса: $msg"
-            401 -> "Неверный API ключ. Проверьте настройки."
-            403 -> "Доступ запрещён: $msg"
-            429 -> "Превышен лимит запросов. Подождите минуту."
-            500, 502, 503 -> "Сервер временно недоступен. Попробуйте позже."
-            529 -> "API перегружен. Попробуйте через 30 секунд."
-            else -> "Ошибка $code: $msg"
+            400 -> "Ошибка запроса (400): $msg"
+            401 -> "Неверный API ключ Gemini"
+            403 -> "Доступ запрещён (403): $msg"
+            429 -> "Превышен лимит запросов (429). Подождите несколько секунд."
+            500, 502, 503 -> "Сервер Gemini временно перегружен"
+            529 -> "Сервер перегружен (529)"
+            else -> "Ошибка API $code: $msg"
         }
     }
 }
