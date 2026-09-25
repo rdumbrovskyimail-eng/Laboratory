@@ -1,12 +1,7 @@
 package com.opuside.app.feature.pipeline.presentation
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,67 +11,64 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.opuside.app.feature.pipeline.data.*
-import com.opuside.app.feature.pipeline.data.LocalRepoManager
-import com.opuside.app.feature.pipeline.data.PipelineMode
-import com.opuside.app.feature.pipeline.data.PipelineKeyRotator
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
 private val LOG_TIME_FORMATTER = SimpleDateFormat("HH:mm:ss", Locale.US)
-
 private fun formatLogTime(timestamp: Long): String =
     synchronized(LOG_TIME_FORMATTER) { LOG_TIME_FORMATTER.format(Date(timestamp)) }
 
-private object PipelineColors {
-    val backgroundDark = Color(0xFF0A0A0F)
-    val surfaceDark = Color(0xFF15151D)
-    val surfaceElevated = Color(0xFF1E1E28)
-    val borderSubtle = Color(0xFF2A2A36)
-    val textPrimary = Color(0xFFE4E4EA)
-    val textSecondary = Color(0xFF9090A0)
-    val textTertiary = Color(0xFF606070)
+// ═══════════════════════════════════════════════════════════════════════════
+// LIGHT PROFESSIONAL COLOR PALETTE (AMOLED High-Contrast Crisp Light)
+// ═══════════════════════════════════════════════════════════════════════════
 
-    val accentBlue = Color(0xFF4F8FFF)
-    val accentGreen = Color(0xFF22C55E)
-    val accentYellow = Color(0xFFEAB308)
-    val accentRed = Color(0xFFEF4444)
-    val accentPurple = Color(0xFFA855F7)
+private object PipelineTheme {
+    val background = Color(0xFFF8F9FA)      // Мягкий светлый холст
+    val surface = Color(0xFFFFFFFF)         // Чистые белые карточки
+    val surfaceSecondary = Color(0xFFF1F3F5)// Фон логов и внутренних панелей
+    val border = Color(0xFFE2E8F0)          // Тонкая аккуратная граница
+    val borderStrong = Color(0xFFCBD5E1)
 
-    val geminiGradient = Brush.horizontalGradient(
-        listOf(Color(0xFF4F46E5), Color(0xFF7C3AED))
-    )
-    val repoGradient = Brush.horizontalGradient(
-        listOf(Color(0xFF059669), Color(0xFF0891B2))
-    )
+    val textPrimary = Color(0xFF0F172A)     // Глубокий slate для идеальной резкости
+    val textSecondary = Color(0xFF475569)
+    val textTertiary = Color(0xFF94A3B8)
+
+    val blue = Color(0xFF2563EB)            // Акцентный синий Google/Apple
+    val blueSoft = Color(0xFFEFF6FF)
+    val green = Color(0xFF059669)           // Изумрудный для успеха и бэкапов
+    val greenSoft = Color(0xFFECFDF5)
+    val amber = Color(0xFFD97706)           // Предупреждения
+    val amberSoft = Color(0xFFFFFBEB)
+    val red = Color(0xFFDC2626)             // Ошибки и остановка
+    val redSoft = Color(0xFFFEF2F2)
+    val purple = Color(0xFF7C3AED)          // План и сводки
+    val purpleSoft = Color(0xFFF5F3FF)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PipelineScreen(
     modifier: Modifier = Modifier,
@@ -98,8 +90,12 @@ fun PipelineScreen(
     val pipelineActiveKey by viewModel.pipelineActiveKey.collectAsStateWithLifecycle()
     val localRepoStatus by viewModel.localRepoStatus.collectAsStateWithLifecycle()
     val localRepoProgress by viewModel.localRepoProgress.collectAsStateWithLifecycle()
+    val backups by viewModel.backups.collectAsStateWithLifecycle()
 
     var promptExpanded by remember { mutableStateOf(true) }
+    var showBackupsSheet by remember { mutableStateOf(false) }
+    var showKeysExpanded by remember { mutableStateOf(false) }
+    var backupToRollback by remember { mutableStateOf<PipelineBackupManager.BackupEntry?>(null) }
 
     LaunchedEffect(state.phase) {
         if (state.isRunning && promptExpanded) {
@@ -118,7 +114,7 @@ fun PipelineScreen(
     Scaffold(
         modifier = modifier,
         snackbarHost = { SnackbarHost(snackbarHostState) },
-        containerColor = PipelineColors.backgroundDark
+        containerColor = PipelineTheme.background
     ) { padding ->
         Column(
             modifier = Modifier
@@ -126,9 +122,54 @@ fun PipelineScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
         ) {
-            PipelineHeader(repoStats = repoStats, runId = state.pipelineRunId)
+            // ── Шапка репозитория и кнопка Бэкапов ────────────────────────
+            PipelineHeaderLight(
+                repoStats = repoStats,
+                runId = state.pipelineRunId,
+                backupsCount = backups.size,
+                onOpenBackups = {
+                    viewModel.loadBackups()
+                    showBackupsSheet = true
+                }
+            )
 
-            PipelineKeysSection(
+            // ── Панель независимых опций (Детальный отчёт + Бэкап) ────────
+            PipelineOptionsSection(
+                detailedReportEnabled = state.isDetailedReportEnabled,
+                backupEnabled = state.isBackupEnabled,
+                enabled = !state.isRunning,
+                onToggleDetailedReport = viewModel::toggleDetailedReport,
+                onToggleBackup = viewModel::toggleBackup
+            )
+
+            // ── Селектор моделей (строго 3.5 Lite и 3.1 Lite) ─────────────
+            ModelSelectorLight(
+                selected = state.selectedModelApiId,
+                interactive = !state.isRunning,
+                onSelect = viewModel::setSelectedModel
+            )
+
+            // ── Режим работы (Online / Offline) ───────────────────────────
+            ModeSelectorLight(
+                currentMode = state.pipelineMode,
+                interactive = !state.isRunning,
+                onModeChange = viewModel::setPipelineMode
+            )
+
+            if (state.pipelineMode == PipelineMode.OFFLINE) {
+                OfflineRepoStatusCard(
+                    status = localRepoStatus,
+                    progress = localRepoProgress,
+                    interactive = !state.isRunning,
+                    onSync = viewModel::syncLocalRepo,
+                    onDelete = viewModel::deleteLocalClone
+                )
+            }
+
+            // ── Ключи API (сворачиваемый блок) ────────────────────────────
+            CollapsibleKeysSection(
+                expanded = showKeysExpanded,
+                onToggle = { showKeysExpanded = !showKeysExpanded },
                 keyA = pipelineKeyA,
                 keyB = pipelineKeyB,
                 activeIndex = pipelineActiveKey,
@@ -138,293 +179,631 @@ fun PipelineScreen(
                 onActiveChange = viewModel::setPipelineActiveKey
             )
 
-            PipelineModeSelector(
-                currentMode = state.pipelineMode,
-                interactive = !state.isRunning,
-                onModeChange = viewModel::setPipelineMode
-            )
-
-            if (state.pipelineMode == PipelineMode.OFFLINE) {
-                LocalCloneStatusSection(
-                    status = localRepoStatus,
-                    progress = localRepoProgress,
-                    interactive = !state.isRunning,
-                    onSync = viewModel::syncLocalRepo,
-                    onDelete = viewModel::deleteLocalClone
-                )
-            }
-
-            DefaultModelSelector(
-                selected = state.selectedModelApiId,
-                interactive = !state.isRunning,
-                onSelect = viewModel::setSelectedModel
-            )
-
-            LiteThinkingSelector(
-                selected = state.liteThinkingLevel,
-                supportsThinking = state.selectedModelApiId.startsWith("gemini-3"),
-                interactive = !state.isRunning,
-                onSelect = viewModel::setLiteThinkingLevel
-            )
-
-            PromptSection(
+            // ── Поле ввода промпта ─────────────────────────────────────────
+            PromptSectionLight(
                 prompt = userPrompt,
                 onPromptChange = viewModel::onPromptChange,
                 expanded = promptExpanded,
                 onToggleExpanded = { promptExpanded = !promptExpanded },
-                isRunning = state.isRunning,
-                phase = state.phase
+                isRunning = state.isRunning
             )
 
-            StatusBar(
+            // ── Главная панель управления (Старт / Стоп / Сброс) ──────────
+            ActionBarLight(
                 state = state,
                 totalCost = totalCost,
                 totalTokens = totalTokens,
-                onPlan = { viewModel.plan() },
-                onStart = { viewModel.start() },
-                onStop = { viewModel.stop() },
-                onReset = { viewModel.reset() },
+                onPlan = viewModel::plan,
+                onStart = viewModel::start,
+                onStop = viewModel::stop,
+                onReset = viewModel::reset,
                 onExport = { viewModel.exportRepoToTxt(context) }
             )
 
+            // ── Список и прогресс задач ────────────────────────────────────
             if (state.tasks.isNotEmpty()) {
                 Spacer(Modifier.height(8.dp))
-                ProgressSection(
+                TaskProgressSectionLight(
                     state = state,
-                    onRemoveTask = { taskId -> viewModel.removeTask(taskId) },
+                    onRemoveTask = viewModel::removeTask,
                     onTaskChipClick = { taskId ->
-                        viewModel.setLogFilter(
-                            if (state.logFilterTaskId == taskId) null else taskId
-                        )
+                        viewModel.setLogFilter(if (state.logFilterTaskId == taskId) null else taskId)
                     },
                     onChangeMaxParallel = viewModel::setMaxParallel
                 )
             }
 
+            // ── Живые логи (Gemini и Repo) ─────────────────────────────────
             if (rawGeminiSize.isNotEmpty() || rawRepoSize.isNotEmpty()) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 if (state.logFilterTaskId != null) {
-                    LogFilterBanner(
+                    FilterBadgeLight(
                         taskId = state.logFilterTaskId!!,
                         tasks = state.tasks,
                         onClear = { viewModel.setLogFilter(null) }
                     )
                 }
-                LiveLogsSection(geminiLog = geminiLog, repoLog = repoLog)
+                LiveLogsSectionLight(geminiLog = geminiLog, repoLog = repoLog)
             }
 
+            // ── Итоговый аналитический отчёт ──────────────────────────────
             state.finalReport?.let { report ->
                 Spacer(Modifier.height(12.dp))
-                FinalReportSection(
+                FinalReportCardLight(
                     report = report,
-                    status = state.overallStatus
+                    onShareDetailed = {
+                        viewModel.shareFullReport(context)
+                    }
                 )
             }
 
+            // ── Ошибка Fatal ──────────────────────────────────────────────
             state.fatalError?.takeIf { state.phase == PipelinePhase.FATAL }?.let { err ->
                 Spacer(Modifier.height(12.dp))
-                FatalErrorCard(err)
+                FatalCardLight(err)
             }
 
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(32.dp))
         }
+    }
+
+    // ── Шторка бэкапов (Backups Bottom Sheet) ──────────────────────────────
+    if (showBackupsSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showBackupsSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false),
+            containerColor = PipelineTheme.surface,
+            dragHandle = { BottomSheetDefaults.DragHandle(color = PipelineTheme.borderStrong) }
+        ) {
+            BackupsSheetContent(
+                backups = backups,
+                isRollingBack = state.isRollingBack,
+                onRollbackClick = { backup -> backupToRollback = backup },
+                onShareReport = { backup -> viewModel.shareFullReport(context, backup.id) },
+                onDelete = { backup -> viewModel.deleteBackup(backup.id) },
+                onClose = { showBackupsSheet = false }
+            )
+        }
+    }
+
+    // ── Диалог подтверждения отката ────────────────────────────────────────
+    backupToRollback?.let { backup ->
+        AlertDialog(
+            onDismissRequest = { backupToRollback = null },
+            icon = { Icon(Icons.Default.History, null, tint = PipelineTheme.amber, modifier = Modifier.size(32.dp)) },
+            title = { Text("Откатить проект?", fontWeight = FontWeight.Bold) },
+            text = {
+                Text(
+                    "Все затронутые файлы (${backup.affectedFilesCount} шт.) будут полностью возвращены к исходному состоянию на момент ${backup.formattedDate}.\n\n" +
+                            "Режим: ${backup.mode.displayName}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = PipelineTheme.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.rollbackBackup(backup.id)
+                        backupToRollback = null
+                        showBackupsSheet = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PipelineTheme.amber)
+                ) {
+                    Text("Да, откатить", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { backupToRollback = null }) { Text("Отмена") }
+            },
+            containerColor = PipelineTheme.surface
+        )
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ШАПКА РЕПОЗИТОРИЯ
+// ═══════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun PipelineHeader(repoStats: RepoStats?, runId: String) {
-    Box(
+private fun PipelineHeaderLight(
+    repoStats: RepoStats?,
+    runId: String,
+    backupsCount: Int,
+    onOpenBackups: () -> Unit
+) {
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .background(
-                brush = Brush.horizontalGradient(
-                    listOf(Color(0xFF1A1A28), Color(0xFF15151D))
-                )
-            )
-            .border(
-                width = 0.5.dp,
-                color = PipelineColors.borderSubtle,
-                shape = RoundedCornerShape(0.dp)
-            )
-            .padding(horizontal = 16.dp, vertical = 14.dp)
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(brush = PipelineColors.geminiGradient),
-                contentAlignment = Alignment.Center
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "G",
-                    color = Color.White,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 24.sp
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Pipeline",
-                    color = PipelineColors.textPrimary,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 18.sp
-                )
-                if (repoStats != null) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = PipelineTheme.blueSoft,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text("G", color = PipelineTheme.blue, fontWeight = FontWeight.Black, fontSize = 22.sp)
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Pipeline", color = PipelineTheme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 17.sp)
                     Text(
-                        text = "${repoStats.owner}/${repoStats.repo} · ${repoStats.branch}",
-                        color = PipelineColors.textSecondary,
+                        text = if (repoStats != null) "${repoStats.owner}/${repoStats.repo} · ${repoStats.branch}" else "Подключение к GitHub...",
+                        color = PipelineTheme.textSecondary,
                         fontSize = 12.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                } else {
-                    Text(
-                        text = "Загрузка...",
-                        color = PipelineColors.textTertiary,
-                        fontSize = 12.sp
-                    )
+                }
+
+                // Кнопка бэкапов со счетчиком
+                OutlinedButton(
+                    onClick = onOpenBackups,
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
+                    border = BorderStroke(1.dp, PipelineTheme.borderStrong)
+                ) {
+                    Icon(Icons.Default.Shield, null, tint = PipelineTheme.green, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Бэкапы", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = PipelineTheme.textPrimary)
+                    if (backupsCount > 0) {
+                        Spacer(Modifier.width(4.dp))
+                        Surface(
+                            shape = CircleShape,
+                            color = PipelineTheme.greenSoft,
+                            modifier = Modifier.size(18.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text("$backupsCount", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.green)
+                            }
+                        }
+                    }
                 }
             }
 
-            Text(
-                text = "#$runId",
-                color = PipelineColors.textTertiary,
-                fontSize = 11.sp,
-                fontFamily = FontFamily.Monospace
-            )
-        }
-    }
-
-    repoStats?.let { stats ->
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(PipelineColors.surfaceDark)
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            StatMicro("файлов", stats.totalFiles.toString())
-            StatMicro("размер", stats.totalSizeFormatted)
-            stats.topExtensions(3).forEach { (ext, count) ->
-                StatMicro(".$ext", count.toString())
+            if (repoStats != null) {
+                Spacer(Modifier.height(10.dp))
+                HorizontalDivider(color = PipelineTheme.border, thickness = 0.5.dp)
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    StatBadge("Файлов", "${repoStats.totalFiles}")
+                    StatBadge("Размер", repoStats.totalSizeFormatted)
+                    repoStats.topExtensions(3).forEach { (ext, cnt) ->
+                        StatBadge(".$ext", "$cnt")
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-private fun StatMicro(label: String, value: String) {
+private fun StatBadge(label: String, value: String) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(
-            text = value,
-            color = PipelineColors.textPrimary,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            fontFamily = FontFamily.Monospace
-        )
-        Text(
-            text = label,
-            color = PipelineColors.textTertiary,
-            fontSize = 10.sp
-        )
+        Text(value, color = PipelineTheme.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        Text(label, color = PipelineTheme.textTertiary, fontSize = 10.sp)
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// НЕЗАВИСИМЫЕ ОПЦИИ: БЭКАП И ДЕТАЛЬНЫЙ TXT-ОТЧЕТ
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun PipelineOptionsSection(
+    detailedReportEnabled: Boolean,
+    backupEnabled: Boolean,
+    enabled: Boolean,
+    onToggleDetailedReport: () -> Unit,
+    onToggleBackup: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text("Опции аудита и безопасности", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+            Spacer(Modifier.height(10.dp))
+
+            // Галочка 1: Подробный TXT-отчет
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = enabled, onClick = onToggleDetailedReport)
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = detailedReportEnabled,
+                    onCheckedChange = { onToggleDetailedReport() },
+                    enabled = enabled,
+                    colors = CheckboxDefaults.colors(checkedColor = PipelineTheme.purple)
+                )
+                Spacer(Modifier.width(6.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Подробный TXT отчёт", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = PipelineTheme.textPrimary)
+                    Text("Полный промпт + оригинальные файлы + итог изменений", fontSize = 10.sp, color = PipelineTheme.textSecondary)
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
+
+            // Галочка 2: Точка отката (Бэкап)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(enabled = enabled, onClick = onToggleBackup)
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = backupEnabled,
+                    onCheckedChange = { onToggleBackup() },
+                    enabled = enabled,
+                    colors = CheckboxDefaults.colors(checkedColor = PipelineTheme.green)
+                )
+                Spacer(Modifier.width(6.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Создавать точку отката (Бэкап)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = PipelineTheme.textPrimary)
+                    Text("Моментальный снимок оригиналов для отката в 1 клик", fontSize = 10.sp, color = PipelineTheme.textSecondary)
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ВЫБОР МОДЕЛИ (СТРОГО 3.5 И 3.1 FLASH-LITE)
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ModelSelectorLight(
+    selected: String,
+    interactive: Boolean,
+    onSelect: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Text("Модель Gemini", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ModelPill(
+                    title = "⚡ 3.5 Flash-Lite",
+                    subtitle = "LOW thinking · $0.30/M",
+                    isSelected = selected.contains("3.5"),
+                    enabled = interactive,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelect("gemini-3.5-flash-lite") }
+                )
+                ModelPill(
+                    title = "💨 3.1 Flash-Lite",
+                    subtitle = "MEDIUM thinking · $0.25/M",
+                    isSelected = selected.contains("3.1"),
+                    enabled = interactive,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onSelect("gemini-3.1-flash-lite") }
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun PromptSection(
-    prompt: String,
-    onPromptChange: (String) -> Unit,
-    expanded: Boolean,
-    onToggleExpanded: () -> Unit,
-    isRunning: Boolean,
-    phase: PipelinePhase
+private fun ModelPill(
+    title: String,
+    subtitle: String,
+    isSelected: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
 ) {
-    Column(
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(10.dp),
+        color = if (isSelected) PipelineTheme.blueSoft else PipelineTheme.surfaceSecondary,
+        border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, if (isSelected) PipelineTheme.blue else PipelineTheme.border),
+        modifier = modifier
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Text(title, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isSelected) PipelineTheme.blue else PipelineTheme.textPrimary)
+            Text(subtitle, fontSize = 9.sp, color = if (isSelected) PipelineTheme.blue.copy(alpha = 0.8f) else PipelineTheme.textSecondary)
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// РЕЖИМ РАБОТЫ (ONLINE / OFFLINE)
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ModeSelectorLight(
+    currentMode: PipelineMode,
+    interactive: Boolean,
+    onModeChange: (PipelineMode) -> Unit
+) {
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 8.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(PipelineColors.surfaceElevated)
-            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onToggleExpanded)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                text = "📝 Промпт",
-                color = PipelineColors.textPrimary,
-                fontWeight = FontWeight.Medium,
-                fontSize = 14.sp,
-                modifier = Modifier.weight(1f)
-            )
-            if (prompt.isNotBlank()) {
-                Text(
-                    text = "${prompt.length} ch",
-                    color = PipelineColors.textTertiary,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-                Spacer(Modifier.width(8.dp))
+            PipelineMode.entries.forEach { mode ->
+                val isSelected = currentMode == mode
+                Surface(
+                    onClick = { onModeChange(mode) },
+                    enabled = interactive,
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (isSelected) PipelineTheme.blue else PipelineTheme.surfaceSecondary,
+                    modifier = Modifier.weight(1f).height(38.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            "${mode.emoji} ${mode.displayName}",
+                            color = if (isSelected) Color.White else PipelineTheme.textPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
             }
-            Icon(
-                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                contentDescription = null,
-                tint = PipelineColors.textSecondary
-            )
-        }
-
-        AnimatedVisibility(
-            visible = expanded,
-            enter = expandVertically() + fadeIn(),
-            exit = shrinkVertically() + fadeOut()
-        ) {
-            OutlinedTextField(
-                value = prompt,
-                onValueChange = onPromptChange,
-                readOnly = isRunning,
-                placeholder = {
-                    Text(
-                        "Вставь большой промпт с инструкциями для нескольких файлов. " +
-                                "Планировщик разобьёт его на задачи.",
-                        color = PipelineColors.textTertiary,
-                        fontSize = 13.sp
-                    )
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 120.dp, max = 320.dp)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = PipelineColors.textPrimary,
-                    unfocusedTextColor = PipelineColors.textPrimary,
-                    focusedContainerColor = PipelineColors.surfaceDark,
-                    unfocusedContainerColor = PipelineColors.surfaceDark,
-                    focusedBorderColor = PipelineColors.accentBlue,
-                    unfocusedBorderColor = PipelineColors.borderSubtle,
-                    cursorColor = PipelineColors.accentBlue
-                ),
-                textStyle = androidx.compose.ui.text.TextStyle(
-                    fontSize = 13.sp,
-                    fontFamily = FontFamily.Monospace
-                ),
-                shape = RoundedCornerShape(8.dp)
-            )
         }
     }
 }
 
 @Composable
-private fun StatusBar(
+private fun OfflineRepoStatusCard(
+    status: LocalRepoManager.RepoStatus,
+    progress: String?,
+    interactive: Boolean,
+    onSync: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surfaceSecondary)
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("📦 Локальный клон:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (status.state == LocalRepoManager.CloneState.CLONED) "Готов (${status.sizeBytes / 1024 / 1024} MB)"
+                    else "Не создан",
+                    fontSize = 11.sp, color = PipelineTheme.textSecondary
+                )
+                if (progress != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(progress, fontSize = 10.sp, color = PipelineTheme.blue, fontFamily = FontFamily.Monospace)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onSync,
+                    enabled = interactive,
+                    modifier = Modifier.weight(1f).height(34.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp)
+                ) {
+                    Text("🔄 Синхронизировать", fontSize = 10.sp)
+                }
+                if (status.state == LocalRepoManager.CloneState.CLONED) {
+                    OutlinedButton(
+                        onClick = onDelete,
+                        enabled = interactive,
+                        modifier = Modifier.weight(1f).height(34.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = PipelineTheme.red)
+                    ) {
+                        Text("🗑 Удалить клон", fontSize = 10.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// СВОРАЧИВАЕМЫЙ БЛОК КЛЮЧЕЙ
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun CollapsibleKeysSection(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    keyA: String,
+    keyB: String,
+    activeIndex: Int,
+    enabled: Boolean,
+    onKeyAChange: (String) -> Unit,
+    onKeyBChange: (String) -> Unit,
+    onActiveChange: (Int) -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Key, null, tint = PipelineTheme.blue, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Ключи Pipeline (Резервные)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+                }
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = PipelineTheme.textSecondary)
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(modifier = Modifier.padding(top = 10.dp)) {
+                    KeyInputField("Ключ A", keyA, activeIndex == 0, enabled, onKeyAChange) { onActiveChange(0) }
+                    Spacer(Modifier.height(6.dp))
+                    KeyInputField("Ключ B", keyB, activeIndex == 1, enabled, onKeyBChange) { onActiveChange(1) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun KeyInputField(
+    label: String,
+    value: String,
+    isActive: Boolean,
+    enabled: Boolean,
+    onValueChange: (String) -> Unit,
+    onSelectActive: () -> Unit
+) {
+    var showKey by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (isActive) PipelineTheme.blueSoft else PipelineTheme.surfaceSecondary)
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        RadioButton(selected = isActive, onClick = if (enabled) onSelectActive else null, enabled = enabled)
+        Text(label, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = PipelineTheme.textPrimary, modifier = Modifier.width(50.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            enabled = enabled,
+            singleLine = true,
+            visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
+            modifier = Modifier.weight(1f).height(46.dp),
+            textStyle = LocalTextStyle.current.copy(fontSize = 11.sp, fontFamily = FontFamily.Monospace),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = PipelineTheme.surface,
+                unfocusedContainerColor = PipelineTheme.surface
+            )
+        )
+        IconButton(onClick = { showKey = !showKey }, modifier = Modifier.size(32.dp)) {
+            Icon(if (showKey) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = PipelineTheme.textTertiary, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ВВОД ПРОМПТА
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun PromptSectionLight(
+    prompt: String,
+    onPromptChange: (String) -> Unit,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit,
+    isRunning: Boolean
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleExpanded),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("📝 Промпт задачи", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (prompt.isNotBlank()) {
+                        Text("${prompt.length} симв.", fontSize = 11.sp, color = PipelineTheme.textSecondary, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.width(6.dp))
+                    }
+                    Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = PipelineTheme.textSecondary)
+                }
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = onPromptChange,
+                    readOnly = isRunning,
+                    placeholder = {
+                        Text(
+                            "Вставьте инструкции для изменения нескольких файлов. Планировщик автоматически распределит задачи...",
+                            color = PipelineTheme.textTertiary,
+                            fontSize = 12.sp
+                        )
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 120.dp, max = 280.dp)
+                        .padding(top = 10.dp),
+                    textStyle = LocalTextStyle.current.copy(fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor = PipelineTheme.surfaceSecondary,
+                        unfocusedContainerColor = PipelineTheme.surfaceSecondary
+                    ),
+                    shape = RoundedCornerShape(10.dp)
+                )
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ПАНЕЛЬ ДЕЙСТВИЙ (СТАРТ / СТОП / СБРОС)
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ActionBarLight(
     state: PipelineState,
     totalCost: Double,
     totalTokens: Int,
@@ -434,1027 +813,489 @@ private fun StatusBar(
     onReset: () -> Unit,
     onExport: () -> Unit
 ) {
-    val statusColor by animateColorAsState(
-        targetValue = when (state.overallStatus) {
-            OverallStatus.RUNNING -> PipelineColors.accentBlue
-            OverallStatus.SUCCESS_ALL -> PipelineColors.accentGreen
-            OverallStatus.SUCCESS_PARTIAL -> PipelineColors.accentYellow
-            OverallStatus.FAILED_ALL, OverallStatus.FATAL -> PipelineColors.accentRed
-            OverallStatus.CANCELLED -> PipelineColors.textSecondary
-        },
-        label = "statusColor"
-    )
-
-    Column(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val (actionLabel, actionEnabled, actionHandler) = when (state.phase) {
-                PipelinePhase.IDLE -> Triple("📋 Спланировать", true, onPlan)
-                PipelinePhase.PLANNING -> Triple("⏳ Планируется...", false, {})
-                PipelinePhase.REVIEWING -> {
-                    val costStr = if (state.estimatedCost >= 0.0001) {
-                        " · ~€${String.format(Locale.US, "%.4f", state.estimatedCost)}"
-                    } else ""
-                    Triple("▶️ Старт (${state.tasks.size}${costStr})", true, onStart)
-                }
-                PipelinePhase.EXECUTING -> Triple(
-                    "⚡ Выполняется ${state.completedTasks}/${state.totalTasks}" +
-                            if (state.runningTaskIds.size > 1) " (×${state.runningTaskIds.size})" else "",
-                    false, {}
-                )
-                PipelinePhase.DEFERRED_PASS -> Triple(
-                    "🔄 Retry-проход ${state.completedTasks}/${state.totalTasks}", false, {}
-                )
-                PipelinePhase.FINALIZING -> Triple("📝 Финальный отчёт...", false, {})
-                PipelinePhase.DONE -> Triple("✅ Готово · Сброс?", true, onReset)
-                PipelinePhase.CANCELLED -> Triple("⚪ Остановлено · Сброс?", true, onReset)
-                PipelinePhase.FATAL -> Triple("🔴 FATAL · Сброс?", true, onReset)
-            }
-
-            Button(
-                onClick = actionHandler,
-                enabled = actionEnabled,
-                modifier = Modifier.weight(1f).height(48.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = statusColor,
-                    disabledContainerColor = statusColor.copy(alpha = 0.4f)
-                ),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text(
-                    text = actionLabel,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp
-                )
-            }
-
-            if (state.canStop) {
-                Spacer(Modifier.width(8.dp))
-                IconButton(
-                    onClick = onStop,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(PipelineColors.accentRed)
-                ) {
-                    Icon(
-                        Icons.Default.Stop,
-                        contentDescription = "Stop",
-                        tint = Color.White
-                    )
-                }
-            }
-            if (state.phase == PipelinePhase.DONE) {
-                Spacer(Modifier.width(8.dp))
-                IconButton(
-                    onClick = onExport,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(PipelineColors.surfaceElevated)
-                        .border(1.dp, PipelineColors.borderSubtle, RoundedCornerShape(12.dp))
-                ) {
-                    Text("📤", fontSize = 20.sp)
-                }
-            }
-        }
-
-        if (totalCost > 0 || totalTokens > 0) {
-            Spacer(Modifier.height(6.dp))
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "💰 €${String.format(Locale.US, "%.4f", totalCost)}",
-                    color = PipelineColors.textSecondary,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-                Text(
-                    text = "🧮 $totalTokens токенов",
-                    color = PipelineColors.textSecondary,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-                if (state.tasks.isNotEmpty()) {
-                    Text(
-                        text = "✅ ${state.successfulTasks}  ❌ ${state.failedTasks}",
-                        color = PipelineColors.textSecondary,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace
+                val (buttonText, isEnabled, action) = when (state.phase) {
+                    PipelinePhase.IDLE -> Triple("📋 Спланировать", true, onPlan)
+                    PipelinePhase.PLANNING -> Triple("⏳ Планирование...", false, {})
+                    PipelinePhase.REVIEWING -> Triple("▶️ Старт (${state.tasks.size} задач)", true, onStart)
+                    PipelinePhase.EXECUTING -> Triple("⚡ Выполнение (${state.completedTasks}/${state.totalTasks})", false, {})
+                    PipelinePhase.DEFERRED_PASS -> Triple("🔄 Повторный проход...", false, {})
+                    PipelinePhase.FINALIZING -> Triple("📝 Подготовка отчёта...", false, {})
+                    PipelinePhase.DONE -> Triple("✅ Готово · Новый запуск", true, onReset)
+                    PipelinePhase.CANCELLED -> Triple("⚪ Остановлено · Сброс", true, onReset)
+                    PipelinePhase.FATAL -> Triple("🔴 Ошибка · Сброс", true, onReset)
+                }
+
+                Button(
+                    onClick = action,
+                    enabled = isEnabled,
+                    modifier = Modifier.weight(1f).height(50.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = when (state.overallStatus) {
+                            OverallStatus.RUNNING -> PipelineTheme.blue
+                            OverallStatus.SUCCESS_ALL -> PipelineTheme.green
+                            OverallStatus.SUCCESS_PARTIAL -> PipelineTheme.amber
+                            OverallStatus.FAILED_ALL, OverallStatus.FATAL -> PipelineTheme.red
+                            OverallStatus.CANCELLED -> PipelineTheme.textSecondary
+                        }
                     )
+                ) {
+                    Text(buttonText, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+
+                if (state.canStop) {
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = onStop,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(PipelineTheme.redSoft)
+                    ) {
+                        Icon(Icons.Default.Stop, null, tint = PipelineTheme.red)
+                    }
+                }
+
+                if (state.phase == PipelinePhase.DONE) {
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(
+                        onClick = onExport,
+                        modifier = Modifier
+                            .size(50.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(PipelineTheme.surfaceSecondary)
+                    ) {
+                        Icon(Icons.Default.Download, null, tint = PipelineTheme.blue)
+                    }
+                }
+            }
+
+            if (totalCost > 0 || totalTokens > 0) {
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("💰 €${String.format(Locale.US, "%.4f", totalCost)}", fontSize = 11.sp, color = PipelineTheme.textSecondary, fontFamily = FontFamily.Monospace)
+                    Text("🧮 $totalTokens токенов", fontSize = 11.sp, color = PipelineTheme.textSecondary, fontFamily = FontFamily.Monospace)
+                    Text("✅ ${state.successfulTasks} · ❌ ${state.failedTasks}", fontSize = 11.sp, color = PipelineTheme.textSecondary, fontFamily = FontFamily.Monospace)
                 }
             }
         }
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ПРОГРЕСС ЗАДАЧ
+// ═══════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun ProgressSection(
+private fun TaskProgressSectionLight(
     state: PipelineState,
     onRemoveTask: (String) -> Unit,
     onTaskChipClick: (String) -> Unit,
     onChangeMaxParallel: (Int) -> Unit
 ) {
-    var statusFilter by remember { mutableStateOf<TaskStatus?>(null) }
-
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-        val animatedProgress by animateFloatAsState(
-            targetValue = state.progress,
-            label = "progress"
-        )
-        LinearProgressIndicator(
-            progress = { animatedProgress },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp)),
-            color = PipelineColors.accentBlue,
-            trackColor = PipelineColors.surfaceElevated,
-            drawStopIndicator = {}
-        )
-
-        if (state.phase == PipelinePhase.REVIEWING || state.phase == PipelinePhase.IDLE) {
-            Spacer(Modifier.height(6.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "Параллельно: ${state.maxParallelTasks}",
-                    color = PipelineColors.textSecondary,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.padding(end = 8.dp).widthIn(min = 120.dp)
-                )
-                Slider(
-                    value = state.maxParallelTasks.toFloat(),
-                    onValueChange = { onChangeMaxParallel(it.toInt()) },
-                    valueRange = 1f..8f,
-                    steps = 6,
-                    modifier = Modifier.weight(1f).height(28.dp),
-                    colors = SliderDefaults.colors(
-                        thumbColor = PipelineColors.accentBlue,
-                        activeTrackColor = PipelineColors.accentBlue,
-                        inactiveTrackColor = PipelineColors.surfaceElevated
-                    )
-                )
-            }
-        }
-
-        if (state.tasks.size >= 10 && state.phase != PipelinePhase.IDLE) {
-            Spacer(Modifier.height(6.dp))
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                FilterPill("Все · ${state.tasks.size}",
-                    selected = statusFilter == null) { statusFilter = null }
-                val processingCount = state.tasks.count {
-                    it.status == TaskStatus.PROCESSING || it.status == TaskStatus.PENDING
-                }
-                if (processingCount > 0) {
-                    FilterPill("⏳ $processingCount",
-                        selected = statusFilter == TaskStatus.PROCESSING) {
-                        statusFilter = if (statusFilter == TaskStatus.PROCESSING) null else TaskStatus.PROCESSING
-                    }
-                }
-                if (state.successfulTasks > 0) {
-                    FilterPill("✅ ${state.successfulTasks}",
-                        selected = statusFilter == TaskStatus.SUCCESS) {
-                        statusFilter = if (statusFilter == TaskStatus.SUCCESS) null else TaskStatus.SUCCESS
-                    }
-                }
-                if (state.failedTasks > 0) {
-                    FilterPill("❌ ${state.failedTasks}",
-                        selected = statusFilter == TaskStatus.FAILED_FINAL) {
-                        statusFilter = if (statusFilter == TaskStatus.FAILED_FINAL) null else TaskStatus.FAILED_FINAL
-                    }
-                }
-                if (state.deferredTasks > 0) {
-                    FilterPill("🔄 ${state.deferredTasks}",
-                        selected = statusFilter == TaskStatus.DEFERRED) {
-                        statusFilter = if (statusFilter == TaskStatus.DEFERRED) null else TaskStatus.DEFERRED
-                    }
-                }
-            }
-        }
-
-        Spacer(Modifier.height(8.dp))
-
-        val visibleTasks = remember(state.tasks, statusFilter) {
-            if (statusFilter == null) state.tasks
-            else if (statusFilter == TaskStatus.PROCESSING)
-                state.tasks.filter { it.status == TaskStatus.PROCESSING || it.status == TaskStatus.PENDING }
-            else state.tasks.filter { it.status == statusFilter }
-        }
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            items(visibleTasks, key = { it.id }) { task ->
-                TaskChip(
-                    task = task,
-                    isCurrent = task.id in state.runningTaskIds,
-                    isFilterActive = state.logFilterTaskId == task.id,
-                    canRemove = state.phase == PipelinePhase.REVIEWING,
-                    onRemove = { onRemoveTask(task.id) },
-                    onClick = { onTaskChipClick(task.id) }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun FilterPill(label: String, selected: Boolean, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(
-                if (selected) PipelineColors.accentBlue.copy(alpha = 0.35f)
-                else PipelineColors.surfaceElevated
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        Text(
-            text = label,
-            color = if (selected) PipelineColors.textPrimary else PipelineColors.textSecondary,
-            fontSize = 10.sp,
-            fontFamily = FontFamily.Monospace
-        )
-    }
-}
-
-@Composable
-private fun LogFilterBanner(
-    taskId: String,
-    tasks: List<FileTask>,
-    onClear: () -> Unit
-) {
-    val task = remember(taskId, tasks) { tasks.firstOrNull { it.id == taskId } }
-    val fileName = task?.filePath?.substringAfterLast('/') ?: taskId
-
-    Row(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(PipelineColors.accentPurple.copy(alpha = 0.15f))
-            .border(0.5.dp, PipelineColors.accentPurple.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(horizontal = 14.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Text(
-            text = "🔍 Фильтр: ",
-            color = PipelineColors.textSecondary,
-            fontSize = 11.sp
-        )
-        Text(
-            text = fileName,
-            color = PipelineColors.textPrimary,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-        )
-        Icon(
-            Icons.Default.Close,
-            contentDescription = "Сбросить фильтр",
-            tint = PipelineColors.accentPurple,
-            modifier = Modifier
-                .size(16.dp)
-                .clickable(onClick = onClear)
-        )
+        Column(modifier = Modifier.padding(14.dp)) {
+            val progress by animateFloatAsState(targetValue = state.progress, label = "progress")
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp)),
+                color = PipelineTheme.blue,
+                trackColor = PipelineTheme.surfaceSecondary,
+                drawStopIndicator = {}
+            )
+
+            if (state.phase == PipelinePhase.REVIEWING || state.phase == PipelinePhase.IDLE) {
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "Потоков: ${state.maxParallelTasks}",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = PipelineTheme.textSecondary,
+                        modifier = Modifier.width(90.dp)
+                    )
+                    Slider(
+                        value = state.maxParallelTasks.toFloat(),
+                        onValueChange = { onChangeMaxParallel(it.toInt()) },
+                        valueRange = 1f..8f,
+                        steps = 6,
+                        modifier = Modifier.weight(1f).height(24.dp),
+                        colors = SliderDefaults.colors(thumbColor = PipelineTheme.blue, activeTrackColor = PipelineTheme.blue)
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                items(state.tasks, key = { it.id }) { task ->
+                    TaskChipLight(
+                        task = task,
+                        isCurrent = task.id in state.runningTaskIds,
+                        isSelected = state.logFilterTaskId == task.id,
+                        canRemove = state.phase == PipelinePhase.REVIEWING,
+                        onRemove = { onRemoveTask(task.id) },
+                        onClick = { onTaskChipClick(task.id) }
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun TaskChip(
+private fun TaskChipLight(
     task: FileTask,
     isCurrent: Boolean,
-    isFilterActive: Boolean,
+    isSelected: Boolean,
     canRemove: Boolean,
     onRemove: () -> Unit,
     onClick: () -> Unit
 ) {
-    val bgColor = when (task.status) {
-        TaskStatus.PENDING -> PipelineColors.surfaceElevated
-        TaskStatus.PROCESSING -> PipelineColors.accentBlue.copy(alpha = 0.25f)
-        TaskStatus.SUCCESS -> PipelineColors.accentGreen.copy(alpha = 0.25f)
-        TaskStatus.NO_CHANGES_NEEDED -> PipelineColors.textSecondary.copy(alpha = 0.2f)
-        TaskStatus.DEFERRED -> PipelineColors.accentYellow.copy(alpha = 0.25f)
-        TaskStatus.FAILED_FINAL -> PipelineColors.accentRed.copy(alpha = 0.3f)
+    val bg = when {
+        isSelected -> PipelineTheme.purpleSoft
+        isCurrent -> PipelineTheme.blueSoft
+        task.status == TaskStatus.SUCCESS -> PipelineTheme.greenSoft
+        task.status == TaskStatus.FAILED_FINAL -> PipelineTheme.redSoft
+        else -> PipelineTheme.surfaceSecondary
     }
-    val borderColor = when {
-        isFilterActive -> PipelineColors.accentPurple
-        isCurrent -> PipelineColors.accentBlue
-        else -> PipelineColors.borderSubtle
+    val border = when {
+        isSelected -> PipelineTheme.purple
+        isCurrent -> PipelineTheme.blue
+        task.status == TaskStatus.SUCCESS -> PipelineTheme.green
+        task.status == TaskStatus.FAILED_FINAL -> PipelineTheme.red
+        else -> PipelineTheme.border
     }
-    val borderWidth = when {
-        isFilterActive -> 2.dp
-        isCurrent -> 1.5.dp
-        else -> 0.5.dp
-    }
-    val fileName = task.filePath.substringAfterLast('/')
 
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = bg,
+        border = BorderStroke(1.dp, border)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(task.status.emoji, fontSize = 12.sp)
+            Spacer(Modifier.width(4.dp))
+            Text(task.filePath.substringAfterLast('/'), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, color = PipelineTheme.textPrimary)
+            if (canRemove) {
+                Spacer(Modifier.width(6.dp))
+                Icon(Icons.Default.Close, null, tint = PipelineTheme.textTertiary, modifier = Modifier.size(14.dp).clickable(onClick = onRemove))
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ЛОГИ
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun FilterBadgeLight(taskId: String, tasks: List<FileTask>, onClear: () -> Unit) {
+    val name = tasks.find { it.id == taskId }?.filePath?.substringAfterLast('/') ?: taskId
     Row(
         modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(bgColor)
-            .border(borderWidth, borderColor, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick)
+            .background(PipelineTheme.purpleSoft)
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = task.status.emoji,
-            fontSize = 14.sp
-        )
-        Spacer(Modifier.width(4.dp))
-        if (task.status == TaskStatus.PENDING || task.status == TaskStatus.PROCESSING) {
-            Text(
-                text = task.operation.emoji,
-                fontSize = 12.sp
-            )
-            Spacer(Modifier.width(4.dp))
+        Text("🔍 Фильтр логов: $name", fontSize = 11.sp, color = PipelineTheme.purple, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Icon(Icons.Default.Close, null, tint = PipelineTheme.purple, modifier = Modifier.size(16.dp).clickable(onClick = onClear))
+    }
+}
+
+@Composable
+private fun LiveLogsSectionLight(geminiLog: List<GeminiLogEvent>, repoLog: List<RepoLogEvent>) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp)
+            .height(300.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        LogPanelLight("🤖 Gemini", PipelineTheme.blue, Modifier.weight(1f)) {
+            val listState = rememberLazyListState()
+            LaunchedEffect(geminiLog.size) { if (geminiLog.isNotEmpty()) listState.animateScrollToItem(geminiLog.size - 1) }
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                items(geminiLog, key = { it.id }) {
+                    LogLineItem(it.icon, it.message, it.timestamp)
+                }
+            }
         }
-        Text(
-            text = fileName,
-            color = PipelineColors.textPrimary,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 160.dp)
-        )
-        if (canRemove) {
-            Spacer(Modifier.width(6.dp))
-            Icon(
-                Icons.Default.Close,
-                contentDescription = "Remove",
+        LogPanelLight("📦 Репозиторий", PipelineTheme.green, Modifier.weight(1f)) {
+            val listState = rememberLazyListState()
+            LaunchedEffect(repoLog.size) { if (repoLog.isNotEmpty()) listState.animateScrollToItem(repoLog.size - 1) }
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(8.dp)) {
+                items(repoLog, key = { it.id }) {
+                    LogLineItem(it.icon, it.message, it.timestamp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun LogPanelLight(title: String, accent: Color, modifier: Modifier, content: @Composable () -> Unit) {
+    Card(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surfaceSecondary),
+        border = BorderStroke(0.5.dp, PipelineTheme.border)
+    ) {
+        Column {
+            Row(
                 modifier = Modifier
-                    .size(14.dp)
-                    .clickable(onClick = onRemove),
-                tint = PipelineColors.textSecondary
-            )
+                    .fillMaxWidth()
+                    .background(PipelineTheme.surface)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(accent))
+                Spacer(Modifier.width(6.dp))
+                Text(title, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+            }
+            HorizontalDivider(color = PipelineTheme.border, thickness = 0.5.dp)
+            Box(modifier = Modifier.weight(1f)) { content() }
         }
     }
 }
 
 @Composable
-private fun LiveLogsSection(
-    geminiLog: List<GeminiLogEvent>,
-    repoLog: List<RepoLogEvent>
-) {
-    Row(
+private fun LogLineItem(icon: String, message: String, timestamp: Long) {
+    val time = remember(timestamp) { formatLogTime(timestamp) }
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.5.dp), verticalAlignment = Alignment.Top) {
+        Text(time, fontSize = 9.sp, color = PipelineTheme.textTertiary, fontFamily = FontFamily.Monospace, modifier = Modifier.width(46.dp))
+        Text(icon, fontSize = 10.sp, modifier = Modifier.padding(end = 4.dp))
+        Text(message, fontSize = 10.sp, color = PipelineTheme.textPrimary, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ИТОГОВЫЙ ОТЧЕТ И ОШИБКИ
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun FinalReportCardLight(report: String, onShareDetailed: () -> Unit) {
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 8.dp)
-            .height(360.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(horizontal = 14.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
     ) {
-        LogPanel(
-            title = "🤖 Gemini",
-            gradient = PipelineColors.geminiGradient,
-            modifier = Modifier.weight(1f)
-        ) {
-            GeminiLogList(events = geminiLog)
-        }
-        LogPanel(
-            title = "📦 Repo",
-            gradient = PipelineColors.repoGradient,
-            modifier = Modifier.weight(1f)
-        ) {
-            RepoLogList(events = repoLog)
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("📊 Финальная сводка", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+                OutlinedButton(
+                    onClick = onShareDetailed,
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                    modifier = Modifier.height(32.dp)
+                ) {
+                    Icon(Icons.Default.Share, null, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("TXT Отчёт", fontSize = 11.sp)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            SelectionContainer {
+                Text(report, fontSize = 12.sp, lineHeight = 18.sp, color = PipelineTheme.textPrimary)
+            }
         }
     }
 }
 
 @Composable
-private fun LogPanel(
-    title: String,
-    gradient: Brush,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit
+private fun FatalCardLight(error: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.redSoft)
+    ) {
+        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Error, null, tint = PipelineTheme.red, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Критическая ошибка (FATAL)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.red)
+                Text(error, fontSize = 11.sp, color = PipelineTheme.textPrimary, fontFamily = FontFamily.Monospace)
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ШТОРКА УПРАВЛЕНИЯ БЭКАПАМИ (MODAL BOTTOM SHEET)
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun BackupsSheetContent(
+    backups: List<PipelineBackupManager.BackupEntry>,
+    isRollingBack: Boolean,
+    onRollbackClick: (PipelineBackupManager.BackupEntry) -> Unit,
+    onShareReport: (PipelineBackupManager.BackupEntry) -> Unit,
+    onDelete: (PipelineBackupManager.BackupEntry) -> Unit,
+    onClose: () -> Unit
 ) {
-    Column(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(PipelineColors.surfaceDark)
-            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(gradient)
-                .padding(horizontal = 10.dp, vertical = 6.dp)
-        ) {
-            Text(
-                text = title,
-                color = Color.White,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 12.sp
-            )
-        }
-        Box(modifier = Modifier.weight(1f)) {
-            content()
-        }
-    }
-}
-
-@Composable
-private fun GeminiLogList(events: List<GeminiLogEvent>) {
-    val listState = rememberLazyListState()
-    LaunchedEffect(events.size) {
-        if (events.isNotEmpty()) listState.animateScrollToItem(events.size - 1)
-    }
-
-    if (events.isEmpty()) {
-        EmptyLog(text = "Жду команды...")
-        return
-    }
-
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize().padding(8.dp)
-    ) {
-        items(events, key = { it.id }) { event ->
-            LogLine(
-                icon = event.icon,
-                message = event.message,
-                timestamp = event.timestamp,
-                accentColor = geminiAccentFor(event.type)
-            )
-        }
-    }
-}
-
-@Composable
-private fun RepoLogList(events: List<RepoLogEvent>) {
-    val listState = rememberLazyListState()
-    LaunchedEffect(events.size) {
-        if (events.isNotEmpty()) listState.animateScrollToItem(events.size - 1)
-    }
-
-    if (events.isEmpty()) {
-        EmptyLog(text = "Жду коммитов...")
-        return
-    }
-
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize().padding(8.dp)
-    ) {
-        items(events, key = { it.id }) { event ->
-            LogLine(
-                icon = event.icon,
-                message = event.message,
-                timestamp = event.timestamp,
-                accentColor = repoAccentFor(event.type)
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmptyLog(text: String) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = text,
-            color = PipelineColors.textTertiary,
-            fontSize = 12.sp
-        )
-    }
-}
-
-@Composable
-private fun LogLine(
-    icon: String,
-    message: String,
-    timestamp: Long,
-    accentColor: Color
-) {
-    val timeStr = remember(timestamp) { formatLogTime(timestamp) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        Text(
-            text = timeStr,
-            color = PipelineColors.textTertiary,
-            fontSize = 9.sp,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.width(54.dp).padding(top = 1.dp)
-        )
-        Text(
-            text = icon,
-            fontSize = 11.sp,
-            modifier = Modifier.padding(end = 4.dp)
-        )
-        Text(
-            text = message,
-            color = accentColor,
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.weight(1f)
-        )
-    }
-}
-
-private fun geminiAccentFor(type: GeminiEventType): Color = when (type) {
-    GeminiEventType.PLANNER_START, GeminiEventType.PLANNER_DONE -> PipelineColors.accentPurple
-    GeminiEventType.AI_REQUEST, GeminiEventType.AI_RESPONSE -> PipelineColors.textPrimary
-    GeminiEventType.AI_BLOCKS_PARSED, GeminiEventType.AI_APPLY_OK -> PipelineColors.accentGreen
-    GeminiEventType.AI_APPLY_FAIL, GeminiEventType.AI_RETRY -> PipelineColors.accentYellow
-    GeminiEventType.SUMMARY_START, GeminiEventType.SUMMARY_DONE -> PipelineColors.accentPurple
-    GeminiEventType.ERROR -> PipelineColors.accentRed
-    GeminiEventType.TASK_START -> PipelineColors.accentBlue
-    GeminiEventType.INFO -> PipelineColors.textSecondary
-}
-
-private fun repoAccentFor(type: RepoEventType): Color = when (type) {
-    RepoEventType.FILE_READ -> PipelineColors.textSecondary
-    RepoEventType.FILE_COMMITTED -> PipelineColors.accentGreen
-    RepoEventType.COMMIT_CONFLICT -> PipelineColors.accentYellow
-    RepoEventType.CONFLICT_RESOLVED -> PipelineColors.accentYellow
-    RepoEventType.WORKFLOW_TRIGGERED -> PipelineColors.accentBlue
-    RepoEventType.WORKFLOW_PROGRESS -> PipelineColors.accentBlue
-    RepoEventType.WORKFLOW_SUCCESS -> PipelineColors.accentGreen
-    RepoEventType.WORKFLOW_FAILURE -> PipelineColors.accentRed
-    RepoEventType.INDEX_INVALIDATED -> PipelineColors.textTertiary
-    RepoEventType.INFO -> PipelineColors.textSecondary
-    RepoEventType.ERROR -> PipelineColors.accentRed
-    RepoEventType.CLONE_START, RepoEventType.CLONE_PROGRESS -> PipelineColors.accentBlue
-    RepoEventType.CLONE_DONE -> PipelineColors.accentGreen
-    RepoEventType.LOCAL_WRITE -> PipelineColors.textSecondary
-    RepoEventType.LOCAL_COMMIT -> PipelineColors.accentGreen
-    RepoEventType.PUSH_START -> PipelineColors.accentBlue
-    RepoEventType.PUSH_DONE -> PipelineColors.accentGreen
-    else -> PipelineColors.textSecondary
-}
-
-@Composable
-private fun FinalReportSection(report: String, status: OverallStatus) {
-    val accentColor = when (status) {
-        OverallStatus.SUCCESS_ALL -> PipelineColors.accentGreen
-        OverallStatus.SUCCESS_PARTIAL -> PipelineColors.accentYellow
-        OverallStatus.FAILED_ALL, OverallStatus.FATAL -> PipelineColors.accentRed
-        OverallStatus.CANCELLED -> PipelineColors.textSecondary
-        else -> PipelineColors.accentBlue
-    }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(PipelineColors.surfaceElevated)
-            .border(1.dp, accentColor.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(accentColor.copy(alpha = 0.15f))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "📊 Финальный отчёт",
-                color = PipelineColors.textPrimary,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp
-            )
-        }
-        SelectionContainer {
-            Text(
-                text = report,
-                color = PipelineColors.textPrimary,
-                fontSize = 13.sp,
-                lineHeight = 19.sp,
-                fontFamily = FontFamily.Default,
-                modifier = Modifier.padding(14.dp)
-            )
-        }
-    }
-}
-
-@Composable
-private fun FatalErrorCard(error: String) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(PipelineColors.accentRed.copy(alpha = 0.12f))
-            .border(1.dp, PipelineColors.accentRed.copy(alpha = 0.5f), RoundedCornerShape(12.dp))
-            .padding(14.dp)
-    ) {
-        Text(
-            text = "🔴 FATAL — конвейер остановлен",
-            color = PipelineColors.accentRed,
-            fontWeight = FontWeight.Bold,
-            fontSize = 14.sp
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = error,
-            color = PipelineColors.textPrimary,
-            fontSize = 12.sp,
-            fontFamily = FontFamily.Monospace
-        )
-    }
-}
-
-@Composable
-private fun PipelineKeysSection(
-    keyA: String,
-    keyB: String,
-    activeIndex: Int,
-    enabled: Boolean,
-    onKeyAChange: (String) -> Unit,
-    onKeyBChange: (String) -> Unit,
-    onActiveChange: (Int) -> Unit
-) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
-        KeyRow("Key A", keyA, enabled, activeIndex == 0, { onKeyAChange(it) }, { onActiveChange(0) })
-        Spacer(Modifier.height(4.dp))
-        KeyRow("Key B", keyB, enabled, activeIndex == 1, { onKeyBChange(it) }, { onActiveChange(1) })
-    }
-}
-
-@Composable
-private fun KeyRow(
-    label: String,
-    value: String,
-    enabled: Boolean,
-    isActive: Boolean,
-    onValueChange: (String) -> Unit,
-    onSelect: () -> Unit
-) {
-    var isVisible by remember { mutableStateOf(false) }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(PipelineColors.surfaceElevated)
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        RadioButton(selected = isActive, onClick = if (enabled) onSelect else null, enabled = enabled)
-        Text(label, color = PipelineColors.textSecondary, fontSize = 12.sp, modifier = Modifier.width(40.dp))
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            enabled = enabled,
-            visualTransformation = if (isVisible) androidx.compose.ui.text.input.VisualTransformation.None else androidx.compose.ui.text.input.PasswordVisualTransformation(),
-            modifier = Modifier.weight(1f).height(50.dp),
-            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
-            colors = OutlinedTextFieldDefaults.colors(focusedContainerColor = PipelineColors.surfaceDark, unfocusedContainerColor = PipelineColors.surfaceDark)
-        )
-        IconButton(onClick = { isVisible = !isVisible }) {
-            Icon(if (isVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, null, tint = PipelineColors.textSecondary)
-        }
-    }
-}
-
-@Composable
-private fun DefaultModelSelector(
-    selected: String,
-    interactive: Boolean,
-    onSelect: (String) -> Unit
-) {
-    val options = listOf(
-        "gemini-3.8-flash" to "⚡ 3.8 Flash",
-        "gemini-3.1-flash-lite" to "🪶 3.1 Lite",
-        "gemini-3.5-flash" to "🚀 3.5 Flash"
-    )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(PipelineColors.surfaceElevated)
-            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Text(
-            "📌 Модель Gemini (Режим G)",
-            color = PipelineColors.textPrimary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            options.forEach { (apiId, label) ->
-                val isSelected = selected == apiId
-                val bg = if (isSelected) PipelineColors.accentBlue else PipelineColors.surfaceDark
-                val fg = if (isSelected) Color.White else PipelineColors.textSecondary
-                val border = if (isSelected) PipelineColors.accentBlue else PipelineColors.borderSubtle
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(36.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(bg)
-                        .border(1.dp, border, RoundedCornerShape(8.dp))
-                        .clickable(enabled = interactive) { onSelect(apiId) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        label,
-                        color = fg,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Shield, null, tint = PipelineTheme.green, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("История бэкапов", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Default.Close, null, tint = PipelineTheme.textSecondary)
             }
         }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = when (selected) {
-                "gemini-3.8-flash" -> "Флагман Flash: максимальная точность правок кода и высокая скорость."
-                "gemini-3.1-flash-lite" -> "Минимум затрат токенов, высокая скорость."
-                else -> "Стабильная универсальная Flash-модель."
-            },
-            color = PipelineColors.textTertiary,
-            fontSize = 10.sp
-        )
-    }
-}
 
-@Composable
-private fun LiteThinkingSelector(
-    selected: String,
-    supportsThinking: Boolean,
-    interactive: Boolean,
-    onSelect: (String) -> Unit
-) {
-    if (!supportsThinking) return
-    val options = listOf(
-        "low" to "🌱 LOW",
-        "medium" to "⚙️ MEDIUM",
-        "high" to "🔥 HIGH"
-    )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(PipelineColors.surfaceElevated)
-            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
         Text(
-            "🧠 Уровень рассуждений (Thinking)",
-            color = PipelineColors.textPrimary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(bottom = 6.dp)
+            "Каждый запуск создает снимок оригиналов. Вы можете в 1 клик откатить проект или выгрузить полный TXT-отчет.",
+            fontSize = 11.sp,
+            color = PipelineTheme.textSecondary
         )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            options.forEach { (level, label) ->
-                val isSelected = selected == level
-                val bg = if (isSelected) PipelineColors.accentPurple else PipelineColors.surfaceDark
-                val fg = if (isSelected) Color.White else PipelineColors.textSecondary
-                val border = if (isSelected) PipelineColors.accentPurple else PipelineColors.borderSubtle
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(34.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(bg)
-                        .border(1.dp, border, RoundedCornerShape(8.dp))
-                        .clickable(enabled = interactive) { onSelect(level) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        label,
-                        color = fg,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = when (selected) {
-                "low" -> "Режим LOW (по умолчанию): оптимален для сохранения квоты 2–5 RPM и быстрой генерации."
-                "medium" -> "Режим MEDIUM: баланс между объемом размышлений и скоростью."
-                else -> "Режим HIGH: глубокие рассуждения, требует больше времени и токенов."
-            },
-            color = PipelineColors.textTertiary,
-            fontSize = 10.sp
-        )
-    }
-}
 
-@Composable
-private fun PipelineModeSelector(
-    currentMode: PipelineMode,
-    interactive: Boolean,
-    onModeChange: (PipelineMode) -> Unit
-) {
-    val modes = listOf(
-        PipelineMode.ONLINE,
-        PipelineMode.OFFLINE
-    )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(PipelineColors.surfaceElevated)
-            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(12.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Text(
-            "⚙️ Режим работы",
-            color = PipelineColors.textPrimary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(bottom = 6.dp)
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            modes.forEach { mode ->
-                val isSelected = currentMode == mode
-                val bg = if (isSelected) PipelineColors.accentBlue else PipelineColors.surfaceDark
-                val fg = if (isSelected) Color.White else PipelineColors.textSecondary
-                val border = if (isSelected) PipelineColors.accentBlue else PipelineColors.borderSubtle
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(bg)
-                        .border(1.dp, border, RoundedCornerShape(10.dp))
-                        .clickable(enabled = interactive) { onModeChange(mode) },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "${mode.emoji} ${mode.displayName}",
-                        color = fg,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = when (currentMode) {
-                PipelineMode.ONLINE ->
-                    "Прямые коммиты в GitHub — по одному на файл. Может ловить rate limit при параллелизме 5+."
-                PipelineMode.OFFLINE ->
-                    "Клонируем репозиторий локально, правим все файлы, в конце — один коммит и push. Безопасно от rate limit."
-            },
-            color = PipelineColors.textTertiary,
-            fontSize = 10.sp
-        )
-        if (!interactive) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Переключение режима недоступно во время выполнения",
-                color = PipelineColors.accentYellow,
-                fontSize = 10.sp
-            )
-        }
-    }
-}
+        Spacer(Modifier.height(14.dp))
 
-@Composable
-private fun LocalCloneStatusSection(
-    status: LocalRepoManager.RepoStatus,
-    progress: String?,
-    interactive: Boolean,
-    onSync: () -> Unit,
-    onDelete: () -> Unit
-) {
-    val sizeKb = (status.sizeBytes / 1024.0).toInt()
-    val sizeFormatted = when {
-        sizeKb < 1024 -> "$sizeKb KB"
-        else -> "${"%.1f".format(sizeKb / 1024.0)} MB"
-    }
-    val ageSec = if (status.lastSyncMs > 0)
-        ((System.currentTimeMillis() - status.lastSyncMs) / 1000).coerceAtLeast(0)
-    else -1L
-    val ageStr = when {
-        ageSec < 0 -> "ни разу"
-        ageSec < 60 -> "${ageSec}с назад"
-        ageSec < 3600 -> "${ageSec / 60}мин назад"
-        else -> "${ageSec / 3600}ч назад"
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 4.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(PipelineColors.surfaceElevated)
-            .border(0.5.dp, PipelineColors.borderSubtle, RoundedCornerShape(10.dp))
-            .padding(horizontal = 10.dp, vertical = 8.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            val icon = when (status.state) {
-                LocalRepoManager.CloneState.CLONED -> "📦"
-                LocalRepoManager.CloneState.NOT_CLONED -> "⚪"
-                LocalRepoManager.CloneState.ERROR -> "❌"
-            }
-            Text(
-                "$icon Локальный клон",
-                color = PipelineColors.textPrimary,
-                fontWeight = FontWeight.Medium,
-                fontSize = 12.sp,
-                modifier = Modifier.weight(1f)
-            )
-            if (progress != null) {
-                Text(
-                    progress,
-                    color = PipelineColors.accentBlue,
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        }
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = when (status.state) {
-                LocalRepoManager.CloneState.CLONED ->
-                    "${status.owner}/${status.repo} · $sizeFormatted · обновлён $ageStr" +
-                            if (status.pendingChanges > 0) " · ⚠️ ${status.pendingChanges} несохранённых" else ""
-                LocalRepoManager.CloneState.NOT_CLONED ->
-                    "Клон ещё не создан. Запустится автоматически при старте пайплайна."
-                LocalRepoManager.CloneState.ERROR ->
-                    "Ошибка: ${status.errorMessage ?: "неизвестно"}"
-            },
-            color = PipelineColors.textTertiary,
-            fontSize = 10.sp
-        )
-        Spacer(Modifier.height(6.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (backups.isEmpty()) {
             Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(34.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(PipelineColors.accentBlue.copy(alpha = if (interactive) 1f else 0.4f))
-                    .clickable(enabled = interactive, onClick = onSync),
+                    .fillMaxWidth()
+                    .padding(vertical = 40.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    "🔄 Синхронизировать",
-                    color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 11.sp
-                )
+                Text("Нет сохранённых снимков", color = PipelineTheme.textTertiary, fontSize = 13.sp)
             }
-            if (status.state == LocalRepoManager.CloneState.CLONED) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .height(34.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(PipelineColors.surfaceDark)
-                        .border(1.dp, PipelineColors.accentRed.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
-                        .clickable(enabled = interactive, onClick = onDelete),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "🗑 Удалить клон",
-                        color = PipelineColors.accentRed,
-                        fontWeight = FontWeight.SemiBold, fontSize = 11.sp
-                    )
+        } else {
+            LazyColumn(
+                modifier = Modifier.heightIn(max = 480.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(backups, key = { it.id }) { backup ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surfaceSecondary),
+                        border = BorderStroke(0.5.dp, PipelineTheme.border)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(backup.formattedDate, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+                                    Spacer(Modifier.width(6.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = if (backup.isRestored) PipelineTheme.amberSoft else PipelineTheme.greenSoft
+                                    ) {
+                                        Text(
+                                            if (backup.isRestored) "ОТКАЧЕНО" else "АКТИВЕН",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (backup.isRestored) PipelineTheme.amber else PipelineTheme.green,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                                Text("${backup.affectedFilesCount} файлов", fontSize = 11.sp, color = PipelineTheme.textSecondary)
+                            }
+
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                backup.userPrompt.take(120).replace('\n', ' ') + if (backup.userPrompt.length > 120) "..." else "",
+                                fontSize = 11.sp,
+                                color = PipelineTheme.textSecondary,
+                                maxLines = 2
+                            )
+
+                            Spacer(Modifier.height(10.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconButton(onClick = { onDelete(backup) }, modifier = Modifier.size(32.dp)) {
+                                    Icon(Icons.Default.Delete, null, tint = PipelineTheme.red, modifier = Modifier.size(16.dp))
+                                }
+                                Spacer(Modifier.width(4.dp))
+                                OutlinedButton(
+                                    onClick = { onShareReport(backup) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.height(34.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp)
+                                ) {
+                                    Icon(Icons.Default.Description, null, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("TXT Отчёт", fontSize = 11.sp)
+                                }
+                                Spacer(Modifier.width(6.dp))
+                                Button(
+                                    onClick = { onRollbackClick(backup) },
+                                    enabled = !isRollingBack,
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = PipelineTheme.amber),
+                                    modifier = Modifier.height(34.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp)
+                                ) {
+                                    Icon(Icons.Default.History, null, tint = Color.White, modifier = Modifier.size(14.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Откатить", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        Spacer(Modifier.height(24.dp))
     }
 }
