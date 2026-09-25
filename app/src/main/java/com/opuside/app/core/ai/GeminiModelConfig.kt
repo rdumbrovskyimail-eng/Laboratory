@@ -8,35 +8,20 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🔷 GEMINI MODEL CONFIGURATION v2.0 (April 2026)
+ * 🔷 GEMINI MODEL CONFIGURATION v3.0
  *
- * All active Gemini API models (non-Live) as of 2026-04-07.
- * Pricing source: ai.google.dev/gemini-api/docs/pricing (updated 2026-04-06).
- * Specs source: ai.google.dev/gemini-api/docs/gemini-3 (Gemini 3 Developer Guide)
+ * Строго две модели Flash-Lite:
+ * - Gemini 3.1 Flash-Lite (штатный фиксированный режим: MEDIUM thinking)
+ * - Gemini 3.5 Flash-Lite (штатный фиксированный режим: LOW thinking)
  *
- * v2.0 CHANGES:
- * - Fixed 3.1 Flash-Lite pricing ($0.25/$1.50, was $0.10/$0.40)
- * - Fixed 2.5 Flash pricing ($0.30/$2.50 flat, was $0.15/$0.60 tiered)
- * - Fixed 3 Flash thinking price ($3.00, was $3.50)
- * - Enabled thinking for 3.1 Flash-Lite and 2.5 Flash-Lite
- * - Added per-model capability flags for UI validation
- * - Added supportsPresencePenalty, supportsFrequencyPenalty, supportsSeed
- *
- * Context caching:
- * - Cache read = 0.1× base input price
- * - Cache storage = $1.00–$4.50 per 1M tokens/hour (model-dependent)
- * - Min cacheable: 4096 tokens (all models)
- *
- * Deprecation schedule:
- * - Gemini 2.0 Flash / 2.0 Flash-Lite → June 1, 2026
- * - All Imagen models → June 24, 2026
+ * Ручной выбор уровня Thinking отключен — уровень жестко закреплен за моделью.
  */
 object GeminiModelConfig {
 
     private const val TAG = "GeminiModelConfig"
 
     const val ECO_OUTPUT_TOKENS = 8192
-    const val CACHE_TTL_MS = 5 * 60 * 1000L   // 5 min (Google default)
+    const val CACHE_TTL_MS = 5 * 60 * 1000L   // 5 min
     const val API_KEY_PREFIX = "AIza"
 
     // ═══════════════════════════════════════════════════════════════════
@@ -64,7 +49,6 @@ object GeminiModelConfig {
 
     enum class ThinkingLevel(val apiName: String, val displayName: String) {
         NONE("NONE", "Off"),
-        MINIMAL("MINIMAL", "Minimal"),
         LOW("LOW", "Low"),
         MEDIUM("MEDIUM", "Medium"),
         HIGH("HIGH", "High")
@@ -91,8 +75,7 @@ object GeminiModelConfig {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // MODELS — all active non-Live models as of April 2026
-    // Pricing verified: ai.google.dev/gemini-api/docs/pricing (2026-04-06)
+    // MODELS (Strictly 3.1 Flash-Lite & 3.5 Flash-Lite)
     // ═══════════════════════════════════════════════════════════════════
 
     enum class GeminiModel(
@@ -110,192 +93,25 @@ object GeminiModelConfig {
         val cacheStoragePricePerMPerHour: Double,
         val supportsThinking: Boolean,
         val thinkingOutputPricePerM: Double,
+        val forcedThinkingLevel: ThinkingLevel, // Штатный зафиксированный режим
         val supportsGrounding: Boolean,
         val supportsCodeExecution: Boolean,
         val supportsFunctionCalling: Boolean,
         val supportsJsonMode: Boolean,
         val supportsSystemInstruction: Boolean,
-        // ── Per-model capability flags for UI validation ─────────────
         val supportsPresencePenalty: Boolean,
         val supportsFrequencyPenalty: Boolean,
         val supportsSeed: Boolean,
         val supportsResponseMimeType: Boolean,
         val supportsCaching: Boolean,
-        val defaultThinkingLevel: ThinkingLevel,
         val speedRating: Int,
-        val emoji: String,
-        val deprecated: Boolean = false,
-        val deprecationDate: String? = null
+        val emoji: String
     ) {
-        // ── Gemini 3.1 Pro Preview ──────────────────────────────────
-        // Pricing: $2/$12 (≤200K), $4/$18 (>200K)
-        // Output includes thinking at same rate
-        GEMINI_3_1_PRO(
-            modelId = "gemini-3.1-pro-preview",
-            displayName = "3.1 Pro Preview",
-            description = "Flagship reasoning, 1M context, best quality",
-            contextWindow = 1_000_000,
-            maxOutputTokens = 65_536,
-            inputPricePerM = 2.00,
-            outputPricePerM = 12.00,
-            longInputPricePerM = 4.00,
-            longOutputPricePerM = 18.00,
-            longContextThreshold = 200_000,
-            cacheReadPricePerM = 0.20,
-            cacheStoragePricePerMPerHour = 4.50,
-            supportsThinking = true,
-            thinkingOutputPricePerM = 12.00,
-            supportsGrounding = true,
-            supportsCodeExecution = true,
-            supportsFunctionCalling = true,
-            supportsJsonMode = true,
-            supportsSystemInstruction = true,
-            supportsPresencePenalty = true,
-            supportsFrequencyPenalty = true,
-            supportsSeed = true,
-            supportsResponseMimeType = true,
-            supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.HIGH,
-            speedRating = 4,
-            emoji = "🧠"
-        ),
-
-        // ── Gemini 3.1 Pro Custom Tools ─────────────────────────────
-        // Same pricing as 3.1 Pro, optimized for custom tool priority
-        GEMINI_3_1_PRO_CUSTOMTOOLS(
-            modelId = "gemini-3.1-pro-preview-customtools",
-            displayName = "3.1 Pro CustomTools",
-            description = "Optimized for custom tool priority",
-            contextWindow = 1_000_000,
-            maxOutputTokens = 65_536,
-            inputPricePerM = 2.00,
-            outputPricePerM = 12.00,
-            longInputPricePerM = 4.00,
-            longOutputPricePerM = 18.00,
-            longContextThreshold = 200_000,
-            cacheReadPricePerM = 0.20,
-            cacheStoragePricePerMPerHour = 4.50,
-            supportsThinking = true,
-            thinkingOutputPricePerM = 12.00,
-            supportsGrounding = true,
-            supportsCodeExecution = true,
-            supportsFunctionCalling = true,
-            supportsJsonMode = true,
-            supportsSystemInstruction = true,
-            supportsPresencePenalty = true,
-            supportsFrequencyPenalty = true,
-            supportsSeed = true,
-            supportsResponseMimeType = true,
-            supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.HIGH,
-            speedRating = 4,
-            emoji = "🔧"
-        ),
-
-        // ── Gemini 3.5 Flash ──────────────────────────────────
-        // Pricing: $1.50/$9.00 FLAT
-        // Output includes thinking
-        GEMINI_3_5_FLASH(
-            modelId = "gemini-3.5-flash",
-            displayName = "3.5 Flash",
-            description = "Stable agent-first model, fast & versatile",
-            contextWindow = 1_000_000,
-            maxOutputTokens = 65_536,
-            inputPricePerM = 1.50,
-            outputPricePerM = 9.00,
-            longInputPricePerM = 1.50,
-            longOutputPricePerM = 9.00,
-            longContextThreshold = Int.MAX_VALUE,
-            cacheReadPricePerM = 0.15,
-            cacheStoragePricePerMPerHour = 1.00,
-            supportsThinking = true,
-            thinkingOutputPricePerM = 9.00,
-            supportsGrounding = true,
-            supportsCodeExecution = true,
-            supportsFunctionCalling = true,
-            supportsJsonMode = true,
-            supportsSystemInstruction = true,
-            supportsPresencePenalty = true,
-            supportsFrequencyPenalty = true,
-            supportsSeed = true,
-            supportsResponseMimeType = true,
-            supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.LOW,
-            speedRating = 9,
-            emoji = "⚡"
-        ),
-
-        // ── Gemini 3.1 Flash-Lite ───────────────────────────
-        // Pricing: $0.25/$1.50 FLAT (GA)
-        GEMINI_3_1_FLASH_LITE(
-            modelId = "gemini-3.1-flash-lite",
-            displayName = "3.1 Flash-Lite",
-            description = "Cost-efficient, high volume, flat pricing",
-            contextWindow = 1_000_000,
-            maxOutputTokens = 65_536,
-            inputPricePerM = 0.25,
-            outputPricePerM = 1.50,
-            longInputPricePerM = 0.25,
-            longOutputPricePerM = 1.50,
-            longContextThreshold = Int.MAX_VALUE,
-            cacheReadPricePerM = 0.025,
-            cacheStoragePricePerMPerHour = 1.00,
-            supportsThinking = true,
-            thinkingOutputPricePerM = 1.50,
-            supportsGrounding = true,
-            supportsCodeExecution = false,
-            supportsFunctionCalling = true,
-            supportsJsonMode = true,
-            supportsSystemInstruction = true,
-            supportsPresencePenalty = false,
-            supportsFrequencyPenalty = false,
-            supportsSeed = false,
-            supportsResponseMimeType = true,
-            supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.MEDIUM,
-            speedRating = 9,
-            emoji = "💨"
-        ),
-
-        // ── Gemini 2.5 Pro (auto-updated alias) ────────────────────
-        // Pricing: $1.25/$10 (≤200K), $2.50/$15 (>200K)
-        GEMINI_2_5_PRO(
-            modelId = "gemini-2.5-pro",
-            displayName = "2.5 Pro",
-            description = "Best for coding, proven quality, 1M context",
-            contextWindow = 1_000_000,
-            maxOutputTokens = 65_536,
-            inputPricePerM = 1.25,
-            outputPricePerM = 10.00,
-            longInputPricePerM = 2.50,
-            longOutputPricePerM = 15.00,
-            longContextThreshold = 200_000,
-            cacheReadPricePerM = 0.125,
-            cacheStoragePricePerMPerHour = 4.50,
-            supportsThinking = true,
-            thinkingOutputPricePerM = 10.00,
-            supportsGrounding = true,
-            supportsCodeExecution = true,
-            supportsFunctionCalling = true,
-            supportsJsonMode = true,
-            supportsSystemInstruction = true,
-            supportsPresencePenalty = true,
-            supportsFrequencyPenalty = true,
-            supportsSeed = true,
-            supportsResponseMimeType = true,
-            supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.HIGH,
-            speedRating = 5,
-            emoji = "🏆"
-        ),
-
-        // ── Gemini 2.5 Flash (auto-updated alias) ──────────────────
-        // Pricing: $0.30/$2.50 FLAT (verified 2026-04-06, was $0.15/$0.60 tiered)
-        // Output price includes thinking tokens at same rate
-        GEMINI_2_5_FLASH(
-            modelId = "gemini-2.5-flash",
-            displayName = "2.5 Flash",
-            description = "Hybrid reasoning, fast, versatile",
+        // ── Gemini 3.5 Flash-Lite (Штатно: LOW thinking) ─────────────
+        GEMINI_3_5_FLASH_LITE(
+            modelId = "gemini-3.5-flash-lite",
+            displayName = "3.5 Flash-Lite",
+            description = "Быстрая агентская модель, низкая задержка, LOW thinking",
             contextWindow = 1_000_000,
             maxOutputTokens = 65_536,
             inputPricePerM = 0.30,
@@ -307,39 +123,38 @@ object GeminiModelConfig {
             cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
             thinkingOutputPricePerM = 2.50,
+            forcedThinkingLevel = ThinkingLevel.LOW, // Всегда LOW
             supportsGrounding = true,
             supportsCodeExecution = true,
             supportsFunctionCalling = true,
             supportsJsonMode = true,
             supportsSystemInstruction = true,
-            supportsPresencePenalty = true,
-            supportsFrequencyPenalty = true,
+            supportsPresencePenalty = false,
+            supportsFrequencyPenalty = false,
             supportsSeed = true,
             supportsResponseMimeType = true,
             supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.HIGH,
-            speedRating = 8,
+            speedRating = 10,
             emoji = "⚡"
         ),
 
-        // ── Gemini 2.5 Flash-Lite (auto-updated alias) ─────────────
-        // Pricing: $0.10/$0.40 FLAT (verified 2026-04-06)
-        // Supports thinking with controllable budgets (per Google blog)
-        GEMINI_2_5_FLASH_LITE(
-            modelId = "gemini-2.5-flash-lite",
-            displayName = "2.5 Flash-Lite",
-            description = "Most affordable, highest speed",
+        // ── Gemini 3.1 Flash-Lite (Штатно: MEDIUM thinking) ──────────
+        GEMINI_3_1_FLASH_LITE(
+            modelId = "gemini-3.1-flash-lite",
+            displayName = "3.1 Flash-Lite",
+            description = "Ультра-бюджетная модель, MEDIUM thinking",
             contextWindow = 1_000_000,
             maxOutputTokens = 65_536,
-            inputPricePerM = 0.10,
-            outputPricePerM = 0.40,
-            longInputPricePerM = 0.10,
-            longOutputPricePerM = 0.40,
+            inputPricePerM = 0.25,
+            outputPricePerM = 1.50,
+            longInputPricePerM = 0.25,
+            longOutputPricePerM = 1.50,
             longContextThreshold = Int.MAX_VALUE,
-            cacheReadPricePerM = 0.01,
-            cacheStoragePricePerMPerHour = 0.25,
+            cacheReadPricePerM = 0.025,
+            cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
-            thinkingOutputPricePerM = 0.40,
+            thinkingOutputPricePerM = 1.50,
+            forcedThinkingLevel = ThinkingLevel.MEDIUM, // Всегда MEDIUM
             supportsGrounding = true,
             supportsCodeExecution = false,
             supportsFunctionCalling = true,
@@ -347,12 +162,11 @@ object GeminiModelConfig {
             supportsSystemInstruction = true,
             supportsPresencePenalty = false,
             supportsFrequencyPenalty = false,
-            supportsSeed = false,
+            supportsSeed = true,
             supportsResponseMimeType = true,
             supportsCaching = true,
-            defaultThinkingLevel = ThinkingLevel.MINIMAL,
-            speedRating = 10,
-            emoji = "🪶"
+            speedRating = 9,
+            emoji = "💨"
         );
 
         fun getEffectiveOutputTokens(ecoMode: Boolean): Int =
@@ -361,54 +175,14 @@ object GeminiModelConfig {
         fun getMaxInputTokens(ecoMode: Boolean): Int =
             contextWindow - getEffectiveOutputTokens(ecoMode)
 
-        /**
-         * Validate a GenerationConfig against this model's capabilities.
-         * Returns list of warning messages (empty = all OK).
-         */
         fun validateConfig(config: GenerationConfig): List<String> {
             val warnings = mutableListOf<String>()
-
-            if (config.thinkingLevel != ThinkingLevel.NONE && !supportsThinking) {
-                warnings.add("$displayName does not support Thinking")
-            }
-
-            if (config.presencePenalty != 0f && !supportsPresencePenalty) {
-                warnings.add("$displayName does not support Presence Penalty")
-            }
-
-            if (config.frequencyPenalty != 0f && !supportsFrequencyPenalty) {
-                warnings.add("$displayName does not support Frequency Penalty")
-            }
-
-            if (config.seed != null && !supportsSeed) {
-                warnings.add("$displayName does not support Seed")
-            }
-
-            if (config.responseMimeType != null && !supportsResponseMimeType) {
-                warnings.add("$displayName does not support Response Format selection")
-            }
-
             if (config.maxOutputTokens > maxOutputTokens) {
-                warnings.add("Max output ${config.maxOutputTokens} exceeds model limit $maxOutputTokens")
+                warnings.add("Max output ${config.maxOutputTokens} exceeds limit $maxOutputTokens")
             }
-
             return warnings
         }
 
-        /**
-         * Get supported thinking levels for this model.
-         * Returns only levels this model actually supports.
-         */
-        fun getSupportedThinkingLevels(): List<ThinkingLevel> {
-            if (!supportsThinking) return listOf(ThinkingLevel.NONE)
-            return ThinkingLevel.entries.toList()
-        }
-
-        /**
-         * Calculate cost for a single API call.
-         * For models with flat output pricing (output includes thinking),
-         * thinkingOutputPricePerM == outputPricePerM.
-         */
         fun calculateCost(
             inputTokens: Int,
             outputTokens: Int,
@@ -427,7 +201,6 @@ object GeminiModelConfig {
             val thinkingCostUSD = (thinkingTokens / 1_000_000.0) * thinkingOutputPricePerM
 
             val totalCostUSD = regularInputCostUSD + cacheReadCostUSD + outputCostUSD + thinkingCostUSD
-
             val withoutCacheCostUSD = if (cachedReadTokens > 0)
                 (cachedReadTokens / 1_000_000.0) * actualInputPrice else 0.0
             val savingsUSD = withoutCacheCostUSD - cacheReadCostUSD
@@ -448,13 +221,19 @@ object GeminiModelConfig {
         }
 
         companion object {
-            fun fromModelId(modelId: String): GeminiModel? =
-                entries.find { it.modelId == modelId }
+            fun fromModelId(modelId: String): GeminiModel? {
+                val clean = modelId.trim().lowercase()
+                return entries.find { it.modelId.equals(clean, ignoreCase = true) }
+                    ?: when {
+                        clean.contains("3.1") -> GEMINI_3_1_FLASH_LITE
+                        clean.contains("3.5") -> GEMINI_3_5_FLASH_LITE
+                        else -> null
+                    }
+            }
 
-            fun getDefault(): GeminiModel = GEMINI_3_1_FLASH_LITE
+            fun getDefault(): GeminiModel = GEMINI_3_5_FLASH_LITE
 
-            fun getActiveModels(): List<GeminiModel> =
-                entries.filter { !it.deprecated }
+            fun getActiveModels(): List<GeminiModel> = entries.toList()
         }
     }
 
@@ -507,8 +286,6 @@ object GeminiModelConfig {
         var isActive: Boolean = true
     ) {
         private var _cachedCost: GeminiCost? = null
-        private val formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss")
-            .withZone(ZoneId.systemDefault())
 
         val duration: Long get() =
             (endTime ?: Instant.now()).epochSecond - startTime.epochSecond
@@ -553,6 +330,7 @@ object GeminiModelConfig {
             appendLine("📊 Gemini Session Statistics")
             appendLine()
             appendLine("Model: ${model.displayName} ${model.emoji}")
+            appendLine("Thinking Mode: ${model.forcedThinkingLevel.displayName} (Fixed)")
             appendLine("Duration: $durationFormatted")
             appendLine("Messages: $messageCount")
             appendLine("Total Tokens: ${"%,d".format(totalInputTokens + totalOutputTokens + totalThinkingTokens)}")
@@ -563,9 +341,9 @@ object GeminiModelConfig {
             if (totalCachedReadTokens > 0)
                 appendLine("  Cache Read: ${"%,d".format(totalCachedReadTokens)}")
             appendLine()
-            appendLine("Total Cost: €${String.format("%.4f", currentCost.totalCostEUR)}")
+            appendLine("Total Cost: €${String.format(java.util.Locale.US, "%.4f", currentCost.totalCostEUR)}")
             if (currentCost.cacheSavingsEUR > 0)
-                appendLine("Savings: €${String.format("%.4f", currentCost.cacheSavingsEUR)}")
+                appendLine("Savings: €${String.format(java.util.Locale.US, "%.4f", currentCost.cacheSavingsEUR)}")
         }
     }
 
@@ -614,11 +392,11 @@ object GeminiModelConfig {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // GENERATION CONFIG (AI Studio-compatible parameters)
+    // GENERATION CONFIG (Parameters)
     // ═══════════════════════════════════════════════════════════════════
 
     data class GenerationConfig(
-        val temperature: Float = 1.0f,
+        val temperature: Float = 0.7f,
         val topP: Float = 0.95f,
         val topK: Int = 40,
         val maxOutputTokens: Int = 8192,
@@ -628,7 +406,6 @@ object GeminiModelConfig {
         val presencePenalty: Float = 0f,
         val frequencyPenalty: Float = 0f,
         val seed: Int? = null,
-        val thinkingLevel: ThinkingLevel = ThinkingLevel.NONE,
         val safetySettings: Map<HarmCategory, SafetyThreshold> = defaultSafetySettings()
     ) {
         companion object {
@@ -640,21 +417,13 @@ object GeminiModelConfig {
                 HarmCategory.CIVIC_INTEGRITY to SafetyThreshold.BLOCK_MEDIUM_AND_ABOVE
             )
 
-            val ECO = GenerationConfig(maxOutputTokens = 8192, temperature = 0.7f, thinkingLevel = ThinkingLevel.NONE)
-            val MAX = GenerationConfig(maxOutputTokens = 65_536, temperature = 1.0f, thinkingLevel = ThinkingLevel.NONE)
-            val CODE = GenerationConfig(maxOutputTokens = 65_536, temperature = 0.2f, topP = 0.8f, thinkingLevel = ThinkingLevel.NONE)
-            val CREATIVE = GenerationConfig(
-                maxOutputTokens = 65_536,
-                temperature = 1.5f,
-                topP = 0.95f,
-                topK = 64,
-                thinkingLevel = ThinkingLevel.NONE
-            )
+            val ECO = GenerationConfig(maxOutputTokens = 8192, temperature = 0.7f)
+            val MAX = GenerationConfig(maxOutputTokens = 65_536, temperature = 0.7f)
+            val CODE = GenerationConfig(maxOutputTokens = 65_536, temperature = 0.2f, topP = 0.8f)
             val JSON = GenerationConfig(
                 maxOutputTokens = 8192,
                 temperature = 0.0f,
-                responseMimeType = "application/json",
-                thinkingLevel = ThinkingLevel.NONE
+                responseMimeType = "application/json"
             )
         }
     }
