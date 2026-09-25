@@ -5,6 +5,7 @@ import com.opuside.app.core.ai.GeminiModelConfig
 import com.opuside.app.core.ai.GeminiModelConfig.FinishReason
 import com.opuside.app.core.ai.GeminiModelConfig.GenerationConfig
 import com.opuside.app.core.ai.GeminiModelConfig.GeminiModel
+import com.opuside.app.core.ai.GeminiModelConfig.ThinkingLevel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -23,16 +24,14 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🔷 GEMINI API CLIENT v1.1 (REST SSE Streaming)
+ * 🔷 GEMINI API CLIENT v3.0 (REST SSE Streaming)
  *
- * Endpoint: generativelanguage.googleapis.com/v1beta
- * Streaming via SSE: streamGenerateContent?alt=sse
- *
- * Fixes v1.1:
- * - 🔥 RAM: rawJsonBytes вместо toString().toRequestBody() — нет GC-фризов на больших историях
- * - 🔥 OpenAPI: строгая конвертация input_schema (Anthropic) → parameters (Gemini)
- *   Ключ: type=OBJECT + только properties/required — убирает Bad Request / 503 у Pro Preview
- * - 🔥 Умная обработка 429 (Retry-After с сервера) и 503/529
+ * Особенности версии:
+ * - Жесткая привязка thinkingLevel к модели (3.1 -> MEDIUM, 3.5 -> LOW)
+ * - Разделение обычного текста ответа и внутренних мыслей (thought: true)
+ * - 10-минутный read timeout для генерации до 65 536 токенов
+ * - Корректная трансляция OpenAPI схем инструментов без 400 Bad Request
+ * - Поддержка x-goog-api-key и отмены запросов через AtomicReference
  */
 @Singleton
 class GeminiApiClient @Inject constructor() {
@@ -44,23 +43,15 @@ class GeminiApiClient @Inject constructor() {
 
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.MINUTES)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.MINUTES) // Запас для генерации длинных файлов до 64K токенов
+        .writeTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    /**
-     * Reference to the current OkHttp Call for cancellation support.
-     * AtomicReference for thread safety.
-     */
     private val currentCall = AtomicReference<Call?>(null)
 
-    /**
-     * Cancel the currently running HTTP request.
-     * Safe to call from any thread.
-     */
     fun cancelCurrentRequest() {
         currentCall.getAndSet(null)?.cancel()
-        Log.d(TAG, "Current request cancelled")
+        Log.d(TAG, "Текущий HTTP-запрос отменён")
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -87,11 +78,8 @@ class GeminiApiClient @Inject constructor() {
             tools = if (sendTools) tools else null
         )
 
-        // Redact API key in logs
-        Log.d(TAG, "→ POST ${model.modelId} (${messages.size} msgs, " +
-                "maxTokens=${config.maxOutputTokens}, temp=${config.temperature})")
+        Log.d(TAG, "→ POST ${model.modelId} (msgs=${messages.size}, thinking=${model.forcedThinkingLevel.apiName}, maxOutput=${config.maxOutputTokens})")
 
-        // 🔥 FIX RAM: прямая конвертация в байты — избегаем двойного toString() на огромных историях
         val rawJsonBytes = requestBody.toString().toByteArray(Charsets.UTF_8)
 
         val request = Request.Builder()
@@ -124,7 +112,7 @@ class GeminiApiClient @Inject constructor() {
             }
         } catch (e: java.io.IOException) {
             if (call.isCanceled()) {
-                Log.d(TAG, "Request cancelled by user during execute")
+                Log.d(TAG, "Запрос отменен пользователем")
                 currentCall.set(null)
                 return@flow
             }
@@ -135,64 +123,52 @@ class GeminiApiClient @Inject constructor() {
         }
 
         try {
-            // ── Error handling ──────────────────────────────────────
             if (!response.isSuccessful) {
                 val errorBody = response.body?.string() ?: "Unknown error"
                 val errorMsg = parseErrorMessage(errorBody)
 
                 when (response.code) {
-                    // 🔥 FIX: берём Retry-After с сервера, не хардкодим
                     429 -> {
                         val retryAfter = response.header("Retry-After")?.toIntOrNull() ?: 15
-                        Log.w(TAG, "Rate limited. Retry after ${retryAfter}s")
                         emit(GeminiStreamResult.Error(
                             GeminiApiException(
-                                "Квота (Rate limit) API исчерпана: HTTP 429. " +
-                                "Ждем ~${retryAfter}s. Если у вас Pro модель — попробуйте Flash/Lite версию.",
+                                "Лимит запросов API исчерпан (HTTP 429). Ожидание ~${retryAfter}с.",
                                 429
                             )
                         ))
                     }
-                    // 🔥 FIX: 503 и 529 — перегрев сервера (огромный контекст / шторм сети)
                     503, 529 -> {
                         emit(GeminiStreamResult.Error(
                             GeminiApiException(
-                                "API сервер перегружен: HTTP ${response.code}. " +
-                                "Огромный размер контекста или шторм сети. $errorMsg",
+                                "Сервер Gemini временно перегружен (HTTP ${response.code}): $errorMsg",
                                 response.code
                             )
                         ))
                     }
                     403 -> {
-                        val isBilling = errorBody.contains("billing", ignoreCase = true) ||
-                                errorBody.contains("BILLING")
+                        val isBilling = errorBody.contains("billing", ignoreCase = true)
                         emit(GeminiStreamResult.Error(
                             GeminiApiException(
                                 if (isBilling) "Включите Billing на Google Cloud для этой модели."
-                                else "Ключ отклонен (403). Проверьте ключ.",
+                                else "API ключ отклонен (HTTP 403). Проверьте ключ.",
                                 403
                             )
                         ))
                     }
                     400 -> {
                         emit(GeminiStreamResult.Error(
-                            GeminiApiException("Bad request: $errorMsg", response.code)
+                            GeminiApiException("Ошибка формата запроса (HTTP 400): $errorMsg", 400)
                         ))
                     }
                     else -> {
-                        Log.e(TAG, "API error ${response.code}: $errorMsg")
                         emit(GeminiStreamResult.Error(
-                            GeminiApiException(
-                                "Gemini API error ${response.code}: $errorMsg",
-                                response.code
-                            )
+                            GeminiApiException("Ошибка Gemini API (${response.code}): $errorMsg", response.code)
                         ))
                     }
                 }
                 return@flow
             }
 
-            // ── Success: parse SSE stream ───────────────────────────
             emit(GeminiStreamResult.Started)
 
             val fullText = StringBuilder()
@@ -205,9 +181,8 @@ class GeminiApiClient @Inject constructor() {
             var hasToolCalls = false
             var lastFinishReason: FinishReason? = null
 
-            // Proper SSE parsing: accumulate data lines until empty line
             response.body!!.byteStream().use { inputStream ->
-                val reader = BufferedReader(InputStreamReader(inputStream))
+                val reader = BufferedReader(InputStreamReader(inputStream, Charsets.UTF_8))
                 val eventData = StringBuilder()
 
                 var line: String?
@@ -217,7 +192,6 @@ class GeminiApiClient @Inject constructor() {
                     if (l.startsWith("data: ")) {
                         eventData.append(l.removePrefix("data: "))
                     } else if (l.isEmpty() && eventData.isNotEmpty()) {
-                        // Empty line = end of SSE event
                         val jsonStr = eventData.toString().trim()
                         eventData.clear()
 
@@ -239,7 +213,6 @@ class GeminiApiClient @Inject constructor() {
                                 lastThoughtSignature = lastThoughtSignature
                             )
 
-                            // Emit text delta
                             if (fullText.isNotEmpty()) {
                                 emit(GeminiStreamResult.Delta(
                                     delta = "",
@@ -247,34 +220,36 @@ class GeminiApiClient @Inject constructor() {
                                 ))
                             }
                         } catch (e: Exception) {
-                            Log.w(TAG, "Parse chunk error: ${e.message}")
+                            Log.w(TAG, "Ошибка парсинга чанка: ${e.message}")
                         }
                     }
                 }
 
-                // Handle any remaining data
                 if (eventData.isNotEmpty()) {
                     val jsonStr = eventData.toString().trim()
                     if (jsonStr.isNotEmpty()) {
                         try {
-                            parseChunk(jsonStr, fullText, pendingToolCalls,
-                                { hasToolCalls = true },
-                                { lastFinishReason = it },
-                                { inp, out, think, cached ->
+                            parseChunk(
+                                jsonStr = jsonStr,
+                                fullText = fullText,
+                                pendingToolCalls = pendingToolCalls,
+                                onHasToolCalls = { hasToolCalls = true },
+                                onFinishReason = { lastFinishReason = it },
+                                onUsage = { inp, out, think, cached ->
                                     totalInputTokens = inp
                                     totalOutputTokens = out
                                     totalThinkingTokens = think
                                     totalCachedTokens = cached
                                 },
-                                lastThoughtSignature)
+                                lastThoughtSignature = lastThoughtSignature
+                            )
                         } catch (e: Exception) {
-                            Log.w(TAG, "Parse final chunk error: ${e.message}")
+                            Log.w(TAG, "Ошибка финального чанка: ${e.message}")
                         }
                     }
                 }
             }
 
-            // ── Build usage ─────────────────────────────────────────
             val usage = GeminiUsage(
                 inputTokens = totalInputTokens,
                 outputTokens = totalOutputTokens,
@@ -282,7 +257,6 @@ class GeminiApiClient @Inject constructor() {
                 cachedTokens = totalCachedTokens
             )
 
-            // ── Emit final result based on finish reason ────────────
             if (hasToolCalls) {
                 emit(GeminiStreamResult.ToolUse(
                     textSoFar = fullText.toString(),
@@ -293,34 +267,17 @@ class GeminiApiClient @Inject constructor() {
                 when (lastFinishReason) {
                     FinishReason.SAFETY -> {
                         emit(GeminiStreamResult.Error(
-                            GeminiApiException(
-                                "Response blocked by safety settings. " +
-                                "Try adjusting safety thresholds in Settings → Tune.",
-                                -1
-                            )
+                            GeminiApiException("Ответ заблокирован настройками безопасности Google.", -1)
                         ))
                     }
                     FinishReason.RECITATION -> {
                         emit(GeminiStreamResult.Error(
-                            GeminiApiException(
-                                "Response blocked due to recitation/copyright concerns.",
-                                -1
-                            )
-                        ))
-                    }
-                    FinishReason.BLOCKLIST, FinishReason.PROHIBITED_CONTENT, FinishReason.SPII -> {
-                        emit(GeminiStreamResult.Error(
-                            GeminiApiException(
-                                "Response blocked: ${lastFinishReason?.apiName}. " +
-                                "Adjust safety settings or rephrase your request.",
-                                -1
-                            )
+                            GeminiApiException("Ответ заблокирован из-за ограничений авторских прав (Recitation).", -1)
                         ))
                     }
                     FinishReason.MAX_TOKENS -> {
                         emit(GeminiStreamResult.Completed(
-                            fullText = fullText.toString() +
-                                    "\n\n⚠️ Response truncated (max tokens reached)",
+                            fullText = fullText.toString() + "\n\n⚠️ Ответ обрезан (достигнут лимит maxOutputTokens)",
                             usage = usage
                         ))
                     }
@@ -333,10 +290,7 @@ class GeminiApiClient @Inject constructor() {
                 }
             }
         } catch (e: java.io.IOException) {
-            if (call.isCanceled()) {
-                Log.d(TAG, "Request cancelled by user during stream read")
-                return@flow
-            }
+            if (call.isCanceled()) return@flow
             Log.e(TAG, "Stream IO error", e)
             emit(GeminiStreamResult.Error(e))
         } catch (e: Exception) {
@@ -351,7 +305,7 @@ class GeminiApiClient @Inject constructor() {
     }
 
     // ═══════════════════════════════════════════════════════════════════
-    // CHUNK PARSER
+    // CHUNK PARSER (Thinking-aware)
     // ═══════════════════════════════════════════════════════════════════
 
     private fun parseChunk(
@@ -375,24 +329,32 @@ class GeminiApiClient @Inject constructor() {
                 for (part in parts) {
                     val partObj = part.jsonObject
 
-                    // Text content
-                    partObj["text"]?.jsonPrimitive?.contentOrNull?.let { text ->
-                        fullText.append(text)
+                    // 1. Проверяем, является ли часть размышлением
+                    val isThought = partObj["thought"]?.jsonPrimitive?.booleanOrNull == true
+                    val explicitThoughtText = partObj["thought"]?.jsonPrimitive?.contentOrNull
+
+                    if (isThought) {
+                        // Токены мыслей НЕ выводим в ответ пользователю
+                        val thoughtSnippet = partObj["text"]?.jsonPrimitive?.contentOrNull ?: ""
+                        if (thoughtSnippet.isNotEmpty()) {
+                            Log.d(TAG, "Thinking: ${thoughtSnippet.take(60)}...")
+                        }
+                    } else if (explicitThoughtText != null) {
+                        Log.d(TAG, "Thinking: ${explicitThoughtText.take(60)}...")
+                    } else {
+                        // Обычный чистый текст ответа
+                        partObj["text"]?.jsonPrimitive?.contentOrNull?.let { text ->
+                            fullText.append(text)
+                        }
                     }
 
-                    // Thinking text (for logging/debug only)
-                    partObj["thought"]?.jsonPrimitive?.contentOrNull?.let { thought ->
-                        Log.d(TAG, "Thinking: ${thought.take(80)}...")
-                    }
-
-                    // Thinking signature
+                    // Сигнатура мыслей
                     partObj["thoughtSignature"]?.jsonPrimitive?.contentOrNull?.let { sig ->
                         lastThoughtSignature.clear()
                         lastThoughtSignature.append(sig)
-                        Log.d(TAG, "Got thoughtSignature: ${sig.take(20)}...")
                     }
 
-                    // Function call
+                    // Вызовы функций
                     partObj["functionCall"]?.jsonObject?.let { fc ->
                         val name = fc["name"]?.jsonPrimitive?.content ?: "unknown"
                         val args = fc["args"]?.jsonObject ?: buildJsonObject {}
@@ -406,14 +368,11 @@ class GeminiApiClient @Inject constructor() {
                 }
             }
 
-            // Finish reason
             candObj["finishReason"]?.jsonPrimitive?.contentOrNull?.let { reason ->
-                Log.d(TAG, "Finish reason: $reason")
                 onFinishReason(FinishReason.fromApi(reason))
             }
         }
 
-        // Usage metadata (appears in last chunk typically)
         chunk["usageMetadata"]?.jsonObject?.let { usage ->
             onUsage(
                 usage["promptTokenCount"]?.jsonPrimitive?.intOrNull ?: 0,
@@ -488,28 +447,20 @@ class GeminiApiClient @Inject constructor() {
             put("maxOutputTokens", JsonPrimitive(config.maxOutputTokens))
 
             if (config.stopSequences.isNotEmpty()) {
-                put("stopSequences", JsonArray(
-                    config.stopSequences.map { JsonPrimitive(it) }
-                ))
+                put("stopSequences", JsonArray(config.stopSequences.map { JsonPrimitive(it) }))
             }
             config.responseMimeType?.let {
                 put("responseMimeType", JsonPrimitive(it))
-            }
-            if (config.presencePenalty != 0f && model.supportsPresencePenalty) {
-                put("presencePenalty", JsonPrimitive(config.presencePenalty))
-            }
-            if (config.frequencyPenalty != 0f && model.supportsFrequencyPenalty) {
-                put("frequencyPenalty", JsonPrimitive(config.frequencyPenalty))
             }
             if (config.seed != null && model.supportsSeed) {
                 put("seed", JsonPrimitive(config.seed))
             }
 
-            if (model.supportsThinking &&
-                config.thinkingLevel != GeminiModelConfig.ThinkingLevel.NONE
-            ) {
+            // Принудительный режим Thinking, зашитый в модель:
+            // 3.1 Flash-Lite -> MEDIUM, 3.5 Flash-Lite -> LOW
+            if (model.supportsThinking && model.forcedThinkingLevel != ThinkingLevel.NONE) {
                 put("thinkingConfig", buildJsonObject {
-                    put("thinkingLevel", JsonPrimitive(config.thinkingLevel.apiName))
+                    put("thinkingLevel", JsonPrimitive(model.forcedThinkingLevel.apiName))
                 })
             }
         })
@@ -522,11 +473,7 @@ class GeminiApiClient @Inject constructor() {
             }
         }))
 
-        // ── Tools (function calling) ────────────────────────────────
-        // 🔥 FIX OpenAPI: строгая конвертация Anthropic input_schema → Gemini parameters.
-        // Проблема: Claude хранит схему в "input_schema", Gemini ожидает "parameters".
-        // Кроме того, Gemini 3.1 Pro Preview жёстко валидирует: type должен быть "OBJECT" (uppercase),
-        // и допускаются только поля properties + required. Лишние поля → Bad Request / 503.
+        // ── Tools (function declarations) ───────────────────────────
         if (!tools.isNullOrEmpty()) {
             put("tools", JsonArray(listOf(
                 buildJsonObject {
@@ -534,16 +481,12 @@ class GeminiApiClient @Inject constructor() {
                         buildJsonObject {
                             put("name", tool["name"]!!)
                             put("description", tool["description"]!!)
-                            // Клонируем только "внутренности" input_schema — убираем лишние поля
-                            val schema = tool["input_schema"]?.jsonObject
-                            if (schema != null) {
-                                put("parameters", buildJsonObject {
-                                    put("type", JsonPrimitive("OBJECT"))
-                                    schema["properties"]?.let { put("properties", it) }
-                                    schema["required"]?.let { put("required", it) }
-                                })
+
+                            // Подхватываем параметры из ToolExecutor
+                            val parameters = (tool["parameters"] ?: tool["input_schema"])?.jsonObject
+                            if (parameters != null) {
+                                put("parameters", parameters)
                             } else {
-                                // Нет схемы — пустой объект (безопасный фолбэк)
                                 put("parameters", buildJsonObject {
                                     put("type", JsonPrimitive("OBJECT"))
                                     put("properties", buildJsonObject {})
@@ -555,10 +498,6 @@ class GeminiApiClient @Inject constructor() {
             )))
         }
     }
-
-    // ═══════════════════════════════════════════════════════════════════
-    // HELPERS
-    // ═══════════════════════════════════════════════════════════════════
 
     private fun parseErrorMessage(body: String): String {
         return try {
@@ -575,16 +514,13 @@ class GeminiApiClient @Inject constructor() {
 // DATA CLASSES
 // ═══════════════════════════════════════════════════════════════════════════
 
-/**
- * Typed exception for Gemini API errors, preserving HTTP status code.
- */
 class GeminiApiException(
     message: String,
     val httpCode: Int
 ) : Exception(message)
 
 data class GeminiMessage(
-    val role: String,       // "user" or "model"
+    val role: String,
     val parts: List<GeminiPart>
 ) {
     companion object {
