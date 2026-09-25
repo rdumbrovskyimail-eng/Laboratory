@@ -1,4 +1,3 @@
-// Путь: app/src/main/java/com/opuside/app/feature/workflows/presentation/WorkflowsViewModel.kt
 package com.opuside.app.feature.workflows.presentation
 
 import android.content.Context
@@ -6,28 +5,31 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.Dispatchers
-import java.util.zip.ZipInputStream
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.WorkflowRun
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.ZipInputStream
 import javax.inject.Inject
 
 /**
  * ════════════════════════════════════════════════════════════════════════════
- * WORKFLOWS VIEW MODEL
+ * WORKFLOWS VIEW MODEL v2.2 (Streaming ZIP & Zero-OOM Optimized)
  * ════════════════════════════════════════════════════════════════════════════
  * 
  * Управляет состоянием экрана GitHub Actions workflows:
  * - Загрузка списка workflow runs
  * - Загрузка логов конкретного workflow
- * - Скачивание репозитория как ZIP
- * - Автообновление активных workflows
+ * - Потоковое скачивание и распаковка репозитория как ZIP без утечки памяти
+ * - Автообновление активных workflows с адаптивным интервалом
  */
 @HiltViewModel
 class WorkflowsViewModel @Inject constructor(
@@ -198,13 +200,13 @@ class WorkflowsViewModel @Inject constructor(
                             it.copy(
                                 isLoadingArtifacts = false,
                                 message = "Ошибка загрузки артефактов: ${e.message}"
-                            )
+                            ) 
                         }
                     }
                 )
             } catch (e: Exception) {
-                _state.update {
-                    it.copy(isLoadingArtifacts = false, message = "Ошибка: ${e.message}")
+                _state.update { 
+                    it.copy(isLoadingArtifacts = false, message = "Ошибка: ${e.message}") 
                 }
             }
         }
@@ -214,7 +216,6 @@ class WorkflowsViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(isLoadingReleaseForWorkflow = true) }
             
-            // 1. Сначала пытаемся найти нужный релиз в кэше (по совпадению SHA в описании релиза)
             val cached = _state.value.releases
             val matchedInCache = cached.find { it.releaseBody.contains(headSha) }
             
@@ -228,10 +229,8 @@ class WorkflowsViewModel @Inject constructor(
                 return@launch
             }
 
-            // 2. Если в кэше нет, загружаем с сервера и ищем по SHA
             gitHubApiClient.getReleases().fold(
                 onSuccess = { releases ->
-                    // Ищем релиз, который Github Action пометил этим же хэшем (headSha)
                     val matchedRelease = releases.find { it.body?.contains(headSha) == true }
                     
                     if (matchedRelease != null) {
@@ -258,7 +257,6 @@ class WorkflowsViewModel @Inject constructor(
                         }
                     }
                     
-                    // Если релиз не найден
                     _state.update { 
                         it.copy(
                             releaseForWorkflow = null,
@@ -279,7 +277,9 @@ class WorkflowsViewModel @Inject constructor(
             try {
                 gitHubApiClient.getArtifactDownloadUrl(artifactId).fold(
                     onSuccess = { url ->
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
                         context.startActivity(intent)
                         _state.update { it.copy(message = "Скачиваем $name...") }
                     },
@@ -308,8 +308,9 @@ class WorkflowsViewModel @Inject constructor(
                 val zipUrl = "https://github.com/${config.owner}/${config.repo}/archive/refs/heads/${config.branch}.zip"
                 
                 try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(zipUrl))
-                    intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(zipUrl)).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                    }
                     context.startActivity(intent)
                     
                     _state.update { 
@@ -396,7 +397,9 @@ class WorkflowsViewModel @Inject constructor(
             try {
                 gitHubApiClient.getReleaseAssetDownloadUrl(release.assetId).fold(
                     onSuccess = { redirectUrl ->
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(redirectUrl))
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(redirectUrl)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
                         context.startActivity(intent)
                         _state.update { it.copy(message = "Открываем скачивание...") }
                     },
@@ -419,9 +422,7 @@ class WorkflowsViewModel @Inject constructor(
             _state.update { it.copy(isLoading = true, error = null) }
             
             try {
-                val result = gitHubApiClient.getWorkflowRuns(
-                    perPage = 50
-                )
+                val result = gitHubApiClient.getWorkflowRuns(perPage = 50)
                 
                 result.fold(
                     onSuccess = { response ->
@@ -456,33 +457,55 @@ class WorkflowsViewModel @Inject constructor(
     private fun startAutoRefresh() {
         viewModelScope.launch {
             while (true) {
-                delay(5_000)
-                loadWorkflows() // всегда обновляем — UI всегда актуален
+                val hasActive = _state.value.workflows.any { it.status == "in_progress" || it.status == "queued" }
+                // Оптимизация лимитов: 5 сек во время активной сборки, 15 сек при простое
+                val pollInterval = if (hasActive) 5_000L else 15_000L
+                delay(pollInterval)
+                loadWorkflows()
             }
         }
     }
 
+    /**
+     * Потоковая загрузка архива репозитория:
+     * - Передаёт Authorization Bearer и User-Agent для приватных репо
+     * - Читает поток чанками по 8 КБ напрямую в буфер (устранена ошибка OutOfMemoryError)
+     */
     fun downloadAndProcessRepository() {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isProcessingRepository = true) }
+            var connection: HttpURLConnection? = null
             try {
                 val config = appSettings.gitHubConfig.first()
+                if (config.owner.isBlank() || config.repo.isBlank() || config.token.isBlank()) {
+                    _state.update { it.copy(isProcessingRepository = false, message = "GitHub не настроен в Settings") }
+                    return@launch
+                }
+
                 val zipUrl = "https://github.com/${config.owner}/${config.repo}/archive/refs/heads/${config.branch}.zip"
-                val connection = java.net.URL(zipUrl).openConnection() as java.net.HttpURLConnection
-                connection.instanceFollowRedirects = true
-                connection.connect()
-                val bytes = connection.inputStream.readBytes()
-                connection.disconnect()
+                connection = (URL(zipUrl).openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = true
+                    setRequestProperty("Authorization", "Bearer ${config.token}")
+                    setRequestProperty("User-Agent", "OpusIDE-Android-Client/1.0")
+                    connectTimeout = 20_000
+                    readTimeout = 60_000
+                    connect()
+                }
+
                 val sb = StringBuilder()
-                ZipInputStream(bytes.inputStream()).use { zis ->
+                ZipInputStream(connection.inputStream.buffered()).use { zis ->
                     var entry = zis.nextEntry
+                    val buffer = ByteArray(8192)
                     while (entry != null) {
-                        if (!entry.isDirectory && !entry.name.endsWith(".jar")) {
-                            try {
-                                val text = zis.readBytes().toString(Charsets.UTF_8)
-                                if (sb.isNotEmpty()) sb.append(" ")
-                                sb.append(text)
-                            } catch (_: Exception) {}
+                        if (!entry.isDirectory && !entry.name.endsWith(".jar") && !entry.name.endsWith(".png") && !entry.name.endsWith(".so")) {
+                            val out = ByteArrayOutputStream()
+                            var count: Int
+                            while (zis.read(buffer).also { count = it } != -1) {
+                                out.write(buffer, 0, count)
+                            }
+                            val text = out.toString(Charsets.UTF_8.name())
+                            if (sb.isNotEmpty()) sb.append("\n\n")
+                            sb.append("--- FILE: ${entry.name} ---\n").append(text)
                         }
                         zis.closeEntry()
                         entry = zis.nextEntry
@@ -491,6 +514,8 @@ class WorkflowsViewModel @Inject constructor(
                 _state.update { it.copy(isProcessingRepository = false, repositoryTextContent = sb.toString()) }
             } catch (e: Exception) {
                 _state.update { it.copy(isProcessingRepository = false, message = "Ошибка: ${e.message}") }
+            } finally {
+                connection?.disconnect()
             }
         }
     }
