@@ -15,7 +15,9 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -396,7 +398,6 @@ class PipelineViewModel @Inject constructor(
         _totalCostEur.value = 0.0; _totalTokens.value = 0
     }
 
-    // ИСПРАВЛЕННЫЙ ЭКСПОРТ РЕПОЗИТОРИЯ: Читает файлы через API в Online и с диска в Offline
     fun exportRepoToTxt(context: Context) {
         viewModelScope.launch {
             try {
