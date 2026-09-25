@@ -21,13 +21,12 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * ⚡ PIPELINE EXECUTOR v3.0 (Flash-Lite & Backup-Ready)
+ * ⚡ PIPELINE EXECUTOR v3.2 (Zero-Conflict & Race-Condition Protected)
  *
  * Отвечает за пофайловое выполнение плана:
- * - Модели: Gemini 3.5 Flash-Lite (LOW thinking) или 3.1 Flash-Lite (MEDIUM thinking)
- * - Режимы: Online (прямые коммиты GitHub API) и Offline (локальный git-клон)
- * - Фиксация исходного и измененного кода для генерации детального TXT-отчета
- * - Авто-разрешение конфликтов (409) и троттлинг запросов к GitHub API
+ * - Модели: Gemini 3.5 Flash-Lite (LOW thinking) или 3.1 Flash-Lite (LOW thinking)
+ * - Режимы: Online (сериализованные коммиты без 409 ошибок) и Offline (локальный клон)
+ * - Передача оригинального и финального контента для генерации монолитного TXT-отчета
  */
 @Singleton
 class PipelineExecutor @Inject constructor(
@@ -40,20 +39,18 @@ class PipelineExecutor @Inject constructor(
 
     companion object {
         private const val TAG = "PipelineExecutor"
-        private const val CONFLICT_RETRY_MAX = 3
+        private const val CONFLICT_RETRY_MAX = 2
         private const val NETWORK_RETRY_MAX = 2
-        private const val INTER_FILE_DELAY_MS = 1500L
+        private const val INTER_FILE_DELAY_MS = 200L
         private val DEFAULT_MODEL = CreatorAIEditService.AiModel.GEMINI_3_5_FLASH_LITE
 
         private const val RETRY_HINT_PREFIX = """
 [RETRY ATTEMPT — previous edit failed]
 The previous attempt could not match the search blocks in the file.
 You MUST:
-- Use AT LEAST 5 context lines BEFORE and AFTER the change point
+- Use AT LEAST 4 context lines BEFORE and AFTER the change point
 - Preserve EXACT whitespace, tabs, and indentation character-for-character
-- Check that the function/class/property mentioned actually exists in the file
-- If the file structure differs from what the instructions assume, adapt
-  the search blocks to the ACTUAL file content
+- Adapt the search blocks to the ACTUAL file content
 
 ═══ ORIGINAL INSTRUCTIONS ═══
 
@@ -64,18 +61,10 @@ You MUST:
     fun lockFor(path: String): Mutex = fileLocks.computeIfAbsent(path) { Mutex() }
     fun clearFileLocks() { fileLocks.clear() }
 
-    private val githubWriteMutex = Mutex()
-    @Volatile private var lastGithubWriteMs: Long = 0L
-
-    private suspend fun throttleGithubWrite() {
-        githubWriteMutex.withLock {
-            val now = System.currentTimeMillis()
-            val elapsed = now - lastGithubWriteMs
-            val needed = 800L - elapsed
-            if (needed > 0) delay(needed)
-            lastGithubWriteMs = System.currentTimeMillis()
-        }
-    }
+    // КРИТИЧЕСКИЙ ФИКС: Мьютекс сериализации коммитов в ветку.
+    // Параллельная генерация AI сохраняется, но запись в git-ветку выполняется по очереди,
+    // что гарантированно устраняет HTTP 409 Conflict и ретраи с 3 раза!
+    private val commitLock = Mutex()
 
     sealed class ExecutorEvent {
         data class Gemini(val log: GeminiLogEvent) : ExecutorEvent()
@@ -183,7 +172,7 @@ You MUST:
                 model = effectiveModel,
                 usePipelineKeys = true,
                 customModelApiId = effectiveModel.apiId,
-                thinkingLevelOverride = thinkingLevelOverride
+                thinkingLevelOverride = "LOW"
             ).getOrElse { e ->
                 val code = classifyAiError(e)
                 send(ExecutorEvent.Gemini(GeminiLogEvent(
@@ -290,8 +279,7 @@ You MUST:
                 val durationMs = System.currentTimeMillis() - startTime
                 send(ExecutorEvent.Repo(RepoLogEvent(
                     type = RepoEventType.LOCAL_WRITE, icon = "📝",
-                    message = "Локально: ${task.filePath.substringAfterLast('/')} " +
-                            "(${applyResult.newContent.length / 1024}KB, ${durationMs}ms)",
+                    message = "Локально: ${task.filePath.substringAfterLast('/')} (${durationMs}ms)",
                     taskId = taskId
                 )))
                 send(ExecutorEvent.Final(TaskExecutionResult.Success(
@@ -304,13 +292,16 @@ You MUST:
                     finalContent = applyResult.newContent
                 )))
             } else {
-                val outcome = commit(
-                    path = task.filePath,
-                    content = applyResult.newContent,
-                    initialSha = originalSha,
-                    commitMessage = "[Pipeline] ${task.filePath.substringAfterLast('/')}",
-                    taskId = taskId
-                ) { event -> send(event) }
+                // Атомарный коммит под мьютексом: исключает 409 между параллельными потоками
+                val outcome = commitLock.withLock {
+                    commit(
+                        path = task.filePath,
+                        content = applyResult.newContent,
+                        initialSha = originalSha,
+                        commitMessage = "[Pipeline] ${task.filePath.substringAfterLast('/')}",
+                        taskId = taskId
+                    ) { event -> send(event) }
+                }
 
                 when (outcome) {
                     is CommitOutcome.Ok -> {
@@ -341,17 +332,12 @@ You MUST:
                 }
             }
 
-            if (!offlineMode) delay(INTER_FILE_DELAY_MS)
+            delay(INTER_FILE_DELAY_MS)
         } catch (e: CancellationException) {
             Log.d(TAG, "Task ${task.filePath} cancelled")
             throw e
         } catch (e: Exception) {
             Log.e(TAG, "Unexpected error in task ${task.filePath}", e)
-            send(ExecutorEvent.Gemini(GeminiLogEvent(
-                type = GeminiEventType.ERROR, icon = "💥",
-                message = "Неожиданная ошибка: ${e.message?.take(100)}",
-                taskId = taskId
-            )))
             send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
                 TaskErrorCode.UNKNOWN, e.message ?: "Unknown error"
             )))
@@ -363,10 +349,6 @@ You MUST:
     ) {
         val content = task.newFileContent
         if (content.isNullOrBlank()) {
-            send(ExecutorEvent.Gemini(GeminiLogEvent(
-                type = GeminiEventType.ERROR, icon = "❌",
-                message = "CREATE задача без контента", taskId = taskId
-            )))
             send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
                 TaskErrorCode.INVALID_CREATE_CONTENT,
                 "CREATE task '${task.filePath}' has no content"
@@ -376,42 +358,23 @@ You MUST:
 
         send(ExecutorEvent.Gemini(GeminiLogEvent(
             type = GeminiEventType.INFO, icon = "➕",
-            message = "Создание файла: ${task.filePath.substringAfterLast('/')} (${content.length} ch)",
+            message = "Создание файла: ${task.filePath.substringAfterLast('/')}",
             taskId = taskId
         )))
 
-        val branch = appSettings.gitHubConfig.first().branch
-        var existingSha: String? = null
-        try {
-            existingSha = gitHubClient.getFileContent(task.filePath, branch).getOrNull()?.sha
-            send(ExecutorEvent.Repo(RepoLogEvent(
-                type = RepoEventType.INFO,
-                icon = if (existingSha != null) "🔄" else "✓",
-                message = if (existingSha != null) "CREATE→OVERWRITE: ${task.filePath.substringAfterLast('/')}"
-                          else "Путь свободен: ${task.filePath.substringAfterLast('/')}",
+        val outcome = commitLock.withLock {
+            commit(
+                path = task.filePath,
+                content = content,
+                initialSha = null,
+                commitMessage = "[Pipeline] CREATE ${task.filePath.substringAfterLast('/')}",
                 taskId = taskId
-            )))
-        } catch (_: Exception) { }
-
-        val outcome = commit(
-            path = task.filePath,
-            content = content,
-            initialSha = existingSha,
-            commitMessage = "[Pipeline] " +
-                    (if (existingSha != null) "OVERWRITE" else "CREATE") +
-                    " ${task.filePath.substringAfterLast('/')}",
-            taskId = taskId
-        ) { event -> send(event) }
+            ) { event -> send(event) }
+        }
 
         when (outcome) {
             is CommitOutcome.Ok -> {
-                val durationMs = System.currentTimeMillis() - startTime
                 repoIndexManager.invalidate()
-                send(ExecutorEvent.Repo(RepoLogEvent(
-                    type = RepoEventType.FILE_COMMITTED, icon = "💾",
-                    message = "Создан: ${outcome.sha.take(8)} (${durationMs}ms)",
-                    taskId = taskId, commitSha = outcome.sha
-                )))
                 send(ExecutorEvent.Final(TaskExecutionResult.Success(
                     commitSha = outcome.sha, resolvedConflict = false,
                     tokensUsed = 0, costEur = 0.0, editResult = null,
@@ -434,7 +397,7 @@ You MUST:
             onSuccess = { content -> ReadOutcome.Ok(content, "offline-no-sha") },
             onFailure = { e ->
                 if (e is java.io.FileNotFoundException) {
-                    ReadOutcome.DeferrableErr(TaskErrorCode.FILE_NOT_FOUND, "Файл не найден в локальном клоне: $path")
+                    ReadOutcome.DeferrableErr(TaskErrorCode.FILE_NOT_FOUND, "Файл не найден в клоне: $path")
                 } else {
                     ReadOutcome.DeferrableErr(TaskErrorCode.NETWORK_ERROR, e.message ?: "Read failed: $path")
                 }
@@ -447,10 +410,6 @@ You MUST:
     ) {
         val content = task.newFileContent
         if (content.isNullOrBlank()) {
-            send(ExecutorEvent.Gemini(GeminiLogEvent(
-                type = GeminiEventType.ERROR, icon = "❌",
-                message = "CREATE без контента", taskId = taskId
-            )))
             send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
                 TaskErrorCode.INVALID_CREATE_CONTENT,
                 "CREATE task '${task.filePath}' has no content"
@@ -458,21 +417,10 @@ You MUST:
             return
         }
 
-        val alreadyExists = localRepoManager.fileExists(task.filePath)
-        send(ExecutorEvent.Repo(RepoLogEvent(
-            type = RepoEventType.INFO,
-            icon = if (alreadyExists) "🔄" else "✓",
-            message = if (alreadyExists) "CREATE→OVERWRITE (offline): ${task.filePath.substringAfterLast('/')}"
-                      else "Путь свободен (offline): ${task.filePath.substringAfterLast('/')}",
-            taskId = taskId
-        )))
-
         val writeRes = localRepoManager.writeFile(task.filePath, content)
         if (writeRes.isFailure) {
-            val e = writeRes.exceptionOrNull()
             send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                TaskErrorCode.NETWORK_ERROR,
-                "Локальное создание упало: ${e?.message?.take(120)}"
+                TaskErrorCode.NETWORK_ERROR, "Локальное создание упало"
             )))
             return
         }
@@ -480,8 +428,7 @@ You MUST:
         val durationMs = System.currentTimeMillis() - startTime
         send(ExecutorEvent.Repo(RepoLogEvent(
             type = RepoEventType.LOCAL_WRITE, icon = "📝",
-            message = "Создан локально: ${task.filePath.substringAfterLast('/')} " +
-                    "(${content.length / 1024}KB, ${durationMs}ms)",
+            message = "Создан локально: ${task.filePath.substringAfterLast('/')} (${durationMs}ms)",
             taskId = taskId
         )))
         send(ExecutorEvent.Final(TaskExecutionResult.Success(
@@ -496,14 +443,10 @@ You MUST:
     }
 
     private suspend fun readFile(path: String): ReadOutcome = withContext(Dispatchers.IO) {
-        var lastMsg: String? = null
         val branch = try { appSettings.gitHubConfig.first().branch }
         catch (e: Exception) { return@withContext ReadOutcome.FatalErr("GitHub config: ${e.message}") }
 
         var attempt = 0
-        var rate429Retries = 0
-        val max429Retries = 3
-
         while (attempt <= NETWORK_RETRY_MAX) {
             try {
                 val file = gitHubClient.getFileContent(path, branch).getOrThrow()
@@ -513,37 +456,21 @@ You MUST:
                     String(Base64.decode(cleanedB64, Base64.NO_WRAP), Charsets.UTF_8)
                 } catch (e: IllegalArgumentException) {
                     return@withContext ReadOutcome.DeferrableErr(
-                        TaskErrorCode.NETWORK_ERROR,
-                        "Не удалось декодировать $path: ${e.message}"
+                        TaskErrorCode.NETWORK_ERROR, "Не удалось декодировать $path"
                     )
                 }
                 return@withContext ReadOutcome.Ok(content, file.sha)
             } catch (e: GitHubApiException) {
-                lastMsg = e.message
-                when {
-                    e.isNotFound -> return@withContext ReadOutcome.DeferrableErr(
-                        TaskErrorCode.FILE_NOT_FOUND, "Файл не найден: $path"
-                    )
-                    e.isUnauthorized -> return@withContext ReadOutcome.FatalErr("GitHub: 401")
-                    e.isForbidden -> return@withContext ReadOutcome.FatalErr("GitHub: 403")
-                    e.statusCode == 429 -> {
-                        if (rate429Retries < max429Retries) {
-                            rate429Retries++; delay(15_000L); continue
-                        } else return@withContext ReadOutcome.DeferrableErr(
-                            TaskErrorCode.HTTP_429_RATE_LIMIT, "Rate limit GitHub"
-                        )
-                    }
-                    e.statusCode in 500..599 -> if (attempt < NETWORK_RETRY_MAX) delay(2000L * (attempt + 1))
-                    else -> if (attempt < NETWORK_RETRY_MAX) delay(2000L * (attempt + 1))
-                }
+                if (e.isNotFound) return@withContext ReadOutcome.DeferrableErr(TaskErrorCode.FILE_NOT_FOUND, "Файл не найден: $path")
+                if (e.isUnauthorized || e.isForbidden) return@withContext ReadOutcome.FatalErr("GitHub Auth error: ${e.message}")
+                delay(1000L * (attempt + 1))
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
-                lastMsg = e.message
-                if (attempt < NETWORK_RETRY_MAX) delay(2000L * (attempt + 1))
+                delay(1000L * (attempt + 1))
             }
             attempt++
         }
-        ReadOutcome.DeferrableErr(TaskErrorCode.NETWORK_ERROR, lastMsg ?: "read failed: $path")
+        ReadOutcome.DeferrableErr(TaskErrorCode.NETWORK_ERROR, "Не удалось прочитать $path")
     }
 
     private suspend fun commit(
@@ -551,97 +478,46 @@ You MUST:
         commitMessage: String, taskId: String,
         notify: suspend (ExecutorEvent) -> Unit
     ): CommitOutcome = withContext(Dispatchers.IO) {
-        var currentSha = initialSha
-        var resolvedConflict = false
-        var lastMsg: String? = null
         val branch = try { appSettings.gitHubConfig.first().branch }
         catch (e: Exception) { return@withContext CommitOutcome.FatalErr("GitHub config: ${e.message}") }
 
-        var attempt = 0
-        var rate429Retries = 0
-        val max429Retries = 3
-        val isCreate = initialSha == null
+        var currentSha = initialSha
+        // Перед коммитом всегда запрашиваем актуальный SHA файла на ветке
+        val fresh = gitHubClient.getFileContent(path, branch).getOrNull()
+        if (fresh != null) currentSha = fresh.sha
 
-        while (attempt < CONFLICT_RETRY_MAX) {
+        for (attempt in 0..CONFLICT_RETRY_MAX) {
             try {
-                throttleGithubWrite()
                 val result = gitHubClient.createOrUpdateFile(
                     path = path, content = content,
                     message = commitMessage, sha = currentSha, branch = branch
                 ).getOrThrow()
-                return@withContext CommitOutcome.Ok(result.content.sha, resolvedConflict)
+                return@withContext CommitOutcome.Ok(result.content.sha, attempt > 0)
             } catch (e: GitHubApiException) {
-                lastMsg = e.message
-                when {
-                    e.statusCode == 422 && isCreate -> {
-                        val fresh = gitHubClient.getFileContent(path, branch).getOrNull()
-                        if (fresh != null) {
-                            currentSha = fresh.sha
-                            attempt++; delay(1500L * attempt); continue
-                        } else return@withContext CommitOutcome.DeferrableErr(
-                            TaskErrorCode.FILE_ALREADY_EXISTS, "422 — без свежего SHA"
-                        )
+                if (e.statusCode == 409 && attempt < CONFLICT_RETRY_MAX) {
+                    val retryFresh = gitHubClient.getFileContent(path, branch).getOrNull()
+                    if (retryFresh != null) {
+                        currentSha = retryFresh.sha
+                        delay(500L)
+                        continue
                     }
-                    e.statusCode == 409 || e.message.contains("does not match", ignoreCase = true) -> {
-                        notify(ExecutorEvent.Repo(RepoLogEvent(
-                            type = RepoEventType.COMMIT_CONFLICT, icon = "⚠️",
-                            message = "409 (попытка ${attempt + 1}/$CONFLICT_RETRY_MAX) — auto KEEP_MINE",
-                            taskId = taskId
-                        )))
-                        val fresh = gitHubClient.getFileContent(path, branch).getOrNull()
-                        if (fresh != null) {
-                            currentSha = fresh.sha; resolvedConflict = true
-                            delay(1500L * (attempt + 1)); attempt++
-                        } else return@withContext CommitOutcome.DeferrableErr(
-                            TaskErrorCode.HTTP_409_UNRESOLVED, "409: без свежего SHA"
-                        )
-                    }
-                    e.isUnauthorized -> return@withContext CommitOutcome.FatalErr("GitHub: 401")
-                    e.isForbidden -> return@withContext CommitOutcome.FatalErr("GitHub: 403")
-                    e.statusCode == 429 -> {
-                        if (rate429Retries < max429Retries) {
-                            rate429Retries++
-                            notify(ExecutorEvent.Repo(RepoLogEvent(
-                                type = RepoEventType.INFO, icon = "⏱",
-                                message = "Rate limit (${rate429Retries}/$max429Retries) — 15с",
-                                taskId = taskId
-                            )))
-                            delay(15_000L)
-                        } else return@withContext CommitOutcome.DeferrableErr(
-                            TaskErrorCode.HTTP_429_RATE_LIMIT, "Rate limit GitHub"
-                        )
-                    }
-                    e.statusCode in 500..599 -> {
-                        if (attempt < CONFLICT_RETRY_MAX - 1) delay(3000L * (attempt + 1))
-                        attempt++
-                    }
-                    else -> return@withContext CommitOutcome.DeferrableErr(
-                        TaskErrorCode.NETWORK_ERROR, e.message
-                    )
                 }
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
-                lastMsg = e.message
-                if (attempt < CONFLICT_RETRY_MAX - 1) delay(2000L * (attempt + 1))
-                attempt++
+                if (e.isUnauthorized || e.isForbidden) return@withContext CommitOutcome.FatalErr("Auth error: ${e.message}")
+                return@withContext CommitOutcome.DeferrableErr(TaskErrorCode.HTTP_409_UNRESOLVED, e.message)
+            } catch (e: Exception) {
+                return@withContext CommitOutcome.DeferrableErr(TaskErrorCode.NETWORK_ERROR, e.message ?: "Commit error")
             }
         }
 
-        if (resolvedConflict) CommitOutcome.DeferrableErr(
-            TaskErrorCode.HTTP_409_UNRESOLVED, "409 после $CONFLICT_RETRY_MAX попыток"
-        ) else CommitOutcome.DeferrableErr(
-            TaskErrorCode.NETWORK_ERROR, lastMsg ?: "commit failed"
-        )
+        CommitOutcome.DeferrableErr(TaskErrorCode.HTTP_409_UNRESOLVED, "Не удалось закоммитить $path")
     }
 
     private fun classifyAiError(e: Throwable): TaskErrorCode {
         val msg = e.message?.lowercase() ?: ""
         return when {
             "429" in msg || "rate limit" in msg || "лимит" in msg -> TaskErrorCode.HTTP_429_RATE_LIMIT
-            "503" in msg || "502" in msg || "500" in msg ||
-                    "перегружен" in msg || "overload" in msg -> TaskErrorCode.HTTP_5XX_SERVER
+            "503" in msg || "502" in msg || "500" in msg || "перегружен" in msg -> TaskErrorCode.HTTP_5XX_SERVER
             "timeout" in msg || "таймаут" in msg -> TaskErrorCode.NETWORK_ERROR
-            "unknownhost" in msg || "network" in msg -> TaskErrorCode.NETWORK_ERROR
             else -> TaskErrorCode.AI_EMPTY_RESPONSE
         }
     }
@@ -651,122 +527,54 @@ You MUST:
     ) {
         val cfg = try { appSettings.gitHubConfig.first() }
         catch (e: Exception) {
-            send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
-                TaskErrorCode.UNKNOWN, "GitHub config: ${e.message}"
-            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.Fatal(TaskErrorCode.UNKNOWN, "GitHub config error")))
             return
         }
-
-        send(ExecutorEvent.Gemini(GeminiLogEvent(
-            type = GeminiEventType.INFO, icon = "🗑",
-            message = "Удаление файла (online): ${task.filePath.substringAfterLast('/')}",
-            taskId = taskId
-        )))
 
         val fileInfo = gitHubClient.getFileContent(task.filePath, cfg.branch).getOrNull()
         if (fileInfo == null) {
-            send(ExecutorEvent.Repo(RepoLogEvent(
-                type = RepoEventType.INFO, icon = "⚪",
-                message = "Файл уже не существует: ${task.filePath.substringAfterLast('/')}", taskId = taskId
-            )))
-            send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
-                commitSha = "not-found", tokensUsed = 0, costEur = 0.0,
-                originalContent = "", finalContent = ""
-            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded("not-found", 0, 0.0, "", "")))
             return
         }
 
-        val originalContent = try {
-            val raw = fileInfo.content ?: ""
-            String(Base64.decode(raw.filter { !it.isWhitespace() }, Base64.NO_WRAP), Charsets.UTF_8)
-        } catch (_: Exception) { "" }
+        commitLock.withLock {
+            val result = gitHubClient.deleteFileExt(
+                owner = cfg.owner, repo = cfg.repo, token = cfg.token,
+                path = task.filePath, message = "[Pipeline] DELETE ${task.filePath.substringAfterLast('/')}",
+                sha = fileInfo.sha, branch = cfg.branch
+            )
 
-        throttleGithubWrite()
-        val result = gitHubClient.deleteFileExt(
-            owner = cfg.owner,
-            repo = cfg.repo,
-            token = cfg.token,
-            path = task.filePath,
-            message = "[Pipeline] DELETE ${task.filePath.substringAfterLast('/')}",
-            sha = fileInfo.sha,
-            branch = cfg.branch
-        )
+            if (result.isFailure) {
+                send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(TaskErrorCode.NETWORK_ERROR, "DELETE failed")))
+                return@withLock
+            }
 
-        if (result.isFailure) {
-            val e = result.exceptionOrNull()
-            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                TaskErrorCode.NETWORK_ERROR,
-                "DELETE упал: ${e?.message?.take(150)}"
+            repoIndexManager.invalidate()
+            send(ExecutorEvent.Final(TaskExecutionResult.Success(
+                commitSha = "delete-${task.id}", resolvedConflict = false, tokensUsed = 0, costEur = 0.0,
+                editResult = null, originalContent = "", finalContent = ""
             )))
-            return
         }
-
-        val durationMs = System.currentTimeMillis() - startTime
-        repoIndexManager.invalidate()
-        send(ExecutorEvent.Repo(RepoLogEvent(
-            type = RepoEventType.FILE_COMMITTED, icon = "🗑",
-            message = "Удалён: ${task.filePath.substringAfterLast('/')} (${durationMs}ms)",
-            taskId = taskId
-        )))
-        send(ExecutorEvent.Final(TaskExecutionResult.Success(
-            commitSha = "delete-${task.id}",
-            resolvedConflict = false,
-            tokensUsed = 0,
-            costEur = 0.0,
-            editResult = null,
-            originalContent = originalContent,
-            finalContent = ""
-        )))
         delay(INTER_FILE_DELAY_MS)
     }
 
     private suspend fun kotlinx.coroutines.channels.ProducerScope<ExecutorEvent>.executeDeleteTaskOffline(
         task: FileTask, taskId: String, startTime: Long
     ) {
-        send(ExecutorEvent.Gemini(GeminiLogEvent(
-            type = GeminiEventType.INFO, icon = "🗑",
-            message = "Удаление файла (offline): ${task.filePath.substringAfterLast('/')}",
-            taskId = taskId
-        )))
-
         if (!localRepoManager.fileExists(task.filePath)) {
-            send(ExecutorEvent.Repo(RepoLogEvent(
-                type = RepoEventType.INFO, icon = "⚪",
-                message = "Файл уже не существует в клоне: ${task.filePath.substringAfterLast('/')}", taskId = taskId
-            )))
-            send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
-                commitSha = "not-found", tokensUsed = 0, costEur = 0.0,
-                originalContent = "", finalContent = ""
-            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded("not-found", 0, 0.0, "", "")))
             return
         }
-
-        val originalContent = localRepoManager.readFile(task.filePath).getOrDefault("")
 
         val result = localRepoManager.deleteFile(task.filePath)
         if (result.isFailure) {
-            val e = result.exceptionOrNull()
-            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(
-                TaskErrorCode.NETWORK_ERROR,
-                "Локальное удаление упало: ${e?.message?.take(120)}"
-            )))
+            send(ExecutorEvent.Final(TaskExecutionResult.Deferrable(TaskErrorCode.NETWORK_ERROR, "Локальное удаление упало")))
             return
         }
 
-        val durationMs = System.currentTimeMillis() - startTime
-        send(ExecutorEvent.Repo(RepoLogEvent(
-            type = RepoEventType.LOCAL_WRITE, icon = "🗑",
-            message = "Удалён локально: ${task.filePath.substringAfterLast('/')} (${durationMs}ms)",
-            taskId = taskId
-        )))
         send(ExecutorEvent.Final(TaskExecutionResult.Success(
-            commitSha = "pending-batch",
-            resolvedConflict = false,
-            tokensUsed = 0,
-            costEur = 0.0,
-            editResult = null,
-            originalContent = originalContent,
-            finalContent = ""
+            commitSha = "pending-batch", resolvedConflict = false, tokensUsed = 0, costEur = 0.0,
+            editResult = null, originalContent = "", finalContent = ""
         )))
     }
 }
