@@ -7,16 +7,29 @@ import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 🔷 GEMINI MODEL CONFIGURATION v3.2 (Speed & Stability Optimized)
+ *
+ * Строго две модели Flash-Lite с полным паспортным лимитом:
+ * - Gemini 3.1 Flash-Lite: 1 048 576 ввод / 65 536 вывод (Оптимизировано: LOW thinking)
+ * - Gemini 3.5 Flash-Lite: 1 048 576 ввод / 65 536 вывод (Оптимизировано: LOW thinking)
+ *
+ * Цены:
+ * - 3.1 Flash-Lite: $0.25 in / $1.50 out (кэш $0.025 / 1M)
+ * - 3.5 Flash-Lite: $0.30 in / $2.50 out (кэш $0.030 / 1M)
  */
 object GeminiModelConfig {
 
     private const val TAG = "GeminiModelConfig"
 
+    // Официальные лимиты Google
     const val OFFICIAL_CONTEXT_WINDOW = 1_048_576 // 1M tokens
     const val OFFICIAL_MAX_OUTPUT = 65_536        // 64K tokens
-    const val ECO_OUTPUT_TOKENS = 16_384
-    const val CACHE_TTL_MS = 5 * 60 * 1000L
+    const val ECO_OUTPUT_TOKENS = 16_384          // Опциональный эконом-режим
+    const val CACHE_TTL_MS = 5 * 60 * 1000L       // 5 min
     const val API_KEY_PREFIX = "AIza"
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SAFETY SETTINGS
+    // ═══════════════════════════════════════════════════════════════════
 
     enum class HarmCategory(val apiName: String, val displayName: String) {
         HARASSMENT("HARM_CATEGORY_HARASSMENT", "Harassment"),
@@ -33,12 +46,20 @@ object GeminiModelConfig {
         BLOCK_LOW_AND_ABOVE("BLOCK_LOW_AND_ABOVE", "High")
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // THINKING LEVELS
+    // ═══════════════════════════════════════════════════════════════════
+
     enum class ThinkingLevel(val apiName: String, val displayName: String) {
         NONE("NONE", "Off"),
         LOW("LOW", "Low"),
         MEDIUM("MEDIUM", "Medium"),
         HIGH("HIGH", "High")
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FINISH REASONS
+    // ═══════════════════════════════════════════════════════════════════
 
     enum class FinishReason(val apiName: String) {
         STOP("STOP"),
@@ -56,6 +77,10 @@ object GeminiModelConfig {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // MODELS (Strictly 3.1 Flash-Lite & 3.5 Flash-Lite)
+    // ═══════════════════════════════════════════════════════════════════
+
     enum class GeminiModel(
         val modelId: String,
         val displayName: String,
@@ -71,7 +96,7 @@ object GeminiModelConfig {
         val cacheStoragePricePerMPerHour: Double,
         val supportsThinking: Boolean,
         val thinkingOutputPricePerM: Double,
-        val forcedThinkingLevel: ThinkingLevel,
+        val forcedThinkingLevel: ThinkingLevel, // Штатный зафиксированный режим
         val supportsGrounding: Boolean,
         val supportsCodeExecution: Boolean,
         val supportsFunctionCalling: Boolean,
@@ -86,6 +111,7 @@ object GeminiModelConfig {
         val speedRating: Int,
         val emoji: String
     ) {
+        // ── Gemini 3.5 Flash-Lite (Штатно: LOW thinking) ─────────────
         GEMINI_3_5_FLASH_LITE(
             modelId = "gemini-3.5-flash-lite",
             displayName = "3.5 Flash-Lite",
@@ -117,10 +143,11 @@ object GeminiModelConfig {
             emoji = "⚡"
         ),
 
+        // ── Gemini 3.1 Flash-Lite (Штатно: LOW thinking для быстрого отклика) ──────────
         GEMINI_3_1_FLASH_LITE(
             modelId = "gemini-3.1-flash-lite",
             displayName = "3.1 Flash-Lite",
-            description = "Ультра-бюджетная модель, 1M ввод, 64K вывод, LOW thinking (быстрый отклик)",
+            description = "Ультра-бюджетная модель, 1M ввод, 64K вывод, LOW thinking",
             contextWindow = OFFICIAL_CONTEXT_WINDOW,
             maxOutputTokens = OFFICIAL_MAX_OUTPUT,
             inputPricePerM = 0.25,
@@ -132,7 +159,7 @@ object GeminiModelConfig {
             cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
             thinkingOutputPricePerM = 1.50,
-            forcedThinkingLevel = ThinkingLevel.LOW, // Оптимизировано: LOW устраняет задержки
+            forcedThinkingLevel = ThinkingLevel.LOW, // Оптимизировано: LOW устраняет задержки рассуждений
             supportsGrounding = true,
             supportsCodeExecution = false,
             supportsFunctionCalling = true,
@@ -153,6 +180,14 @@ object GeminiModelConfig {
 
         fun getMaxInputTokens(ecoMode: Boolean): Int =
             contextWindow - getEffectiveOutputTokens(ecoMode)
+
+        fun validateConfig(config: GenerationConfig): List<String> {
+            val warnings = mutableListOf<String>()
+            if (config.maxOutputTokens > maxOutputTokens) {
+                warnings.add("Запрошено ${config.maxOutputTokens} токенов, лимит модели: $maxOutputTokens")
+            }
+            return warnings
+        }
 
         fun calculateCost(
             inputTokens: Int,
@@ -203,9 +238,14 @@ object GeminiModelConfig {
             }
 
             fun getDefault(): GeminiModel = GEMINI_3_5_FLASH_LITE
+
             fun getActiveModels(): List<GeminiModel> = entries.toList()
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // COST DATA CLASS
+    // ═══════════════════════════════════════════════════════════════════
 
     data class GeminiCost(
         val model: GeminiModel,
@@ -220,7 +260,24 @@ object GeminiModelConfig {
         val cacheSavingsEUR: Double
     ) {
         val totalTokens: Int = inputTokens + outputTokens + thinkingTokens
+
+        operator fun plus(other: GeminiCost): GeminiCost = GeminiCost(
+            model = model,
+            inputTokens = inputTokens + other.inputTokens,
+            outputTokens = outputTokens + other.outputTokens,
+            thinkingTokens = thinkingTokens + other.thinkingTokens,
+            cachedReadTokens = cachedReadTokens + other.cachedReadTokens,
+            isLongContext = isLongContext || other.isLongContext,
+            totalCostUSD = totalCostUSD + other.totalCostUSD,
+            totalCostEUR = totalCostEUR + other.totalCostEUR,
+            cacheSavingsUSD = cacheSavingsUSD + other.cacheSavingsUSD,
+            cacheSavingsEUR = cacheSavingsEUR + other.cacheSavingsEUR
+        )
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SESSION
+    // ═══════════════════════════════════════════════════════════════════
 
     data class GeminiSession(
         val sessionId: String,
@@ -236,7 +293,8 @@ object GeminiModelConfig {
     ) {
         private var _cachedCost: GeminiCost? = null
 
-        val duration: Long get() = (endTime ?: Instant.now()).epochSecond - startTime.epochSecond
+        val duration: Long get() =
+            (endTime ?: Instant.now()).epochSecond - startTime.epochSecond
 
         val durationFormatted: String get() {
             val s = duration
@@ -254,7 +312,12 @@ object GeminiModelConfig {
             ).also { _cachedCost = it }
 
         @Synchronized
-        fun addMessage(inputTokens: Int, outputTokens: Int, thinkingTokens: Int = 0, cachedReadTokens: Int = 0) {
+        fun addMessage(
+            inputTokens: Int,
+            outputTokens: Int,
+            thinkingTokens: Int = 0,
+            cachedReadTokens: Int = 0
+        ) {
             totalInputTokens += inputTokens
             totalOutputTokens += outputTokens
             totalThinkingTokens += thinkingTokens
@@ -271,13 +334,30 @@ object GeminiModelConfig {
 
         fun getDetailedStats(): String = buildString {
             appendLine("📊 Gemini Session Statistics")
+            appendLine()
             appendLine("Model: ${model.displayName} ${model.emoji}")
+            appendLine("Thinking Mode: ${model.forcedThinkingLevel.displayName} (Fixed)")
+            appendLine("Context Window: 1,048,576 tokens")
+            appendLine("Max Output: 65,536 tokens")
             appendLine("Duration: $durationFormatted")
             appendLine("Messages: $messageCount")
             appendLine("Total Tokens: ${"%,d".format(totalInputTokens + totalOutputTokens + totalThinkingTokens)}")
+            appendLine("  Input: ${"%,d".format(totalInputTokens)}")
+            appendLine("  Output: ${"%,d".format(totalOutputTokens)}")
+            if (totalThinkingTokens > 0)
+                appendLine("  Thinking: ${"%,d".format(totalThinkingTokens)}")
+            if (totalCachedReadTokens > 0)
+                appendLine("  Cache Read: ${"%,d".format(totalCachedReadTokens)}")
+            appendLine()
             appendLine("Total Cost: €${String.format(java.util.Locale.US, "%.4f", currentCost.totalCostEUR)}")
+            if (currentCost.cacheSavingsEUR > 0)
+                appendLine("Cache Savings: €${String.format(java.util.Locale.US, "%.4f", currentCost.cacheSavingsEUR)}")
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // SESSION MANAGER
+    // ═══════════════════════════════════════════════════════════════════
 
     object SessionManager {
         private const val TAG = "GeminiSessionMgr"
@@ -285,7 +365,9 @@ object GeminiModelConfig {
 
         fun createSession(sessionId: String, model: GeminiModel): GeminiSession =
             sessions.getOrPut(sessionId) {
-                GeminiSession(sessionId = sessionId, model = model, startTime = Instant.now())
+                GeminiSession(sessionId = sessionId, model = model, startTime = Instant.now()).also {
+                    Log.i(TAG, "Created Gemini session: $sessionId [${model.displayName}]")
+                }
             }
 
         fun getSession(sessionId: String): GeminiSession? = sessions[sessionId]
@@ -310,12 +392,19 @@ object GeminiModelConfig {
                     cleaned++
                 }
             }
+            if (cleaned > 0) Log.i(TAG, "Cleaned $cleaned old Gemini sessions")
             return cleaned
         }
+
+        fun clear() { sessions.clear() }
     }
 
+    // ═══════════════════════════════════════════════════════════════════
+    // GENERATION CONFIG (Parameters)
+    // ═══════════════════════════════════════════════════════════════════
+
     data class GenerationConfig(
-        val temperature: Float? = null, // Оптимизировано: null = дефолт Gemini 3.x
+        val temperature: Float = 1.0f, // Оптимизировано: 1.0f по стандарту Gemini 3.x предотвращает reasoning loop
         val topP: Float = 0.95f,
         val topK: Int = 40,
         val maxOutputTokens: Int = OFFICIAL_MAX_OUTPUT,
@@ -337,12 +426,33 @@ object GeminiModelConfig {
                 HarmCategory.CIVIC_INTEGRITY to SafetyThreshold.BLOCK_MEDIUM_AND_ABOVE
             )
 
-            val FULL = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT)
-            val MAX = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT)
-            val ECO = GenerationConfig(maxOutputTokens = ECO_OUTPUT_TOKENS)
-            val CODE = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, topP = 0.8f)
-            val CREATIVE = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, topP = 0.95f, topK = 64)
-            val JSON = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, responseMimeType = "application/json")
+            val FULL = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, temperature = 1.0f)
+            val MAX = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, temperature = 1.0f)
+            val ECO = GenerationConfig(maxOutputTokens = ECO_OUTPUT_TOKENS, temperature = 1.0f)
+            val CODE = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, temperature = 1.0f, topP = 0.8f)
+            val CREATIVE = GenerationConfig(
+                maxOutputTokens = OFFICIAL_MAX_OUTPUT,
+                temperature = 1.2f,
+                topP = 0.95f,
+                topK = 64
+            )
+            val JSON = GenerationConfig(
+                maxOutputTokens = OFFICIAL_MAX_OUTPUT,
+                temperature = 1.0f,
+                responseMimeType = "application/json"
+            )
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // UTILITY
+    // ═══════════════════════════════════════════════════════════════════
+
+    fun isValidApiKey(key: String): Boolean =
+        key.isNotBlank() && key.startsWith(API_KEY_PREFIX) && key.length > 20
+
+    fun maskApiKey(key: String): String =
+        if (key.isBlank()) "❌ Not set"
+        else if (key.length > 12) "✅ ${key.take(8)}...${key.takeLast(4)}"
+        else "✅ ${key.take(4)}..."
 }
