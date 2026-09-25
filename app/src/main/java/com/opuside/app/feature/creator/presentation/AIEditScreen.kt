@@ -1,11 +1,13 @@
 package com.opuside.app.feature.creator.presentation
 
+import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -15,6 +17,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -67,6 +71,88 @@ private val CreatorAIEditService.AiModel.accentBg: Color
         CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColorsLight.greenBg
     }
 
+private const val AI_PROMPT_TEMPLATE = """Ты — инструмент точечного редактирования кода. 
+Твоя задача — вернуть изменения для файла СТРОГО в формате XML-блоков поиска и замены (<edits>).
+
+Никаких пояснений, никакого текста до и после XML, никаких тройных кавычек ```xml!
+Отвечай ТОЛЬКО разметкой.
+
+═══ СТРУКТУРА ФОРМАТА ═══
+
+<edits>
+<block>
+<search>
+[Точный фрагмент исходного кода из файла]
+</search>
+<replace>
+[Новый фрагмент кода, который встанет вместо search]
+</replace>
+</block>
+</edits>
+<summary>[Краткое описание правок одной строкой на русском языке]</summary>
+
+═══ ПРАВИЛА ДЛЯ ОПЕРАЦИЙ (КАК ВЫПОЛНЯТЬ ДЕЙСТВИЯ) ═══
+
+1. ЗАМЕНА (Что-то изменить):
+В <search> копируешь старый код + 2-3 соседние строки для уникальности. В <replace> вставляешь обновленный код с теми же соседними строками.
+Пример:
+<block>
+<search>
+val timeout = 30
+val isRetry = false
+</search>
+<replace>
+val timeout = 60
+val isRetry = true
+</replace>
+</block>
+
+2. УДАЛЕНИЕ (Что-то вырезать):
+В <search> помещаешь код, который нужно удалить (+ строку выше и ниже). В <replace> оставляешь только строки выше и ниже (сам удаляемый код не пишешь).
+Пример:
+<block>
+<search>
+fun oldUnusedFunction() {
+    println("deprecated")
+}
+</search>
+<replace>
+</replace>
+</block>
+
+3. ВСТАВКА ПОСЛЕ (Добавить код после определенной строки):
+В <search> помещаешь строку-ориентир. В <replace> пишешь эту же строку-ориентир, а сразу под ней — твой новый код.
+Пример:
+<block>
+<search>
+val name: String = "App"
+</search>
+<replace>
+val name: String = "App"
+val version: Int = 2
+</replace>
+</block>
+
+4. ВСТАВКА ДО (Добавить код перед определенной строкой):
+В <search> помещаешь строку-ориентир. В <replace> сначала пишешь свой новый код, а затем строку-ориентир.
+Пример:
+<block>
+<search>
+class MainActivity : ComponentActivity() {
+</search>
+<replace>
+@AndroidEntryPoint
+class MainActivity : ComponentActivity() {
+</replace>
+</block>
+
+═══ СТРОГИЕ ПРАВИЛА ═══
+- Содержимое тега <search> обязано быть СИМВОЛ В СИМВОЛ скопировано из оригинала (каждый пробел, отступ, перенос строки, запятая). Не исправляй опечатки внутри <search>!
+- ВСЕГДА захватывай 2–4 строки окружающего контекста, чтобы блок <search> встречался в файле РОВНО ОДИН РАЗ.
+- Соблюдай точные отступы (табы или пробелы), как в исходном файле.
+- Если меняется несколько мест в файле — делай отдельные теги <block>...</block> по порядку сверху вниз.
+- Не выводи весь файл целиком — только изменённые участки."""
+
 @Composable
 fun AIEditScreen(
     fileName: String,
@@ -80,7 +166,10 @@ fun AIEditScreen(
     onClose: () -> Unit
 ) {
     var instructions by remember { mutableStateOf("") }
+    var showTemplateDialog by remember { mutableStateOf(false) }
+
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
     val scrollState = rememberScrollState()
     val isProcessing = editStatus is CreatorAIEditService.EditStatus.Processing
 
@@ -170,6 +259,7 @@ fun AIEditScreen(
             InstructionsSectionLight(
                 instructions = instructions,
                 onInstructionsChange = { instructions = it },
+                onShowTemplate = { showTemplateDialog = true },
                 onPaste = {
                     clipboardManager.getText()?.text?.let { pasted ->
                         instructions = if (instructions.isNotEmpty()) "$instructions\n$pasted" else pasted
@@ -207,6 +297,73 @@ fun AIEditScreen(
             onDiscard = onDiscard
         )
     }
+
+    // ── МОДАЛЬНОЕ ОКНО С ШАБЛОНОМ ДЛЯ СТОРОННЕГО ИИ ────────────────
+    if (showTemplateDialog) {
+        AlertDialog(
+            onDismissRequest = { showTemplateDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Code, null, tint = EditColorsLight.blue, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Шаблон для стороннего ИИ", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Скопируйте этот шаблон и отправьте в ChatGPT/Claude вместе с вашим файлом. Модель вернёт точные блоки, которые легко применит OpusIDE.",
+                        fontSize = 12.sp,
+                        color = EditColorsLight.textSecondary
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = EditColorsLight.surfaceElevated,
+                        border = BorderStroke(0.5.dp, EditColorsLight.border),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp)
+                    ) {
+                        SelectionContainer {
+                            Text(
+                                text = AI_PROMPT_TEMPLATE,
+                                style = LocalTextStyle.current.copy(
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp,
+                                    color = EditColorsLight.textPrimary
+                                ),
+                                modifier = Modifier
+                                    .padding(10.dp)
+                                    .verticalScroll(rememberScrollState())
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(AI_PROMPT_TEMPLATE))
+                        Toast.makeText(context, "Шаблон скопирован в буфер обмена!", Toast.LENGTH_SHORT).show()
+                        showTemplateDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EditColorsLight.blue)
+                ) {
+                    Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Скопировать шаблон", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTemplateDialog = false }) {
+                    Text("Закрыть")
+                }
+            },
+            containerColor = EditColorsLight.surface
+        )
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -217,6 +374,7 @@ fun AIEditScreen(
 private fun InstructionsSectionLight(
     instructions: String,
     onInstructionsChange: (String) -> Unit,
+    onShowTemplate: () -> Unit,
     onPaste: () -> Unit,
     onClear: () -> Unit,
     enabled: Boolean
@@ -240,7 +398,29 @@ private fun InstructionsSectionLight(
                     Icon(Icons.Default.EditNote, null, tint = EditColorsLight.blue, modifier = Modifier.size(20.dp))
                     Text("Инструкции для AI", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = EditColorsLight.textPrimary)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Новая кнопка шаблона
+                    Surface(
+                        onClick = onShowTemplate,
+                        shape = RoundedCornerShape(8.dp),
+                        color = EditColorsLight.blueBg,
+                        border = BorderStroke(1.dp, EditColorsLight.blue.copy(alpha = 0.4f)),
+                        modifier = Modifier.height(30.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(Icons.Default.Code, null, tint = EditColorsLight.blue, modifier = Modifier.size(14.dp))
+                            Text("Шаблон ИИ", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EditColorsLight.blue)
+                        }
+                    }
+
                     IconButton(onClick = onPaste, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.ContentPaste, "Вставить", tint = EditColorsLight.textSecondary, modifier = Modifier.size(16.dp))
                     }
@@ -263,7 +443,7 @@ private fun InstructionsSectionLight(
                 enabled = enabled,
                 placeholder = {
                     Text(
-                        "Опишите правки простыми словами:\n\n" +
+                        "Опишите правки простыми словами или вставьте блоки <edits>:\n\n" +
                                 "• Замени имя метода foo() на bar()\n" +
                                 "• Добавь проверку на null перед вызовом api\n" +
                                 "• Перепиши тело функции loadData на корутины",
@@ -640,7 +820,7 @@ private fun HintSectionLight() {
                 "📝" to "Опишите задачу — модель вернёт только точные блоки замен.",
                 "⚡" to "3.5 Flash-Lite (Low Thinking) обеспечивает максимальную скорость.",
                 "💨" to "3.1 Flash-Lite (Medium Thinking) даёт повышенную точность рассуждений.",
-                "🔍" to "Перед применением проверьте превью зелёных и красных блоков."
+                "📋" to "Нажмите «Шаблон ИИ», чтобы скопировать инструкцию для стороннего чат-бота."
             ).forEach { (emoji, text) ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
