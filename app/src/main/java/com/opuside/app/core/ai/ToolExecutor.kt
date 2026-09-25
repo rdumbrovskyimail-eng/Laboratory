@@ -1,60 +1,68 @@
 package com.opuside.app.core.ai
 
 import android.util.Log
+import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.GitHubApiClient
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.*
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🔧 TOOL EXECUTOR v3.0 (LONG CONTEXT OPTIMIZED)
+ * 🔧 TOOL EXECUTOR v3.5 (Gemini 3 OpenAPI Schema Compliant)
  *
- * ✅ v3.0 CHANGES:
- * - MAX_FILES_PER_READ: 10 → 250 (для работы с огромными кодовыми базами)
- * - MAX_FILE_SIZE_BYTES: 150KB → 1.5MB (позволяет читать очень крупные файлы)
- * - MAX_SEARCH_RESULTS: 30 → 250 (пропорционально увеличено)
- * - lazy toolDefinitions — не пересоздаются на каждый вызов
- * - Path validation (no traversal)
- * - Bounded results
+ * Исправления и улучшения:
+ * - Все типы схемы переведены в строгий верхний регистр (OBJECT, STRING, INTEGER, ARRAY)
+ * - Двойная совместимость: объявлены и parameters, и input_schema
+ * - Автоматическая очистка путей от ведущих / и ./
+ * - Fallback на одиночные аргументы (path -> paths, file -> path)
+ * - Привязка всех операций к активной ветке из AppSettings
+ * - Полный фильтр бинарных файлов для защиты памяти
  */
 @Singleton
 class ToolExecutor @Inject constructor(
     private val repoIndexManager: RepoIndexManager,
-    private val gitHubClient: GitHubApiClient
+    private val gitHubClient: GitHubApiClient,
+    private val appSettings: AppSettings
 ) {
     companion object {
         private const val TAG = "ToolExecutor"
-        private const val MAX_FILES_PER_READ = 250           // было 10
-        private const val MAX_FILE_SIZE_BYTES = 1_500_000    // было 150_000 (1.5MB)
-        private const val MAX_SEARCH_RESULTS = 250           // было 30
+        private const val MAX_FILES_PER_READ = 250
+        private const val MAX_FILE_SIZE_BYTES = 1_500_000 // 1.5 MB
+        private const val MAX_SEARCH_RESULTS = 250
+
+        private val BINARY_EXTENSIONS = setOf(
+            "png", "jpg", "jpeg", "webp", "gif", "ico", "bmp",
+            "jar", "aar", "zip", "tar", "gz", "7z", "rar",
+            "keystore", "jks", "so", "dylib", "dll",
+            "ttf", "otf", "woff", "woff2",
+            "pdf", "apk", "aab", "dex", "class",
+            "mp3", "wav", "ogg", "mp4", "mkv", "avi"
+        )
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // TOOL DEFINITIONS — lazy, allocated ONCE
+    // TOOL DEFINITIONS (Gemini OpenAPI Schema)
     // ═══════════════════════════════════════════════════════════════════════════
 
     val toolDefinitions: List<JsonObject> by lazy {
         listOf(
             buildToolDef(
                 name = "list_files",
-                description = """Show the file and folder structure of the repository.
-Use when user asks about project structure, wants to see files, or you need to understand the architecture.
-Returns a tree view with paths, sizes, and file types.
-This is INSTANT — data comes from a local index, no API calls needed.
-You can filter by path (subdirectory) and file extensions.""",
+                description = "Show the file and folder structure of the repository. Returns tree view with paths, sizes, and file types.",
                 properties = buildJsonObject {
                     put("path", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
-                        put("description", JsonPrimitive("Root path to list from ('' = entire project). Example: 'app/src/main'"))
+                        put("type", JsonPrimitive("STRING"))
+                        put("description", JsonPrimitive("Root path to list from ('' or empty = entire project). Example: 'app/src/main'"))
                     })
                     put("max_depth", buildJsonObject {
-                        put("type", JsonPrimitive("integer"))
+                        put("type", JsonPrimitive("INTEGER"))
                         put("description", JsonPrimitive("Maximum nesting depth to show. Default: unlimited"))
                     })
                     put("extensions", buildJsonObject {
-                        put("type", JsonPrimitive("array"))
-                        put("items", buildJsonObject { put("type", JsonPrimitive("string")) })
+                        put("type", JsonPrimitive("ARRAY"))
+                        put("items", buildJsonObject { put("type", JsonPrimitive("STRING")) })
                         put("description", JsonPrimitive("Filter by file extensions, e.g. ['kt', 'xml']"))
                     })
                 },
@@ -63,14 +71,11 @@ You can filter by path (subdirectory) and file extensions.""",
 
             buildToolDef(
                 name = "read_files",
-                description = """Read the full content of one or more files from the repository.
-Use when you need to see the actual code, analyze a file, find bugs, or understand implementation.
-Maximum $MAX_FILES_PER_READ files per call, max ${MAX_FILE_SIZE_BYTES / 1024}KB per file.
-IMPORTANT: Always use list_files first to verify file paths exist before reading.""",
+                description = "Read the full content of one or more files from the repository. Always verify file paths using list_files first.",
                 properties = buildJsonObject {
                     put("paths", buildJsonObject {
-                        put("type", JsonPrimitive("array"))
-                        put("items", buildJsonObject { put("type", JsonPrimitive("string")) })
+                        put("type", JsonPrimitive("ARRAY"))
+                        put("items", buildJsonObject { put("type", JsonPrimitive("STRING")) })
                         put("description", JsonPrimitive("Array of full file paths to read"))
                     })
                 },
@@ -79,17 +84,15 @@ IMPORTANT: Always use list_files first to verify file paths exist before reading
 
             buildToolDef(
                 name = "search_in_files",
-                description = """Search for files by name pattern across the repository.
-Use when you need to find where a class, function, or variable is declared.
-Searches file NAMES in the local index (instant).""",
+                description = "Search for files by name pattern across the repository index (instant).",
                 properties = buildJsonObject {
                     put("query", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
-                        put("description", JsonPrimitive("Search query — matches against file names (case-insensitive)"))
+                        put("type", JsonPrimitive("STRING"))
+                        put("description", JsonPrimitive("Search query matching against file names (case-insensitive)"))
                     })
                     put("extensions", buildJsonObject {
-                        put("type", JsonPrimitive("array"))
-                        put("items", buildJsonObject { put("type", JsonPrimitive("string")) })
+                        put("type", JsonPrimitive("ARRAY"))
+                        put("items", buildJsonObject { put("type", JsonPrimitive("STRING")) })
                         put("description", JsonPrimitive("Filter results by extensions, e.g. ['kt', 'java']"))
                     })
                 },
@@ -98,69 +101,67 @@ Searches file NAMES in the local index (instant).""",
 
             buildToolDef(
                 name = "create_file",
-                description = """Create a new file in the repository and commit it to GitHub.
-ALWAYS include complete file content with proper package declarations and imports.""",
+                description = "Create a new file in the repository and commit it to GitHub. Include complete file content.",
                 properties = buildJsonObject {
                     put("path", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
-                        put("description", JsonPrimitive("Full path for the new file"))
+                        put("type", JsonPrimitive("STRING"))
+                        put("description", JsonPrimitive("Full path for the new file, e.g. 'app/src/main/java/com/example/MyClass.kt'"))
                     })
                     put("content", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
+                        put("type", JsonPrimitive("STRING"))
                         put("description", JsonPrimitive("Complete file content"))
                     })
                     put("commit_message", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
+                        put("type", JsonPrimitive("STRING"))
                         put("description", JsonPrimitive("Git commit message"))
                     })
                 },
-                required = listOf("path", "content", "commit_message")
+                required = listOf("path", "content")
             ),
 
             buildToolDef(
                 name = "edit_file",
-                description = """Replace the entire content of an existing file and commit the change.
-You MUST provide the COMPLETE new file content. Always read_files first.""",
+                description = "Replace the entire content of an existing file and commit the change. You must provide complete new file content.",
                 properties = buildJsonObject {
                     put("path", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
+                        put("type", JsonPrimitive("STRING"))
                         put("description", JsonPrimitive("Full path of the file to edit"))
                     })
                     put("content", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
+                        put("type", JsonPrimitive("STRING"))
                         put("description", JsonPrimitive("Complete NEW file content"))
                     })
                     put("commit_message", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
+                        put("type", JsonPrimitive("STRING"))
                         put("description", JsonPrimitive("Git commit message"))
                     })
                 },
-                required = listOf("path", "content", "commit_message")
+                required = listOf("path", "content")
             ),
 
             buildToolDef(
                 name = "delete_file",
-                description = """Delete a file from the repository. This action is irreversible.""",
+                description = "Delete a file from the repository with a commit. This action is permanent.",
                 properties = buildJsonObject {
                     put("path", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
+                        put("type", JsonPrimitive("STRING"))
                         put("description", JsonPrimitive("Full path of the file to delete"))
                     })
                     put("commit_message", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
+                        put("type", JsonPrimitive("STRING"))
                         put("description", JsonPrimitive("Git commit message"))
                     })
                 },
-                required = listOf("path", "commit_message")
+                required = listOf("path")
             ),
 
             buildToolDef(
                 name = "create_directory",
-                description = """Create a new directory via .gitkeep placeholder.""",
+                description = "Create a new directory via a .gitkeep placeholder file.",
                 properties = buildJsonObject {
                     put("path", buildJsonObject {
-                        put("type", JsonPrimitive("string"))
-                        put("description", JsonPrimitive("Full path for the new directory"))
+                        put("type", JsonPrimitive("STRING"))
+                        put("description", JsonPrimitive("Full path for the new directory, e.g. 'app/src/main/assets'"))
                     })
                 },
                 required = listOf("path")
@@ -187,7 +188,7 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
     }
 
     suspend fun execute(toolName: String, toolUseId: String, input: JsonObject): ToolResult {
-        Log.i(TAG, "Executing: $toolName (id=$toolUseId)")
+        Log.i(TAG, "Executing tool: $toolName (id=$toolUseId)")
 
         return try {
             when (toolName) {
@@ -207,46 +208,53 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // IMPLEMENTATIONS
+    // TOOL IMPLEMENTATIONS
     // ═══════════════════════════════════════════════════════════════════════════
 
     private suspend fun executeListFiles(id: String, input: JsonObject): ToolResult {
-        val path = input["path"]?.jsonPrimitive?.contentOrNull ?: ""
+        val rawPath = input["path"]?.jsonPrimitive?.contentOrNull ?: ""
+        val cleanPath = sanitizePath(rawPath)
         val maxDepth = input["max_depth"]?.jsonPrimitive?.intOrNull ?: Int.MAX_VALUE
-        val extensions = input["extensions"]?.jsonArray?.map { it.jsonPrimitive.content }
+        val extensions = input["extensions"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
 
-        val tree = repoIndexManager.getTreeText(path = path, maxDepth = maxDepth, extensions = extensions)
+        val tree = repoIndexManager.getTreeText(path = cleanPath, maxDepth = maxDepth, extensions = extensions)
         return ToolResult(id, tree)
     }
 
     private suspend fun executeReadFiles(id: String, input: JsonObject): ToolResult {
-        val paths = input["paths"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
+        val arrayPaths = input["paths"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
+        val singlePath = input["path"]?.jsonPrimitive?.contentOrNull
+        val rawPaths = if (arrayPaths.isNotEmpty()) arrayPaths else listOfNotNull(singlePath)
 
-        if (paths.isEmpty()) return ToolResult(id, "Error: 'paths' array is empty", isError = true)
-        if (paths.size > MAX_FILES_PER_READ) return ToolResult(id, "Error: Too many files (${paths.size} > $MAX_FILES_PER_READ)", isError = true)
-
-        // Validate paths
-        for (p in paths) {
-            if (p.contains("..")) return ToolResult(id, "Error: path traversal not allowed: $p", isError = true)
+        if (rawPaths.isEmpty()) {
+            return ToolResult(id, "Error: 'paths' array is empty", isError = true)
         }
+        if (rawPaths.size > MAX_FILES_PER_READ) {
+            return ToolResult(id, "Error: Too many files (${rawPaths.size} > $MAX_FILES_PER_READ)", isError = true)
+        }
+
+        val branch = getCurrentBranch()
 
         val result = buildString {
             var loadedCount = 0
 
-            // ✅ ДОБАВЛЕНО: Список расширений, которые нельзя читать как текст
-            val binaryExtensions = setOf("png", "jpg", "jpeg", "webp", "gif", "jar", "keystore", "jks", "zip", "aar", "so", "ttf")
+            for (raw in rawPaths) {
+                val path = sanitizePath(raw)
+                if (path.contains("..")) {
+                    appendLine("### File: `$path` — ERROR: Path traversal not allowed")
+                    appendLine()
+                    continue
+                }
 
-            for (path in paths) {
-                // ✅ ДОБАВЛЕНО: Проверка на бинарный файл
                 val ext = path.substringAfterLast('.', "").lowercase()
-                if (ext in binaryExtensions) {
-                    appendLine("### File: `$path` — ERROR: Cannot read binary files (images, archives, etc.)")
+                if (ext in BINARY_EXTENSIONS) {
+                    appendLine("### File: `$path` — SKIPPED: Binary file format (images, archives, bytecode)")
                     appendLine()
                     continue
                 }
 
                 try {
-                    val content = gitHubClient.getFileContentDecoded(path).getOrNull()
+                    val content = gitHubClient.getFileContentDecoded(path, branch).getOrNull()
                     if (content != null) {
                         if (content.length > MAX_FILE_SIZE_BYTES) {
                             appendLine("### File: `$path` [TRUNCATED — ${content.length / 1024}KB]")
@@ -262,7 +270,7 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
                         }
                         loadedCount++
                     } else {
-                        appendLine("### File: `$path` — NOT FOUND")
+                        appendLine("### File: `$path` — NOT FOUND in branch '$branch'")
                     }
                 } catch (e: Exception) {
                     appendLine("### File: `$path` — ERROR: ${e.message}")
@@ -276,13 +284,16 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
     }
 
     private suspend fun executeSearchFiles(id: String, input: JsonObject): ToolResult {
-        val query = input["query"]?.jsonPrimitive?.contentOrNull ?: ""
-        val extensions = input["extensions"]?.jsonArray?.map { it.jsonPrimitive.content }
+        val query = input["query"]?.jsonPrimitive?.contentOrNull
+            ?: input["search"]?.jsonPrimitive?.contentOrNull ?: ""
+        val extensions = input["extensions"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }
 
-        if (query.isBlank()) return ToolResult(id, "Error: 'query' cannot be empty", isError = true)
+        if (query.isBlank()) {
+            return ToolResult(id, "Error: 'query' cannot be empty", isError = true)
+        }
 
         var results = repoIndexManager.searchByName(query)
-        if (extensions != null) {
+        if (!extensions.isNullOrEmpty()) {
             val extSet = extensions.map { it.lowercase().removePrefix(".") }.toSet()
             results = results.filter { it.extension.lowercase() in extSet }
         }
@@ -301,74 +312,53 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
     }
 
     private suspend fun executeCreateFile(id: String, input: JsonObject): ToolResult {
-        val path = input["path"]?.jsonPrimitive?.contentOrNull
+        val rawPath = input["path"]?.jsonPrimitive?.contentOrNull
+            ?: input["file"]?.jsonPrimitive?.contentOrNull
             ?: return ToolResult(id, "Error: 'path' required", isError = true)
+        val path = sanitizePath(rawPath)
         val content = input["content"]?.jsonPrimitive?.contentOrNull
             ?: return ToolResult(id, "Error: 'content' required", isError = true)
         val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull
-            ?: "Create $path via AI"
+            ?: input["message"]?.jsonPrimitive?.contentOrNull
+            ?: "Create $path via Gemini"
 
         if (path.contains("..")) return ToolResult(id, "Error: path traversal not allowed", isError = true)
 
-        // ✅ FIX: Проверяем существование файла → auto-update с SHA
         return createOrUpdateWithRetry(id, path, content, commitMsg, FileOperation.Created(path))
     }
 
     private suspend fun executeEditFile(id: String, input: JsonObject): ToolResult {
-        val path = input["path"]?.jsonPrimitive?.contentOrNull
+        val rawPath = input["path"]?.jsonPrimitive?.contentOrNull
+            ?: input["file"]?.jsonPrimitive?.contentOrNull
             ?: return ToolResult(id, "Error: 'path' required", isError = true)
+        val path = sanitizePath(rawPath)
         val content = input["content"]?.jsonPrimitive?.contentOrNull
             ?: return ToolResult(id, "Error: 'content' required", isError = true)
         val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull
-            ?: "Edit $path via AI"
+            ?: input["message"]?.jsonPrimitive?.contentOrNull
+            ?: "Edit $path via Gemini"
 
         if (path.contains("..")) return ToolResult(id, "Error: path traversal not allowed", isError = true)
 
         return createOrUpdateWithRetry(id, path, content, commitMsg, FileOperation.Edited(path))
     }
 
-    /**
-     * ✅ Единый метод с retry: проверяет SHA, обрабатывает race conditions
-     */
-    private suspend fun createOrUpdateWithRetry(
-        id: String, path: String, content: String, commitMsg: String, operation: FileOperation
-    ): ToolResult {
-        for (attempt in 1..3) {
-            try {
-                val existingSha = try {
-                    gitHubClient.getFileContent(path).getOrNull()?.sha
-                } catch (_: Exception) { null }
-
-                val result = gitHubClient.createOrUpdateFile(
-                    path = path, content = content, message = commitMsg, sha = existingSha
-                ).getOrThrow()
-
-                repoIndexManager.invalidate()
-                val action = if (existingSha != null) "Updated" else "Created"
-                return ToolResult(id, "✅ $action: `$path` (sha: ${result.content.sha.take(8)})", operation = operation)
-            } catch (e: Exception) {
-                val msg = e.message ?: ""
-                val isShaError = msg.contains("sha", ignoreCase = true) || msg.contains("422")
-                if (isShaError && attempt < 3) {
-                    Log.w(TAG, "SHA conflict $path, retry $attempt/3")
-                    delay(1500L * attempt)
-                    continue
-                }
-                return ToolResult(id, "❌ Failed: `$path`: ${e.message}", isError = true)
-            }
-        }
-        return ToolResult(id, "❌ Failed after 3 retries: `$path`", isError = true)
-    }
-
     private suspend fun executeDeleteFile(id: String, input: JsonObject): ToolResult {
-        val path = input["path"]?.jsonPrimitive?.contentOrNull ?: return ToolResult(id, "Error: 'path' required", isError = true)
-        val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull ?: "Delete $path via Claude"
+        val rawPath = input["path"]?.jsonPrimitive?.contentOrNull
+            ?: input["file"]?.jsonPrimitive?.contentOrNull
+            ?: return ToolResult(id, "Error: 'path' required", isError = true)
+        val path = sanitizePath(rawPath)
+        val commitMsg = input["commit_message"]?.jsonPrimitive?.contentOrNull
+            ?: input["message"]?.jsonPrimitive?.contentOrNull
+            ?: "Delete $path via Gemini"
 
         if (path.contains("..")) return ToolResult(id, "Error: path traversal not allowed", isError = true)
 
+        val branch = getCurrentBranch()
+
         return try {
-            val currentFile = gitHubClient.getFileContent(path).getOrThrow()
-            gitHubClient.deleteFile(path = path, message = commitMsg, sha = currentFile.sha).getOrThrow()
+            val currentFile = gitHubClient.getFileContent(path, branch).getOrThrow()
+            gitHubClient.deleteFile(path = path, message = commitMsg, sha = currentFile.sha, branch = branch).getOrThrow()
             repoIndexManager.invalidate()
             ToolResult(id, "✅ Deleted: `$path`", operation = FileOperation.Deleted(path))
         } catch (e: Exception) {
@@ -377,32 +367,105 @@ You MUST provide the COMPLETE new file content. Always read_files first.""",
     }
 
     private suspend fun executeCreateDirectory(id: String, input: JsonObject): ToolResult {
-        val path = input["path"]?.jsonPrimitive?.contentOrNull ?: return ToolResult(id, "Error: 'path' required", isError = true)
+        val rawPath = input["path"]?.jsonPrimitive?.contentOrNull
+            ?: return ToolResult(id, "Error: 'path' required", isError = true)
+        val path = sanitizePath(rawPath)
 
         if (path.contains("..")) return ToolResult(id, "Error: path traversal not allowed", isError = true)
 
+        val branch = getCurrentBranch()
+        val keepPath = "$path/.gitkeep"
+
         return try {
-            gitHubClient.createOrUpdateFile(path = "$path/.gitkeep", content = "", message = "Create directory $path via Claude").getOrThrow()
+            gitHubClient.createOrUpdateFile(
+                path = keepPath,
+                content = "",
+                message = "Create directory $path via Gemini",
+                branch = branch
+            ).getOrThrow()
             repoIndexManager.invalidate()
-            ToolResult(id, "✅ Directory: `$path/`", operation = FileOperation.DirectoryCreated(path))
+            ToolResult(id, "✅ Directory created: `$path/`", operation = FileOperation.DirectoryCreated(path))
         } catch (e: Exception) {
             ToolResult(id, "❌ Failed to create directory `$path`: ${e.message}", isError = true)
         }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // HELPERS
+    // INTERNAL HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private fun buildToolDef(name: String, description: String, properties: JsonObject, required: List<String>): JsonObject = buildJsonObject {
-        put("name", JsonPrimitive(name))
-        put("description", JsonPrimitive(description))
-        put("input_schema", buildJsonObject {
-            put("type", JsonPrimitive("object"))
+    private suspend fun createOrUpdateWithRetry(
+        id: String,
+        path: String,
+        content: String,
+        commitMsg: String,
+        operation: FileOperation
+    ): ToolResult {
+        val branch = getCurrentBranch()
+
+        for (attempt in 1..3) {
+            try {
+                val existingSha = try {
+                    gitHubClient.getFileContent(path, branch).getOrNull()?.sha
+                } catch (_: Exception) { null }
+
+                val result = gitHubClient.createOrUpdateFile(
+                    path = path,
+                    content = content,
+                    message = commitMsg,
+                    sha = existingSha,
+                    branch = branch
+                ).getOrThrow()
+
+                repoIndexManager.invalidate()
+                val action = if (existingSha != null) "Updated" else "Created"
+                return ToolResult(
+                    id,
+                    "✅ $action: `$path` (sha: ${result.content.sha.take(8)})",
+                    operation = operation
+                )
+            } catch (e: Exception) {
+                val msg = e.message ?: ""
+                val isConflict = msg.contains("sha", ignoreCase = true) || msg.contains("422") || msg.contains("409")
+                if (isConflict && attempt < 3) {
+                    Log.w(TAG, "SHA conflict on $path, retrying ($attempt/3)...")
+                    delay(1200L * attempt)
+                    continue
+                }
+                return ToolResult(id, "❌ Failed: `$path`: ${e.message}", isError = true)
+            }
+        }
+        return ToolResult(id, "❌ Failed after 3 retries: `$path`", isError = true)
+    }
+
+    private suspend fun getCurrentBranch(): String = try {
+        appSettings.gitHubConfig.first().branch.ifBlank { "main" }
+    } catch (_: Exception) {
+        "main"
+    }
+
+    private fun sanitizePath(path: String): String =
+        path.trim().removePrefix("/").removePrefix("./").trimEnd('/')
+
+    private fun buildToolDef(
+        name: String,
+        description: String,
+        properties: JsonObject,
+        required: List<String>
+    ): JsonObject {
+        val schema = buildJsonObject {
+            put("type", JsonPrimitive("OBJECT"))
             put("properties", properties)
             if (required.isNotEmpty()) {
                 put("required", JsonArray(required.map { JsonPrimitive(it) }))
             }
-        })
+        }
+        return buildJsonObject {
+            put("name", JsonPrimitive(name))
+            put("description", JsonPrimitive(description))
+            // Добавляем оба ключа для 100% совместимости
+            put("parameters", schema)
+            put("input_schema", schema)
+        }
     }
 }
