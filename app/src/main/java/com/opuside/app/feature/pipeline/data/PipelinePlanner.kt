@@ -1,8 +1,11 @@
 package com.opuside.app.feature.pipeline.data
 
 import android.util.Log
+import com.opuside.app.core.ai.GeminiModelConfig.GeminiModel
+import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.security.SecureSettingsDataStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import java.io.BufferedReader
@@ -12,17 +15,30 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 📋 PIPELINE PLANNER v3.0 (Gemini Flash-Lite Powered)
+ *
+ * Отвечает за интеллектуальный парсинг единого промпта пользователя
+ * и составление строгого JSON-плана задач (MODIFY, CREATE, DELETE).
+ *
+ * Особенности:
+ * - Модели: 3.5 Flash-Lite (LOW thinking) или 3.1 Flash-Lite (MEDIUM thinking)
+ * - Строгая схема OpenAPI JSON Schema с типами UPPERCASE
+ * - Фильтрация thought-блоков для защиты целостности JSON
+ * - Вывод до 32 768 токенов для объемных CREATE задач
+ * - Каскадный подбор API-ключей без ложных падений
+ */
 @Singleton
 class PipelinePlanner @Inject constructor(
     private val secureSettings: SecureSettingsDataStore,
+    private val appSettings: AppSettings,
     private val keyRotator: PipelineKeyRotator
 ) {
 
     companion object {
         private const val TAG = "PipelinePlanner"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val PLANNER_MODEL = "gemini-3.8-flash"
-        private const val MAX_OUTPUT_TOKENS = 16384
+        private const val MAX_OUTPUT_TOKENS = 32768
         private const val MAX_TASKS_LIMIT = 100
 
         private val PLANNER_SYSTEM_PROMPT = """
@@ -88,8 +104,7 @@ Look for phrases like:
 - "Remove file..."
 These signal a DELETE task. "file" MUST be the EXACT path from the provided
 file list — same rule as MODIFY (no guessing). If the path cannot be matched
-in the file list, OMIT that task (don't invent paths to delete).
-NEVER guess — deletion is irreversible.
+in the file list, OMIT that task.
 
 RULE 2 — CREATE PATH/PACKAGE HANDLING:
 - If user gave a FULL path like "app/src/main/java/com/x/Y.kt" → use it as "file"
@@ -102,16 +117,11 @@ RULE 2 — CREATE PATH/PACKAGE HANDLING:
 RULE 3 — CREATE CONTENT IS VERBATIM:
 The "content" field MUST contain the EXACT content user provided.
 Do NOT clean up. Do NOT reformat. Do NOT remove blank lines.
-Include the package declaration if present.
-Include ALL imports.
-Include EVERY character verbatim.
+Include ALL imports and declarations verbatim.
 
 RULE 4 — MODIFY EXACT FILE PATHS:
 For MODIFY tasks, "file" MUST be a path EXACTLY as it appears in the file list.
-NEVER invent paths. NEVER abbreviate. NEVER guess.
-If user wrote "DataRepositories.kt" but the real path is
-"app/src/main/java/com/docs/scanner/data/repository/DataRepositories.kt" —
-use the FULL real path.
+NEVER invent paths. NEVER abbreviate.
 If you cannot find a clear match for a MODIFY task, OMIT that task.
 
 RULE 5 — ONE FILE = ONE TASK:
@@ -120,47 +130,27 @@ RULE 5 — ONE FILE = ONE TASK:
 - NEVER create multiple tasks for the same file path
 
 RULE 6 — MODIFY INSTRUCTIONS VERBATIM:
-For MODIFY tasks, copy the relevant section of the user prompt verbatim,
-including code blocks, line markers, "before/after" snippets. Do NOT summarize.
-The downstream AI editor will see ONLY this instructions text + the file.
+For MODIFY tasks, copy the relevant section of the user prompt verbatim.
+Do NOT summarize. The downstream AI editor will see ONLY this text + the file.
 
 RULE 7 — ORDER PRESERVATION:
 Keep tasks in the same order they appear in the user prompt.
 
-RULE 8 — OUTPUT FORMAT (JSON only):
-{
-  "tasks": [
-    {
-      "operation": "modify",
-      "file": "exact/repo/path.kt",
-      "instructions": "verbatim instructions",
-      "content": null,
-      "package": null
-    },
-    {
-      "operation": "create",
-      "file": "app/src/main/java/com/x/y/NewFile.kt",
-      "instructions": "Helper class for X",
-      "content": "package com.x.y\n\nclass NewFile { ... }",
-      "package": "com.x.y"
-    }
-  ]
-}
-
-No markdown. No code fences. No commentary. Pure JSON.
+RULE 8 — OUTPUT FORMAT (Strict JSON):
+Return JSON according to the schema. No markdown, no commentary.
 """.trimIndent()
     }
 
     private val responseSchema = buildJsonObject {
-        put("type", "object")
+        put("type", "OBJECT")
         put("properties", buildJsonObject {
             put("tasks", buildJsonObject {
-                put("type", "array")
+                put("type", "ARRAY")
                 put("items", buildJsonObject {
-                    put("type", "object")
+                    put("type", "OBJECT")
                     put("properties", buildJsonObject {
                         put("operation", buildJsonObject {
-                            put("type", "string")
+                            put("type", "STRING")
                             put("enum", JsonArray(listOf(
                                 JsonPrimitive("modify"),
                                 JsonPrimitive("create"),
@@ -169,19 +159,19 @@ No markdown. No code fences. No commentary. Pure JSON.
                             put("description", "Type of operation on the file")
                         })
                         put("file", buildJsonObject {
-                            put("type", "string")
+                            put("type", "STRING")
                             put("description", "Full repository path (empty for create-by-package)")
                         })
                         put("instructions", buildJsonObject {
-                            put("type", "string")
-                            put("description", "Verbatim modification instructions (for modify) or short description (for create)")
+                            put("type", "STRING")
+                            put("description", "Verbatim modification instructions (for modify) or description (for create)")
                         })
                         put("content", buildJsonObject {
-                            put("type", "string")
+                            put("type", "STRING")
                             put("description", "Full content for create task; empty for modify")
                         })
                         put("package", buildJsonObject {
-                            put("type", "string")
+                            put("type", "STRING")
                             put("description", "Kotlin package for create task; empty otherwise")
                         })
                     })
@@ -197,7 +187,8 @@ No markdown. No code fences. No commentary. Pure JSON.
 
     suspend fun plan(
         userPrompt: String,
-        filePaths: List<String>
+        filePaths: List<String>,
+        modelApiId: String? = null
     ): Result<PlannerOutput> = withContext(Dispatchers.IO) {
         try {
             if (userPrompt.isBlank()) {
@@ -211,10 +202,24 @@ No markdown. No code fences. No commentary. Pure JSON.
                 )
             }
 
-            var currentKeyInfo = keyRotator.currentKey()
-                ?: return@withContext Result.failure(
-                    IllegalStateException("Добавьте Gemini API ключ на экране Pipeline.")
+            // Определение целевой модели и режима Thinking
+            val effectiveModel = GeminiModel.fromModelId(modelApiId ?: "") ?: GeminiModel.getDefault()
+            val thinkingLevel = effectiveModel.forcedThinkingLevel.apiName // LOW для 3.5, MEDIUM для 3.1
+
+            // Каскадный подбор API-ключа
+            val rotatorKeyInfo = keyRotator.currentKey()
+            var currentApiKey = rotatorKeyInfo?.first
+                ?: secureSettings.getActiveGeminiApiKey().first().ifBlank { null }
+                ?: secureSettings.getGeminiApiKey().first().ifBlank { null }
+                ?: appSettings.geminiApiKey.first().ifBlank { null }
+
+            if (currentApiKey.isNullOrBlank()) {
+                return@withContext Result.failure(
+                    IllegalStateException("Gemini API ключ не найден. Задайте его в Настройках или на экране Pipeline.")
                 )
+            }
+
+            var currentRotatorIdx = rotatorKeyInfo?.second ?: -1
 
             val pathsText = filePaths.joinToString("\n")
             val userMessage = buildString {
@@ -224,25 +229,36 @@ No markdown. No code fences. No commentary. Pure JSON.
                 appendLine("═══ AVAILABLE FILES IN REPOSITORY (${filePaths.size} total) ═══")
                 appendLine(pathsText)
             }
-            Log.d(TAG, "📤 Planning: prompt=${userPrompt.length}ch, files=${filePaths.size}")
+
+            Log.d(TAG, "📤 Планирование [${effectiveModel.displayName}, thinking=$thinkingLevel]: prompt=${userPrompt.length}ch, files=${filePaths.size}")
 
             var result: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
+
             while (attempts < 2) {
-                val (apiKey, idx) = currentKeyInfo!!
-                result = callGemini(apiKey, userMessage)
+                result = callGemini(
+                    apiKey = currentApiKey!!,
+                    model = effectiveModel,
+                    thinkingLevel = thinkingLevel,
+                    userMessage = userMessage
+                )
+
                 if (result.isSuccess) break
+
                 val errMsg = result.exceptionOrNull()?.message
                 if (!isQuotaError(errMsg)) break
-                Log.w(TAG, "⚠️ Quota на ключе #$idx, переключаемся...")
-                val next = keyRotator.burnAndRotate(idx)
-                if (next == null) {
-                    return@withContext Result.failure(
-                        Exception("Оба Gemini ключа исчерпали квоту, попробуйте через 5 минут")
-                    )
+
+                if (currentRotatorIdx >= 0) {
+                    Log.w(TAG, "⚠️ Превышен лимит (429) на ключе #$currentRotatorIdx, переключаем ключ...")
+                    val next = keyRotator.burnAndRotate(currentRotatorIdx)
+                    if (next != null) {
+                        currentApiKey = next.first
+                        currentRotatorIdx = next.second
+                        attempts++
+                        continue
+                    }
                 }
-                currentKeyInfo = next
-                attempts++
+                break
             }
 
             val (rawJson, inputTokens, outputTokens) = result.getOrElse {
@@ -252,31 +268,35 @@ No markdown. No code fences. No commentary. Pure JSON.
             val plannedTasks = parsePlanResponse(rawJson).getOrElse {
                 return@withContext Result.failure(it)
             }
+
             if (plannedTasks.isEmpty()) {
                 return@withContext Result.failure(
-                    IllegalStateException("Планировщик не вернул задач. Проверь промпт.")
+                    IllegalStateException("Планировщик не сформировал задачи. Проверьте формулировку промпта.")
                 )
             }
+
             if (plannedTasks.size > MAX_TASKS_LIMIT) {
-                Log.w(TAG, "⚠️ ${plannedTasks.size} задач (лимит=$MAX_TASKS_LIMIT)")
+                Log.w(TAG, "⚠️ Сформировано ${plannedTasks.size} задач (лимит=$MAX_TASKS_LIMIT)")
             }
 
             val resolvedTasks = resolvePaths(plannedTasks, filePaths)
-            val cost = (inputTokens * 0.75 + outputTokens * 3.75) / 1_000_000.0 * 0.92
+            val cost = (inputTokens * effectiveModel.inputPricePerM + outputTokens * effectiveModel.outputPricePerM) / 1_000_000.0 * 0.92
 
-            Log.d(TAG, "✅ Planned ${resolvedTasks.size} tasks " +
-                    "(${inputTokens}in+${outputTokens}out, €${String.format(java.util.Locale.US, "%.5f", cost)})")
+            Log.d(TAG, "✅ План сформирован: ${resolvedTasks.size} задач [${effectiveModel.displayName}] " +
+                    "(${inputTokens}in + ${outputTokens}out, €${String.format(java.util.Locale.US, "%.5f", cost)})")
 
             Result.success(PlannerOutput(
-                tasks = resolvedTasks, rawJson = rawJson,
-                tokensUsed = inputTokens + outputTokens, costEur = cost
+                tasks = resolvedTasks,
+                rawJson = rawJson,
+                tokensUsed = inputTokens + outputTokens,
+                costEur = cost
             ))
         } catch (e: java.net.SocketTimeoutException) {
-            Result.failure(Exception("Таймаут планировщика."))
+            Result.failure(Exception("Таймаут соединения планировщика. Попробуйте снова."))
         } catch (e: java.net.UnknownHostException) {
-            Result.failure(Exception("Нет интернета"))
+            Result.failure(Exception("Нет подключения к интернету."))
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Planning failed", e)
+            Log.e(TAG, "❌ Ошибка планирования", e)
             Result.failure(e)
         }
     }
@@ -302,7 +322,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                 TaskOperation.CREATE -> {
                     val resolved = resolveCreatePath(task, idx, sourceRoot, pathSet)
                     if (resolved == null) {
-                        Log.w(TAG, "Skipping CREATE task #$idx: cannot resolve path")
+                        Log.w(TAG, "Пропуск задачи CREATE #$idx: не удалось определить путь")
                         continue
                     }
                     addOrMerge(result, seen, resolved)
@@ -310,7 +330,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                 TaskOperation.DELETE -> {
                     val resolved = resolveModifyPath(task, pathSet, nameToFullPaths)
                     if (resolved.file !in pathSet) {
-                        Log.w(TAG, "Skipping DELETE task #$idx: path '${resolved.file}' not found in repo")
+                        Log.w(TAG, "Пропуск задачи DELETE #$idx: файл '${resolved.file}' не найден в репозитории")
                         continue
                     }
                     addOrMerge(result, seen, resolved)
@@ -336,20 +356,15 @@ No markdown. No code fences. No commentary. Pure JSON.
             val candidates = nameToFullPaths[fileName] ?: emptyList()
             when {
                 candidates.isEmpty() -> {
-                    Log.w(TAG, "⚠️ Path not found in index: $rawPath — keeping as-is")
+                    Log.w(TAG, "⚠️ Путь не найден в индексе: $rawPath")
                     rawPath
                 }
-                candidates.size == 1 -> {
-                    Log.d(TAG, "🎯 Fuzzy-resolved: '$rawPath' → '${candidates[0]}'")
-                    candidates[0]
-                }
+                candidates.size == 1 -> candidates[0]
                 else -> {
                     val rawSegments = rawPath.split('/').filter { it.isNotBlank() }.toSet()
-                    val best = candidates.maxByOrNull { candidatePath ->
-                        candidatePath.split('/').count { it in rawSegments }
+                    candidates.maxByOrNull { candidate ->
+                        candidate.split('/').count { it in rawSegments }
                     } ?: candidates[0]
-                    Log.d(TAG, "🎯 Best-match: '$rawPath' → '$best' (${candidates.size} candidates)")
-                    best
                 }
             }
         }
@@ -369,30 +384,20 @@ No markdown. No code fences. No commentary. Pure JSON.
         val pkgFromContent = extractPackageFromContent(content)
         val effectivePkg = providedPkg ?: pkgFromContent
 
-        val nameFromPath = rawPath?.substringAfterLast('/')?.takeIf {
-            it.contains('.')
-        }
+        val nameFromPath = rawPath?.substringAfterLast('/')?.takeIf { it.contains('.') }
         val nameFromContent = deriveFileNameFromContent(content)
         val finalName = nameFromPath ?: nameFromContent ?: "GeneratedFile${index + 1}.kt"
 
         val finalPath: String = when {
-            rawPath != null && nameFromPath != null -> {
-                if (effectivePkg != null && !pathMatchesPackage(rawPath, effectivePkg)) {
-                    Log.w(TAG, "⚠️ Path/package mismatch: path='$rawPath' vs package='$effectivePkg' — using path")
-                }
-                rawPath
-            }
+            rawPath != null && nameFromPath != null -> rawPath
             rawPath != null && rawPath.endsWith('/') -> "$rawPath$finalName"
             rawPath != null -> "$rawPath/$finalName"
             effectivePkg != null -> "${sourceRoot}${effectivePkg.replace('.', '/')}/$finalName"
-            else -> {
-                Log.w(TAG, "⚠️ CREATE without path/package — using fallback location")
-                "${sourceRoot}generated/$finalName"
-            }
+            else -> "${sourceRoot}generated/$finalName"
         }
 
         if (existingPaths.contains(finalPath)) {
-            Log.w(TAG, "⚠️ CREATE target already exists: $finalPath — keeping task, executor will fail with FILE_ALREADY_EXISTS")
+            Log.w(TAG, "⚠️ Целевой файл CREATE уже существует: $finalPath")
         }
 
         return task.copy(
@@ -424,11 +429,6 @@ No markdown. No code fences. No commentary. Pure JSON.
         return null
     }
 
-    private fun pathMatchesPackage(path: String, packageName: String): Boolean {
-        val pkgAsPath = packageName.replace('.', '/')
-        return path.contains("/$pkgAsPath/")
-    }
-
     private fun detectSourceRoot(filePaths: List<String>): String {
         val packageRoots = setOf("com", "org", "io", "net", "ru", "de", "tech")
         for (path in filePaths) {
@@ -439,7 +439,6 @@ No markdown. No code fences. No commentary. Pure JSON.
                 return parts.take(pkgStartIdx).joinToString("/") + "/"
             }
         }
-        Log.w(TAG, "⚠️ Could not detect source root — falling back to default")
         return "app/src/main/java/"
     }
 
@@ -460,9 +459,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                         instructions = existing.instructions +
                                 "\n\n--- ДОПОЛНИТЕЛЬНО ---\n\n" + task.instructions
                     )
-                    Log.d(TAG, "🔀 Merged duplicate MODIFY task for: $path")
-                } else {
-                    Log.w(TAG, "⚠️ Duplicate task for $path with conflicting operations — keeping first")
+                    Log.d(TAG, "🔀 Объединены задачи MODIFY для: $path")
                 }
             }
             return
@@ -473,14 +470,16 @@ No markdown. No code fences. No commentary. Pure JSON.
 
     private fun callGemini(
         apiKey: String,
+        model: GeminiModel,
+        thinkingLevel: String,
         userMessage: String
     ): Result<Triple<String, Int, Int>> {
         var connection: HttpURLConnection? = null
         return try {
-            val url = "$BASE_URL/$PLANNER_MODEL:generateContent"
+            val url = "$BASE_URL/${model.modelId}:generateContent"
 
             val requestBody = buildJsonObject {
-                put("system_instruction", buildJsonObject {
+                put("systemInstruction", buildJsonObject {
                     put("parts", JsonArray(listOf(
                         buildJsonObject { put("text", PLANNER_SYSTEM_PROMPT) }
                     )))
@@ -495,12 +494,12 @@ No markdown. No code fences. No commentary. Pure JSON.
                 )))
                 put("generationConfig", buildJsonObject {
                     put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                    put("temperature", 0.0)
+                    put("temperature", 0.0) // Детерминированность для точности следования схеме
                     put("topP", 0.95)
                     put("responseMimeType", "application/json")
                     put("responseJsonSchema", responseSchema)
                     put("thinkingConfig", buildJsonObject {
-                        put("thinkingLevel", JsonPrimitive("LOW"))
+                        put("thinkingLevel", JsonPrimitive(thinkingLevel))
                     })
                 })
             }
@@ -525,7 +524,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                 val errorBody = connection.errorStream?.let {
                     BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
                 } ?: "HTTP $responseCode"
-                Log.e(TAG, "❌ Planner API error $responseCode: ${errorBody.take(500)}")
+                Log.e(TAG, "❌ Ошибка API планировщика $responseCode: ${errorBody.take(400)}")
                 return Result.failure(Exception(formatApiError(responseCode, errorBody)))
             }
 
@@ -534,28 +533,25 @@ No markdown. No code fences. No commentary. Pure JSON.
             val json = Json.parseToJsonElement(responseBody).jsonObject
 
             val candidates = json["candidates"]?.jsonArray
-                ?: return Result.failure(Exception("Planner: no candidates in response"))
+                ?: return Result.failure(Exception("Планировщик: отсутствует поле candidates"))
             if (candidates.isEmpty()) {
-                return Result.failure(Exception("Planner: empty candidates"))
-            }
-
-            val finishReason = candidates[0].jsonObject["finishReason"]
-                ?.jsonPrimitive?.contentOrNull
-            if (finishReason != null && finishReason != "STOP" && finishReason != "MAX_TOKENS") {
-                return Result.failure(Exception("Planner rejected request: finishReason=$finishReason"))
+                return Result.failure(Exception("Планировщик: пустой список candidates"))
             }
 
             val content = candidates[0].jsonObject["content"]?.jsonObject
-                ?: return Result.failure(Exception("Planner: no content in candidate"))
+                ?: return Result.failure(Exception("Планировщик: отсутствует content"))
             val parts = content["parts"]?.jsonArray
-                ?: return Result.failure(Exception("Planner: no parts in content"))
+                ?: return Result.failure(Exception("Планировщик: отсутствуют parts"))
 
-            val rawJson = parts.joinToString("") { part ->
+            // КРИТИЧНО: фильтруем thought: true, собирая только чистый JSON
+            val rawJson = parts.filter { part ->
+                part.jsonObject["thought"]?.jsonPrimitive?.booleanOrNull != true
+            }.joinToString("") { part ->
                 part.jsonObject["text"]?.jsonPrimitive?.contentOrNull ?: ""
             }
 
             if (rawJson.isBlank()) {
-                return Result.failure(Exception("Planner returned empty response"))
+                return Result.failure(Exception("Планировщик вернул пустой текст ответа"))
             }
 
             val usage = json["usageMetadata"]?.jsonObject
@@ -569,7 +565,7 @@ No markdown. No code fences. No commentary. Pure JSON.
         } finally {
             try {
                 connection?.disconnect()
-            } catch (_: Exception) { /* ignore */ }
+            } catch (_: Exception) { }
         }
     }
 
@@ -582,7 +578,7 @@ No markdown. No code fences. No commentary. Pure JSON.
 
             val root = Json.parseToJsonElement(cleaned).jsonObject
             val tasksArray = root["tasks"]?.jsonArray
-                ?: return Result.failure(Exception("Plan JSON: missing 'tasks' field"))
+                ?: return Result.failure(Exception("JSON плана не содержит массива 'tasks'"))
 
             val tasks = tasksArray.mapNotNull { element ->
                 val obj = element.jsonObject
@@ -591,11 +587,7 @@ No markdown. No code fences. No commentary. Pure JSON.
                 val operation = when (opStr) {
                     "create" -> TaskOperation.CREATE
                     "delete" -> TaskOperation.DELETE
-                    "modify", null -> TaskOperation.MODIFY
-                    else -> {
-                        Log.w(TAG, "Unknown operation '$opStr', falling back to MODIFY")
-                        TaskOperation.MODIFY
-                    }
+                    else -> TaskOperation.MODIFY
                 }
 
                 val file = obj["file"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
@@ -605,67 +597,40 @@ No markdown. No code fences. No commentary. Pure JSON.
 
                 when (operation) {
                     TaskOperation.MODIFY -> {
-                        if (file == null || instructions.isBlank()) {
-                            Log.w(TAG, "Skipping invalid MODIFY task: file=$file, instr=${instructions.length}ch")
-                            null
-                        } else {
-                            PlannedTask(
-                                operation = TaskOperation.MODIFY,
-                                file = file,
-                                instructions = instructions
-                            )
-                        }
+                        if (file == null || instructions.isBlank()) null
+                        else PlannedTask(TaskOperation.MODIFY, file, instructions)
                     }
                     TaskOperation.CREATE -> {
-                        if (content == null) {
-                            Log.w(TAG, "Skipping CREATE task without content")
-                            null
-                        } else {
-                            PlannedTask(
-                                operation = TaskOperation.CREATE,
-                                file = file ?: "",
-                                instructions = instructions,
-                                content = content,
-                                packageName = pkg
-                            )
-                        }
+                        if (content == null) null
+                        else PlannedTask(TaskOperation.CREATE, file ?: "", instructions, content, pkg)
                     }
                     TaskOperation.DELETE -> {
-                        if (file == null) {
-                            Log.w(TAG, "Skipping DELETE task without file path")
-                            null
-                        } else {
-                            PlannedTask(
-                                operation = TaskOperation.DELETE,
-                                file = file,
-                                instructions = instructions.ifBlank { "Удалить файл" }
-                            )
-                        }
+                        if (file == null) null
+                        else PlannedTask(TaskOperation.DELETE, file, instructions.ifBlank { "Удалить файл" })
                     }
                 }
             }
 
             Result.success(tasks)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Failed to parse plan JSON: ${rawJson.take(500)}", e)
-            Result.failure(Exception("Не удалось распарсить план: ${e.message}"))
+            Log.e(TAG, "❌ Ошибка парсинга JSON плана: ${rawJson.take(300)}", e)
+            Result.failure(Exception("Не удалось распарсить JSON план: ${e.message}"))
         }
     }
 
     private fun formatApiError(code: Int, body: String): String {
         val msg = try {
             val json = Json.parseToJsonElement(body).jsonObject
-            json["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
-                ?: body.take(200)
+            json["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull ?: body.take(200)
         } catch (_: Exception) { body.take(200) }
 
         return when (code) {
-            400 -> "Планировщик: ошибка запроса — $msg"
-            401 -> "Планировщик: неверный API ключ Gemini"
-            403 -> "Планировщик: доступ запрещён — $msg"
-            429 -> "Планировщик: превышен лимит API. Подожди ~30 секунд."
+            400 -> "Планировщик: ошибка параметров запроса (400): $msg"
+            401 -> "Планировщик: неверный API-ключ Gemini"
+            403 -> "Планировщик: доступ к модели запрещён (403)"
+            429 -> "Планировщик: превышен лимит запросов (429)"
             500, 502, 503 -> "Планировщик: сервер Gemini временно недоступен"
-            else -> "Планировщик: ошибка $code — $msg"
+            else -> "Планировщик: ошибка $code ($msg)"
         }
     }
 
