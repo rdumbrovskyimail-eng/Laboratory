@@ -1,8 +1,11 @@
 package com.opuside.app.feature.pipeline.data
 
 import android.util.Log
+import com.opuside.app.core.ai.GeminiModelConfig.GeminiModel
+import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.security.SecureSettingsDataStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import java.io.BufferedReader
@@ -12,16 +15,28 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 📊 PIPELINE SUMMARIZER v3.0 (Flash-Lite Powered)
+ *
+ * Отвечает за генерацию технического русскоязычного отчёта о результатах
+ * выполнения конвейера (сводка изменений, список файлов, ошибки).
+ *
+ * Особенности:
+ * - Модели: 3.5 Flash-Lite (LOW thinking) или 3.1 Flash-Lite (MEDIUM thinking)
+ * - Автоматическая фильтрация thought-блоков модели
+ * - Каскадный резолвер API-ключей без ложных падений
+ * - Подробный локальный fallback-генератор на случай отсутствия сети
+ */
 @Singleton
 class PipelineSummarizer @Inject constructor(
     private val secureSettings: SecureSettingsDataStore,
+    private val appSettings: AppSettings,
     private val keyRotator: PipelineKeyRotator
 ) {
     companion object {
         private const val TAG = "PipelineSummarizer"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val MODEL = "gemini-3.8-flash"
-        private const val MAX_OUTPUT_TOKENS = 4096
+        private const val MAX_OUTPUT_TOKENS = 8192
 
         private val SUMMARIZER_PROMPT = """
 You are a technical pipeline reporter. You are given the results of an
@@ -39,7 +54,7 @@ Then THREE sections:
 
 1. SUMMARY (one paragraph, Russian)
 2. SUCCESSFUL CHANGES (bulleted list, Russian)
-   Группируй по типу операции: ✏️ Изменены, ➕ Созданы, 🗑 Удалены.
+   Group by operation type: ➕ Созданы, ✏️ Изменены, 🗑 Удалены.
 3. FAILED FILES (bulleted list, Russian, only if any failed)
 
 Russian language throughout. Markdown formatting. 300-600 words.
@@ -51,11 +66,26 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         userPrompt: String,
         tasks: List<FileTask>,
         totalCostEur: Double,
-        totalTokens: Int
+        totalTokens: Int,
+        modelApiId: String? = null
     ): String = withContext(Dispatchers.IO) {
         try {
-            var currentKeyInfo = keyRotator.currentKey()
-                ?: return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
+            val effectiveModel = GeminiModel.fromModelId(modelApiId ?: "") ?: GeminiModel.getDefault()
+            val thinkingLevel = effectiveModel.forcedThinkingLevel.apiName // LOW для 3.5, MEDIUM для 3.1
+
+            // Каскадный подбор API-ключа
+            val rotatorKeyInfo = keyRotator.currentKey()
+            var currentApiKey = rotatorKeyInfo?.first
+                ?: secureSettings.getActiveGeminiApiKey().first().ifBlank { null }
+                ?: secureSettings.getGeminiApiKey().first().ifBlank { null }
+                ?: appSettings.geminiApiKey.first().ifBlank { null }
+
+            if (currentApiKey.isNullOrBlank()) {
+                Log.w(TAG, "API ключ не найден — используем локальный fallback-отчёт")
+                return@withContext fallbackReport(tasks, totalCostEur, totalTokens)
+            }
+
+            var currentRotatorIdx = rotatorKeyInfo?.second ?: -1
 
             val userMessage = buildString {
                 appendLine("═══ ORIGINAL USER PROMPT ═══")
@@ -93,27 +123,40 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
 
             var attempts = 0
             while (attempts < 2) {
-                val (apiKey, idx) = currentKeyInfo!!
-                val result = callOnce(apiKey, userMessage)
+                val result = callOnce(currentApiKey!!, effectiveModel, thinkingLevel, userMessage)
                 if (result != null) return@withContext result
 
-                val next = keyRotator.burnAndRotate(idx)
-                if (next == null) break
-                currentKeyInfo = next
-                attempts++
+                if (currentRotatorIdx >= 0) {
+                    val next = keyRotator.burnAndRotate(currentRotatorIdx)
+                    if (next != null) {
+                        currentApiKey = next.first
+                        currentRotatorIdx = next.second
+                        attempts++
+                        continue
+                    }
+                }
+                break
             }
+
             fallbackReport(tasks, totalCostEur, totalTokens)
         } catch (e: Exception) {
-            Log.w(TAG, "Summarizer failed: ${e.message}")
+            Log.w(TAG, "Summarizer failed: ${e.message} — fallback to local report")
             fallbackReport(tasks, totalCostEur, totalTokens)
         }
     }
 
-    private fun callOnce(apiKey: String, userMessage: String): String? {
+    private fun callOnce(
+        apiKey: String,
+        model: GeminiModel,
+        thinkingLevel: String,
+        userMessage: String
+    ): String? {
         var connection: HttpURLConnection? = null
         return try {
+            val url = "$BASE_URL/${model.modelId}:generateContent"
+
             val requestBody = buildJsonObject {
-                put("system_instruction", buildJsonObject {
+                put("systemInstruction", buildJsonObject {
                     put("parts", JsonArray(listOf(
                         buildJsonObject { put("text", SUMMARIZER_PROMPT) }
                     )))
@@ -128,14 +171,14 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                 )))
                 put("generationConfig", buildJsonObject {
                     put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                    put("temperature", 0.3)
+                    put("temperature", 0.2)
                     put("thinkingConfig", buildJsonObject {
-                        put("thinkingLevel", JsonPrimitive("LOW"))
+                        put("thinkingLevel", JsonPrimitive(thinkingLevel))
                     })
                 })
             }
 
-            connection = (URL("$BASE_URL/$MODEL:generateContent").openConnection() as HttpURLConnection).apply {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 setRequestProperty("x-goog-api-key", apiKey)
@@ -145,41 +188,48 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
                 doOutput = true
                 doInput = true
             }
+
             connection.outputStream.use {
                 it.write(requestBody.toString().toByteArray(Charsets.UTF_8))
             }
 
             if (connection.responseCode !in 200..299) {
-                Log.w(TAG, "Summarizer HTTP ${connection.responseCode}")
+                Log.w(TAG, "Summarizer HTTP error: ${connection.responseCode}")
                 return null
             }
 
             val responseBody = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
                 .use { it.readText() }
             val json = Json.parseToJsonElement(responseBody).jsonObject
-            val candidate = json["candidates"]?.jsonArray?.firstOrNull() ?: return null
-            val finishReason = candidate.jsonObject["finishReason"]?.jsonPrimitive?.contentOrNull
-            if (finishReason != null && finishReason != "STOP" && finishReason != "MAX_TOKENS") return null
+            val candidate = json["candidates"]?.jsonArray?.firstOrNull()?.jsonObject ?: return null
 
-            val text = candidate.jsonObject["content"]?.jsonObject
-                ?.get("parts")?.jsonArray
-                ?.joinToString("") { part ->
-                    part.jsonObject["text"]?.jsonPrimitive?.contentOrNull ?: ""
-                }
-                ?.takeIf { it.isNotBlank() }
-                ?: return null
+            val finishReason = candidate["finishReason"]?.jsonPrimitive?.contentOrNull
+            if (finishReason != null && finishReason != "STOP" && finishReason != "MAX_TOKENS") {
+                return null
+            }
+
+            val parts = candidate["content"]?.jsonObject?.get("parts")?.jsonArray ?: return null
+
+            // КРИТИЧНО: фильтруем thought: true, забирая только финальный текст отчета
+            val text = parts.filter { part ->
+                part.jsonObject["thought"]?.jsonPrimitive?.booleanOrNull != true
+            }.joinToString("") { part ->
+                part.jsonObject["text"]?.jsonPrimitive?.contentOrNull ?: ""
+            }.takeIf { it.isNotBlank() } ?: return null
 
             text.trim()
         } catch (e: Exception) {
             Log.w(TAG, "callOnce failed: ${e.message}")
             null
         } finally {
-            try { connection?.disconnect() } catch (_: Exception) {}
+            try { connection?.disconnect() } catch (_: Exception) { }
         }
     }
 
     private fun fallbackReport(
-        tasks: List<FileTask>, totalCostEur: Double, totalTokens: Int
+        tasks: List<FileTask>,
+        totalCostEur: Double,
+        totalTokens: Int
     ): String = buildString {
         val success = tasks.filter { it.status == TaskStatus.SUCCESS }
         val noChanges = tasks.filter { it.status == TaskStatus.NO_CHANGES_NEEDED }
@@ -191,46 +241,52 @@ OUTPUT only the report text. No JSON, no XML, no code fences.
         val headline = when {
             failed.isEmpty() && success.isNotEmpty() -> "✅ Pipeline complete"
             success.isEmpty() && failed.isNotEmpty() -> "🔴 Pipeline failed"
-            else -> "🟡 Pipeline complete with errors"
+            else -> "🟡 Pipeline complete with warnings"
         }
-        appendLine("$headline: ${success.size + noChanges.size}/${tasks.size} success, ${failed.size} failed")
+
+        appendLine("$headline: ${success.size + noChanges.size}/${tasks.size} успешно, ${failed.size} ошибок")
         appendLine()
-        appendLine("**Сводка**")
-        appendLine("Обработано задач: ${tasks.size}")
-        appendLine("  • Создано: ${createdSuccess.size}")
-        appendLine("  • Изменено: ${modifiedSuccess.size}")
-        appendLine("  • Удалено: ${deletedSuccess.size}")
-        appendLine("  • Без изменений: ${noChanges.size}")
-        appendLine("  • Провалено: ${failed.size}")
-        appendLine("Стоимость: €${String.format(java.util.Locale.US, "%.4f", totalCostEur)}")
-        appendLine("Токенов: $totalTokens")
+        appendLine("**Сводка выполнения**")
+        appendLine("Всего обработано задач: ${tasks.size}")
+        appendLine("  • ➕ Создано: ${createdSuccess.size}")
+        appendLine("  • ✏️ Изменено: ${modifiedSuccess.size}")
+        appendLine("  • 🗑 Удалено: ${deletedSuccess.size}")
+        appendLine("  • ⚪ Без изменений: ${noChanges.size}")
+        appendLine("  • ❌ Ошибок: ${failed.size}")
+        appendLine("Расход: €${String.format(java.util.Locale.US, "%.4f", totalCostEur)} (${totalTokens} токенов)")
         appendLine()
+
         if (createdSuccess.isNotEmpty()) {
-            appendLine("**➕ Созданы файлы**")
-            for (t in createdSuccess) appendLine("• `${t.filePath}` → `${t.commitSha?.take(8) ?: "—"}`")
-            appendLine()
-        }
-        if (modifiedSuccess.isNotEmpty()) {
-            appendLine("**✏️ Изменены файлы**")
-            for (t in modifiedSuccess) {
-                val conflict = if (t.resolvedConflict) " ⚠️ auto-resolved" else ""
-                appendLine("• `${t.filePath}` → `${t.commitSha?.take(8) ?: "—"}`$conflict")
+            appendLine("**➕ Созданные файлы:**")
+            for (t in createdSuccess) {
+                appendLine("• `${t.filePath}` (коммит: `${t.commitSha?.take(8) ?: "—"}`)")
             }
             appendLine()
         }
+
+        if (modifiedSuccess.isNotEmpty()) {
+            appendLine("**✏️ Изменённые файлы:**")
+            for (t in modifiedSuccess) {
+                val conflict = if (t.resolvedConflict) " ⚠️ авто-разрешён конфликт" else ""
+                appendLine("• `${t.filePath}` (коммит: `${t.commitSha?.take(8) ?: "—"}`$conflict)")
+            }
+            appendLine()
+        }
+
         if (deletedSuccess.isNotEmpty()) {
-            appendLine("**🗑 Удалены файлы**")
+            appendLine("**🗑 Удалённые файлы:**")
             for (t in deletedSuccess) {
                 appendLine("• `${t.filePath}`")
             }
             appendLine()
         }
+
         if (failed.isNotEmpty()) {
-            appendLine("**Провалены**")
+            appendLine("**❌ Файлы с ошибками:**")
             for (t in failed) {
                 appendLine("• `${t.filePath}`")
-                appendLine("  Код: `${t.errorCode?.name ?: "UNKNOWN"}` — ${t.errorCode?.displayName ?: ""}")
-                t.lastError?.let { appendLine("  Ошибка: ${it.take(200)}") }
+                appendLine("  Причина: ${t.errorCode?.displayName ?: "Неизвестная ошибка"}")
+                t.lastError?.let { appendLine("  Лог: ${it.take(200)}") }
             }
         }
     }
