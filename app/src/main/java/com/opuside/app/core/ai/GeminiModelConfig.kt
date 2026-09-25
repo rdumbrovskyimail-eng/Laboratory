@@ -8,11 +8,11 @@ import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * 🔷 GEMINI MODEL CONFIGURATION v3.0 (Official Specs)
+ * 🔷 GEMINI MODEL CONFIGURATION v3.1 (Official Specs & Backward-Compatible)
  *
  * Строго две модели Flash-Lite с полным паспортным лимитом:
- * - Gemini 3.1 Flash-Lite: 1 048 576 вход / 65 536 выход (Штатно: MEDIUM thinking)
- * - Gemini 3.5 Flash-Lite: 1 048 576 вход / 65 536 выход (Штатно: LOW thinking)
+ * - Gemini 3.1 Flash-Lite: 1 048 576 ввод / 65 536 вывод (Штатно: MEDIUM thinking)
+ * - Gemini 3.5 Flash-Lite: 1 048 576 ввод / 65 536 вывод (Штатно: LOW thinking)
  *
  * Цены:
  * - 3.1 Flash-Lite: $0.25 in / $1.50 out (кэш $0.025 / 1M)
@@ -91,6 +91,9 @@ object GeminiModelConfig {
         val maxOutputTokens: Int,
         val inputPricePerM: Double,
         val outputPricePerM: Double,
+        val longInputPricePerM: Double,
+        val longOutputPricePerM: Double,
+        val longContextThreshold: Int,
         val cacheReadPricePerM: Double,
         val cacheStoragePricePerMPerHour: Double,
         val supportsThinking: Boolean,
@@ -106,6 +109,7 @@ object GeminiModelConfig {
         val supportsSeed: Boolean,
         val supportsResponseMimeType: Boolean,
         val supportsCaching: Boolean,
+        val defaultThinkingLevel: ThinkingLevel,
         val speedRating: Int,
         val emoji: String
     ) {
@@ -118,11 +122,14 @@ object GeminiModelConfig {
             maxOutputTokens = OFFICIAL_MAX_OUTPUT,
             inputPricePerM = 0.30,
             outputPricePerM = 2.50,
+            longInputPricePerM = 0.30,
+            longOutputPricePerM = 2.50,
+            longContextThreshold = Int.MAX_VALUE,
             cacheReadPricePerM = 0.030,
             cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
             thinkingOutputPricePerM = 2.50,
-            forcedThinkingLevel = ThinkingLevel.LOW, // Штатно LOW
+            forcedThinkingLevel = ThinkingLevel.LOW,
             supportsGrounding = true,
             supportsCodeExecution = true,
             supportsFunctionCalling = true,
@@ -133,6 +140,7 @@ object GeminiModelConfig {
             supportsSeed = true,
             supportsResponseMimeType = true,
             supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.LOW,
             speedRating = 10,
             emoji = "⚡"
         ),
@@ -146,11 +154,14 @@ object GeminiModelConfig {
             maxOutputTokens = OFFICIAL_MAX_OUTPUT,
             inputPricePerM = 0.25,
             outputPricePerM = 1.50,
+            longInputPricePerM = 0.25,
+            longOutputPricePerM = 1.50,
+            longContextThreshold = Int.MAX_VALUE,
             cacheReadPricePerM = 0.025,
             cacheStoragePricePerMPerHour = 1.00,
             supportsThinking = true,
             thinkingOutputPricePerM = 1.50,
-            forcedThinkingLevel = ThinkingLevel.MEDIUM, // Штатно MEDIUM
+            forcedThinkingLevel = ThinkingLevel.MEDIUM,
             supportsGrounding = true,
             supportsCodeExecution = false,
             supportsFunctionCalling = true,
@@ -161,6 +172,7 @@ object GeminiModelConfig {
             supportsSeed = true,
             supportsResponseMimeType = true,
             supportsCaching = true,
+            defaultThinkingLevel = ThinkingLevel.MEDIUM,
             speedRating = 9,
             emoji = "💨"
         );
@@ -186,15 +198,19 @@ object GeminiModelConfig {
             cachedReadTokens: Int = 0,
             usdToEur: Double = 0.92
         ): GeminiCost {
+            val isLong = inputTokens > longContextThreshold
+            val actualInputPrice = if (isLong) longInputPricePerM else inputPricePerM
+            val actualOutputPrice = if (isLong) longOutputPricePerM else outputPricePerM
+
             val regularInputTokens = (inputTokens - cachedReadTokens).coerceAtLeast(0)
-            val regularInputCostUSD = (regularInputTokens / 1_000_000.0) * inputPricePerM
+            val regularInputCostUSD = (regularInputTokens / 1_000_000.0) * actualInputPrice
             val cacheReadCostUSD = (cachedReadTokens / 1_000_000.0) * cacheReadPricePerM
-            val outputCostUSD = (outputTokens / 1_000_000.0) * outputPricePerM
+            val outputCostUSD = (outputTokens / 1_000_000.0) * actualOutputPrice
             val thinkingCostUSD = (thinkingTokens / 1_000_000.0) * thinkingOutputPricePerM
 
             val totalCostUSD = regularInputCostUSD + cacheReadCostUSD + outputCostUSD + thinkingCostUSD
             val withoutCacheCostUSD = if (cachedReadTokens > 0)
-                (cachedReadTokens / 1_000_000.0) * inputPricePerM else 0.0
+                (cachedReadTokens / 1_000_000.0) * actualInputPrice else 0.0
             val savingsUSD = withoutCacheCostUSD - cacheReadCostUSD
             val savingsEUR = savingsUSD * usdToEur
 
@@ -204,7 +220,7 @@ object GeminiModelConfig {
                 outputTokens = outputTokens,
                 thinkingTokens = thinkingTokens,
                 cachedReadTokens = cachedReadTokens,
-                isLongContext = inputTokens > 200_000,
+                isLongContext = isLong,
                 totalCostUSD = totalCostUSD,
                 totalCostEUR = totalCostUSD * usdToEur,
                 cacheSavingsUSD = savingsUSD,
@@ -393,13 +409,14 @@ object GeminiModelConfig {
         val temperature: Float = 0.7f,
         val topP: Float = 0.95f,
         val topK: Int = 40,
-        val maxOutputTokens: Int = OFFICIAL_MAX_OUTPUT, // По умолчанию полные паспортные 64K
+        val maxOutputTokens: Int = OFFICIAL_MAX_OUTPUT,
         val stopSequences: List<String> = emptyList(),
         val responseMimeType: String? = null,
         val responseSchema: String? = null,
         val presencePenalty: Float = 0f,
         val frequencyPenalty: Float = 0f,
         val seed: Int? = null,
+        val thinkingLevel: ThinkingLevel = ThinkingLevel.NONE, // Для обратной совместимости вызовов
         val safetySettings: Map<HarmCategory, SafetyThreshold> = defaultSafetySettings()
     ) {
         companion object {
@@ -412,8 +429,15 @@ object GeminiModelConfig {
             )
 
             val FULL = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, temperature = 0.7f)
+            val MAX = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, temperature = 1.0f)
             val ECO = GenerationConfig(maxOutputTokens = ECO_OUTPUT_TOKENS, temperature = 0.7f)
             val CODE = GenerationConfig(maxOutputTokens = OFFICIAL_MAX_OUTPUT, temperature = 0.2f, topP = 0.8f)
+            val CREATIVE = GenerationConfig(
+                maxOutputTokens = OFFICIAL_MAX_OUTPUT,
+                temperature = 1.5f,
+                topP = 0.95f,
+                topK = 64
+            )
             val JSON = GenerationConfig(
                 maxOutputTokens = OFFICIAL_MAX_OUTPUT,
                 temperature = 0.0f,
