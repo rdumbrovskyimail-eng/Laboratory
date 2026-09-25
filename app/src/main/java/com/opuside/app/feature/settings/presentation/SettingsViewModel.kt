@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.opuside.app.BuildConfig
+import com.opuside.app.core.ai.GeminiModelConfig
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.model.GitHubRepository
@@ -65,7 +66,7 @@ class SettingsViewModel @Inject constructor(
     val repoInfo: StateFlow<GitHubRepository?> = _repoInfo.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE — Gemini
+    // STATE — Gemini (Строго 3.5 Lite и 3.1 Lite)
     // ═════════════════════════════════════════════════════════════════════════
 
     private val _geminiKeyInput = MutableStateFlow("")
@@ -77,14 +78,14 @@ class SettingsViewModel @Inject constructor(
     private val _geminiActiveKeyIndex = MutableStateFlow(0)
     val geminiActiveKeyIndex: StateFlow<Int> = _geminiActiveKeyIndex.asStateFlow()
 
-    private val _geminiModelInput = MutableStateFlow("gemini-flash-latest")
+    private val _geminiModelInput = MutableStateFlow(GeminiModelConfig.GeminiModel.getDefault().modelId)
     val geminiModelInput: StateFlow<String> = _geminiModelInput.asStateFlow()
 
     private val _geminiStatus = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Unknown)
     val geminiStatus: StateFlow<ConnectionStatus> = _geminiStatus.asStateFlow()
 
     // ═════════════════════════════════════════════════════════════════════════
-    // STATE — UI
+    // STATE — UI & Безопасность
     // ═════════════════════════════════════════════════════════════════════════
 
     private val _isSaving = MutableStateFlow(false)
@@ -95,10 +96,6 @@ class SettingsViewModel @Inject constructor(
 
     private val _biometricAuthRequest = MutableStateFlow(false)
     val biometricAuthRequest: StateFlow<Boolean> = _biometricAuthRequest.asStateFlow()
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // STATE — Biometric Lock
-    // ═════════════════════════════════════════════════════════════════════════
 
     private val _isUnlocked = MutableStateFlow(false)
     val isUnlocked: StateFlow<Boolean> = _isUnlocked.asStateFlow()
@@ -112,111 +109,77 @@ class SettingsViewModel @Inject constructor(
     private var unlockJob: Job? = null
     private var timerJob: Job? = null
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // PUBLIC PROPERTIES
-    // ═════════════════════════════════════════════════════════════════════════
-
     val gitHubConfig = appSettings.gitHubConfig
     val appVersion = BuildConfig.VERSION_NAME
     val buildType = if (BuildConfig.DEBUG) "Debug" else "Release"
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // INITIALIZATION
-    // ═════════════════════════════════════════════════════════════════════════
-
     init {
-        android.util.Log.d(TAG, "━".repeat(80))
-        android.util.Log.d(TAG, "🚀 SettingsViewModel INITIALIZED")
-        android.util.Log.d(TAG, "━".repeat(80))
         loadSettings()
     }
 
     private fun loadSettings() {
         viewModelScope.launch {
-            android.util.Log.d(TAG, "📥 Loading settings from DataStore...")
-
             try {
-                // GitHub config
+                // GitHub настройки
                 val githubConfig = try {
                     appSettings.gitHubConfig.first()
                 } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  ❌ Failed to load GitHub config", e)
                     SecureSettingsDataStore.GitHubConfig("", "", "main", "")
                 }
 
-                android.util.Log.d(TAG, "  ├─ Owner: ${githubConfig.owner.ifEmpty { "[EMPTY]" }}")
-                android.util.Log.d(TAG, "  ├─ Repo: ${githubConfig.repo.ifEmpty { "[EMPTY]" }}")
-                android.util.Log.d(TAG, "  └─ Branch: ${githubConfig.branch}")
-
-                // GitHub token
                 val githubToken = try {
-                    secureSettings.getGitHubToken().first().also { token ->
-                        android.util.Log.d(TAG, "  ├─ Token: ${if (token.isNotEmpty()) "[${token.take(8)}***]" else "[EMPTY]"}")
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  ❌ Failed to decrypt GitHub token", e)
-                    ""
-                }
+                    secureSettings.getGitHubToken().first()
+                } catch (e: Exception) { "" }
 
-                // Gemini key
+                // Gemini ключи
                 val geminiKey = try {
-                    secureSettings.getGeminiApiKey().first().also { key ->
-                        android.util.Log.d(TAG, "  ├─ Gemini: ${if (key.isNotEmpty()) "[${key.take(8)}***]" else "[EMPTY]"}")
-                    }
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  ❌ Failed to decrypt Gemini key", e)
-                    ""
-                }
+                    secureSettings.getGeminiApiKey().first()
+                } catch (e: Exception) { "" }
 
                 val geminiKeysList = try {
                     secureSettings.getGeminiApiKeys().first()
                 } catch (e: Exception) { emptyList() }
+
                 val activeIdx = try {
                     secureSettings.getGeminiActiveKeyIndex().first()
                 } catch (e: Exception) { 0 }
+
                 _geminiKeys.value = geminiKeysList
                 _geminiActiveKeyIndex.value = activeIdx
 
-                // Миграция: если есть legacy ключ но нет списка — создать первый элемент
                 if (geminiKeysList.isEmpty() && geminiKey.isNotBlank()) {
-                    val migrated = listOf(GeminiKeyEntry("Key 1", geminiKey))
+                    val migrated = listOf(GeminiKeyEntry("Ключ 1", geminiKey))
                     _geminiKeys.value = migrated
                     viewModelScope.launch { secureSettings.setGeminiApiKeys(migrated) }
                 }
 
-                // Gemini model
-                val geminiModel = try {
+                // Модель Gemini (авто-миграция старых ID на 3.5 Flash-Lite)
+                val rawModel = try {
                     appSettings.geminiModel.first()
-                } catch (e: Exception) {
-                    android.util.Log.e(TAG, "  ❌ Failed to load Gemini model", e)
-                    "gemini-flash-latest"
-                }
+                } catch (e: Exception) { "" }
 
-                // Apply to state — всё в одном месте, никаких промежуточных присваиваний
+                val validatedModel = GeminiModelConfig.GeminiModel.fromModelId(rawModel)
+                    ?: GeminiModelConfig.GeminiModel.getDefault()
+
                 _githubOwnerInput.value = githubConfig.owner
                 _githubRepoInput.value = githubConfig.repo
                 _githubBranchInput.value = githubConfig.branch
                 _githubTokenInput.value = githubToken
                 _geminiKeyInput.value = geminiKey
-                _geminiModelInput.value = geminiModel
-
-                android.util.Log.d(TAG, "✅ Settings loaded successfully")
+                _geminiModelInput.value = validatedModel.modelId
 
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "❌ CRITICAL: Failed to load settings", e)
-                _message.value = "⚠️ Failed to load settings: ${e.message}"
+                _message.value = "⚠️ Ошибка загрузки настроек: ${e.message}"
             }
         }
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // BIOMETRIC LOCK MANAGEMENT
+    // БЛОКИРОВКА И БИОМЕТРИЯ
     // ═════════════════════════════════════════════════════════════════════════
 
     fun unlock() {
-        android.util.Log.d(TAG, "🔓 Settings UNLOCKED")
         _isUnlocked.value = true
-
         val expirationTime = System.currentTimeMillis() + UNLOCK_TIMEOUT_MS
         _unlockExpiration.value = expirationTime
 
@@ -242,7 +205,6 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun lock() {
-        android.util.Log.d(TAG, "🔒 Settings LOCKED")
         _isUnlocked.value = false
         _unlockExpiration.value = null
         unlockJob?.cancel(); unlockJob = null
@@ -250,56 +212,44 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun requestUnlock() {
-        android.util.Log.d(TAG, "🔐 Unlock requested via biometric")
         _biometricAuthRequest.value = true
     }
 
     fun onBiometricSuccess() {
-        android.util.Log.d(TAG, "✅ Biometric authentication successful")
         unlock()
         clearBiometricRequest()
     }
 
     fun onBiometricError(error: String) {
-        android.util.Log.e(TAG, "❌ Biometric authentication failed: $error")
-        _message.value = "❌ Authentication failed: $error"
+        _message.value = "❌ Ошибка авторизации: $error"
         clearBiometricRequest()
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // CONFIG IMPORT
+    // ИМПОРТ / ЭКСПОРТ
     // ═════════════════════════════════════════════════════════════════════════
 
     fun importConfigFromFile(fileUri: Uri) {
         if (!_isUnlocked.value) {
-            _message.value = "🔒 Unlock Settings to import configuration"
+            _message.value = "🔒 Разблокируйте настройки для импорта"
             return
         }
 
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d(TAG, "📥 IMPORTING CONFIGURATION")
-
             try {
                 val result = ConfigImporter.importConfig(context, fileUri)
-
                 result.onSuccess { config ->
                     config.githubOwner?.let { _githubOwnerInput.value = it }
                     config.githubRepo?.let { _githubRepoInput.value = it }
                     config.githubBranch?.let { _githubBranchInput.value = it }
                     config.githubToken?.let { _githubTokenInput.value = it }
-
-                    android.util.Log.d(TAG, "✅ Configuration applied")
-                    _message.value = "✅ Configuration imported!\n\n${config.toSummary()}\n\n⚠️ Don't forget to click Save!"
-
+                    _message.value = "✅ Конфигурация загружена!\nНе забудьте нажать «Сохранить»."
                 }.onFailure { error ->
-                    android.util.Log.e(TAG, "❌ Import failed", error)
-                    _message.value = "❌ Import failed: ${error.message}"
+                    _message.value = "❌ Ошибка импорта: ${error.message}"
                 }
-
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "❌ Import error", e)
-                _message.value = "❌ Import error: ${e.message}"
+                _message.value = "❌ Ошибка: ${e.message}"
             } finally {
                 _isSaving.value = false
             }
@@ -316,12 +266,12 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // UPDATE FUNCTIONS
+    // ОБНОВЛЕНИЕ ЗНАЧЕНИЙ
     // ═════════════════════════════════════════════════════════════════════════
 
     private fun checkUnlocked(): Boolean {
         if (!_isUnlocked.value) {
-            _message.value = "🔒 Unlock Settings to edit"
+            _message.value = "🔒 Разблокируйте настройки для редактирования"
             return false
         }
         return true
@@ -350,31 +300,36 @@ class SettingsViewModel @Inject constructor(
     fun updateGeminiKey(key: String) {
         if (!checkUnlocked()) return
         _geminiKeyInput.value = key
-        android.util.Log.d(TAG, "🔄 Gemini Key updated: ${key.take(8)}***")
     }
 
     fun updateGeminiModel(model: String) {
-        _geminiModelInput.value = model
-        android.util.Log.d(TAG, "🔄 Gemini model updated: $model")
+        val validated = GeminiModelConfig.GeminiModel.fromModelId(model) ?: GeminiModelConfig.GeminiModel.getDefault()
+        _geminiModelInput.value = validated.modelId
     }
 
     fun addGeminiKey(label: String, key: String) {
         if (!checkUnlocked()) return
         if (_geminiKeys.value.size >= 10) {
-            _message.value = "❌ Maximum 10 keys allowed"
+            _message.value = "❌ Максимум 10 ключей"
             return
         }
         if (key.isBlank()) {
-            _message.value = "❌ Key cannot be empty"
+            _message.value = "❌ Ключ не может быть пустым"
             return
         }
         val newList = _geminiKeys.value + GeminiKeyEntry(
-            label = label.ifBlank { "Key ${_geminiKeys.value.size + 1}" },
+            label = label.ifBlank { "Ключ ${_geminiKeys.value.size + 1}" },
             key = key
         )
         _geminiKeys.value = newList
-        viewModelScope.launch { secureSettings.setGeminiApiKeys(newList) }
-        _message.value = "✅ Key added: $label"
+        viewModelScope.launch {
+            secureSettings.setGeminiApiKeys(newList)
+            // Если это первый ключ — делаем его активным
+            if (newList.size == 1) {
+                setActiveGeminiKey(0)
+            }
+        }
+        _message.value = "✅ Ключ добавлен: $label"
     }
 
     fun removeGeminiKey(index: Int) {
@@ -389,28 +344,31 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             secureSettings.setGeminiApiKeys(list)
             secureSettings.setGeminiActiveKeyIndex(_geminiActiveKeyIndex.value)
+            if (list.isNotEmpty()) {
+                val activeKey = list[_geminiActiveKeyIndex.value].key
+                secureSettings.setGeminiApiKey(activeKey)
+                appSettings.setGeminiApiKey(activeKey)
+            }
         }
     }
 
     fun setActiveGeminiKey(index: Int) {
         if (index !in _geminiKeys.value.indices) return
         _geminiActiveKeyIndex.value = index
-        viewModelScope.launch { secureSettings.setGeminiActiveKeyIndex(index) }
-        val label = _geminiKeys.value[index].label
-        _message.value = "🔑 Active: $label"
-    }
-
-    fun updateGeminiKeyLabel(index: Int, newLabel: String) {
-        if (!checkUnlocked()) return
-        val list = _geminiKeys.value.toMutableList()
-        if (index !in list.indices) return
-        list[index] = list[index].copy(label = newLabel)
-        _geminiKeys.value = list
-        viewModelScope.launch { secureSettings.setGeminiApiKeys(list) }
+        val entry = _geminiKeys.value[index]
+        viewModelScope.launch {
+            secureSettings.setGeminiActiveKeyIndex(index)
+            secureSettings.setGeminiApiKey(entry.key)
+            appSettings.setGeminiApiKey(entry.key)
+            if (secureSettings.pipelineKeyA.first().isBlank()) {
+                secureSettings.setPipelineKeyA(entry.key)
+            }
+        }
+        _message.value = "🔑 Активен: ${entry.label}"
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // SAVE OPERATIONS
+    // СОХРАНЕНИЕ НАСТРОЕК (СКВОЗНАЯ СИНХРОНИЗАЦИЯ)
     // ═════════════════════════════════════════════════════════════════════════
 
     fun saveGitHubSettings() {
@@ -418,35 +376,22 @@ class SettingsViewModel @Inject constructor(
 
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d(TAG, "💾 SAVING GITHUB SETTINGS")
-
             try {
-                if (_githubOwnerInput.value.isBlank()) {
-                    _message.value = "❌ Owner cannot be empty"
-                    return@launch
-                }
-                if (_githubRepoInput.value.isBlank()) {
-                    _message.value = "❌ Repository cannot be empty"
-                    return@launch
-                }
-                if (_githubTokenInput.value.isBlank()) {
-                    _message.value = "❌ Token cannot be empty"
+                if (_githubOwnerInput.value.isBlank() || _githubRepoInput.value.isBlank() || _githubTokenInput.value.isBlank()) {
+                    _message.value = "❌ Заполните все поля GitHub"
                     return@launch
                 }
 
                 secureSettings.setGitHubToken(_githubTokenInput.value)
                 appSettings.setGitHubConfig(
-                    owner = _githubOwnerInput.value,
-                    repo = _githubRepoInput.value,
-                    branch = _githubBranchInput.value
+                    owner = _githubOwnerInput.value.trim(),
+                    repo = _githubRepoInput.value.trim(),
+                    branch = _githubBranchInput.value.trim().ifBlank { "main" }
                 )
 
-                _message.value = "✅ GitHub settings saved successfully"
-                android.util.Log.d(TAG, "✅ GITHUB SETTINGS SAVED")
-
+                _message.value = "✅ Настройки GitHub сохранены"
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
-                _message.value = "❌ Failed to save: ${e.message}"
+                _message.value = "❌ Ошибка сохранения: ${e.message}"
             } finally {
                 _isSaving.value = false
             }
@@ -458,25 +403,33 @@ class SettingsViewModel @Inject constructor(
 
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d(TAG, "💾 SAVING GEMINI SETTINGS")
-
             try {
                 if (_geminiKeys.value.isEmpty()) {
-                    _message.value = "❌ Add at least one Gemini API key"
+                    _message.value = "❌ Добавьте хотя бы один ключ Gemini"
                     return@launch
                 }
 
+                val activeIdx = _geminiActiveKeyIndex.value.coerceIn(0, _geminiKeys.value.lastIndex)
+                val activeKey = _geminiKeys.value[activeIdx].key
+
+                // Синхронизируем ключ везде
                 secureSettings.setGeminiApiKeys(_geminiKeys.value)
-                secureSettings.setGeminiActiveKeyIndex(_geminiActiveKeyIndex.value)
-                secureSettings.setGeminiApiKey(_geminiKeys.value[_geminiActiveKeyIndex.value].key)
+                secureSettings.setGeminiActiveKeyIndex(activeIdx)
+                secureSettings.setGeminiApiKey(activeKey)
+                appSettings.setGeminiApiKey(activeKey)
+
+                // Если в Pipeline ключ А был пуст — автоматически наполняем
+                if (secureSettings.pipelineKeyA.first().isBlank()) {
+                    secureSettings.setPipelineKeyA(activeKey)
+                }
+
+                // Синхронизируем модель
                 appSettings.setGeminiModel(_geminiModelInput.value)
+                secureSettings.setPipelineGeminiModel(_geminiModelInput.value)
 
-                _message.value = "✅ Gemini settings saved (${_geminiKeys.value.size} keys)"
-                android.util.Log.d(TAG, "✅ GEMINI SETTINGS SAVED (${_geminiKeys.value.size} keys)")
-
+                _message.value = "✅ Настройки Gemini сохранены (${_geminiKeys.value.size} ключей)"
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
-                _message.value = "❌ Failed to save: ${e.message}"
+                _message.value = "❌ Ошибка сохранения: ${e.message}"
             } finally {
                 _isSaving.value = false
             }
@@ -488,36 +441,20 @@ class SettingsViewModel @Inject constructor(
 
         viewModelScope.launch {
             _isSaving.value = true
-            android.util.Log.d(TAG, "💾 SAVING ALL SETTINGS")
-
             try {
-                if (_githubOwnerInput.value.isBlank() || _githubRepoInput.value.isBlank() ||
-                    _githubTokenInput.value.isBlank()
-                ) {
-                    _message.value = "❌ GitHub fields are required"
+                if (_githubOwnerInput.value.isBlank() || _githubRepoInput.value.isBlank() || _githubTokenInput.value.isBlank()) {
+                    _message.value = "❌ Заполните обязательные поля GitHub"
                     return@launch
                 }
 
-                secureSettings.setGitHubToken(_githubTokenInput.value)
-                appSettings.setGitHubConfig(
-                    owner = _githubOwnerInput.value,
-                    repo = _githubRepoInput.value,
-                    branch = _githubBranchInput.value
-                )
-
+                saveGitHubSettings()
                 if (_geminiKeys.value.isNotEmpty()) {
-                    secureSettings.setGeminiApiKeys(_geminiKeys.value)
-                    secureSettings.setGeminiActiveKeyIndex(_geminiActiveKeyIndex.value)
-                    secureSettings.setGeminiApiKey(_geminiKeys.value[_geminiActiveKeyIndex.value].key)
-                    appSettings.setGeminiModel(_geminiModelInput.value)
+                    saveGeminiSettings()
                 }
 
-                _message.value = "✅ All settings saved successfully"
-                android.util.Log.d(TAG, "✅ ALL SETTINGS SAVED")
-
+                _message.value = "✅ Все настройки успешно сохранены"
             } catch (e: Exception) {
-                android.util.Log.e(TAG, "❌ SAVE FAILED", e)
-                _message.value = "❌ Failed to save: ${e.message}"
+                _message.value = "❌ Ошибка: ${e.message}"
             } finally {
                 _isSaving.value = false
             }
@@ -525,7 +462,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ═════════════════════════════════════════════════════════════════════════
-    // TEST CONNECTIONS
+    // ПРОВЕРКА СОЕДИНЕНИЯ
     // ═════════════════════════════════════════════════════════════════════════
 
     fun testGitHubConnection() {
@@ -536,15 +473,14 @@ class SettingsViewModel @Inject constructor(
                     .onSuccess { repo ->
                         _repoInfo.value = repo
                         _githubStatus.value = ConnectionStatus.Connected
-                        _message.value = "✅ GitHub connected: ${repo.fullName}"
+                        _message.value = "✅ GitHub подключён: ${repo.fullName}"
                     }
                     .onFailure { e ->
-                        _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                        _message.value = "❌ GitHub test failed: ${e.message}"
+                        _githubStatus.value = ConnectionStatus.Error(e.message ?: "Ошибка")
+                        _message.value = "❌ GitHub тест не прошёл: ${e.message}"
                     }
             } catch (e: Exception) {
-                _githubStatus.value = ConnectionStatus.Error(e.message ?: "Unknown error")
-                _message.value = "❌ GitHub test error: ${e.message}"
+                _githubStatus.value = ConnectionStatus.Error(e.message ?: "Ошибка")
             }
         }
     }
@@ -552,65 +488,65 @@ class SettingsViewModel @Inject constructor(
     fun testGeminiConnection() {
         val activeKeys = _geminiKeys.value
         val activeIdx = _geminiActiveKeyIndex.value
-        val key = if (activeKeys.isNotEmpty() && activeIdx in activeKeys.indices)
+        val key = if (activeKeys.isNotEmpty() && activeIdx in activeKeys.indices) {
             activeKeys[activeIdx].key.trim()
-        else _geminiKeyInput.value.trim()
+        } else {
+            _geminiKeyInput.value.trim()
+        }
+
         if (key.isBlank()) {
-            _message.value = "❌ Add a Gemini API key first"
+            _message.value = "❌ Сначала добавьте ключ Gemini"
             return
         }
 
         viewModelScope.launch {
             _geminiStatus.value = ConnectionStatus.Testing
-            android.util.Log.d(TAG, "🧪 Testing Gemini connection with model: ${_geminiModelInput.value}")
-
             try {
                 val result = withContext(Dispatchers.IO) {
                     testGeminiApi(key, _geminiModelInput.value)
                 }
                 if (result) {
                     _geminiStatus.value = ConnectionStatus.Connected
-                    _message.value = "✅ Gemini connected successfully"
-                    android.util.Log.d(TAG, "✅ Gemini test passed")
+                    _message.value = "✅ Gemini API успешно отвечает!"
                 } else {
                     _geminiStatus.value = ConnectionStatus.Error("Неверный ответ от API")
-                    _message.value = "❌ Gemini: неверный ответ от API"
+                    _message.value = "❌ Gemini: получен неожиданный ответ"
                 }
             } catch (e: Exception) {
-                val msg = e.message ?: "Unknown error"
+                val msg = e.message ?: "Ошибка сети"
                 _geminiStatus.value = ConnectionStatus.Error(msg)
-                _message.value = "❌ Gemini test failed: $msg"
-                android.util.Log.e(TAG, "❌ Gemini test failed", e)
+                _message.value = "❌ Gemini тест не прошёл: $msg"
             }
         }
     }
 
-    // ═════════════════════════════════════════════════════════════════════════
-    // INTERNAL API TEST HELPERS
-    // ═════════════════════════════════════════════════════════════════════════
-
     private fun testGeminiApi(apiKey: String, modelId: String): Boolean {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$modelId:generateContent"
+        val model = GeminiModelConfig.GeminiModel.fromModelId(modelId) ?: GeminiModelConfig.GeminiModel.getDefault()
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/${model.modelId}:generateContent"
+
         val body = JSONObject().apply {
             put("contents", JSONArray().apply {
                 put(JSONObject().apply {
                     put("role", "user")
                     put("parts", JSONArray().apply {
-                        put(JSONObject().apply { put("text", "Hi") })
+                        put(JSONObject().apply { put("text", "Ping") })
                     })
                 })
             })
             put("generationConfig", JSONObject().apply {
-                put("maxOutputTokens", 8)
+                put("maxOutputTokens", 128)
+                put("thinkingConfig", JSONObject().apply {
+                    put("thinkingLevel", model.forcedThinkingLevel.apiName)
+                })
             })
         }
 
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
             setRequestProperty("x-goog-api-key", apiKey)
-            connectTimeout = 20_000
-            readTimeout = 30_000
+            connectTimeout = 15_000
+            readTimeout = 20_000
             doOutput = true
         }
 
@@ -619,12 +555,12 @@ class SettingsViewModel @Inject constructor(
         val code = connection.responseCode
         if (code !in 200..299) {
             val err = connection.errorStream?.let {
-                BufferedReader(InputStreamReader(it)).use { r -> r.readText() }
+                BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
             } ?: "HTTP $code"
             throw Exception(parseApiErrorMessage(code, err))
         }
 
-        val response = BufferedReader(InputStreamReader(connection.inputStream)).use { it.readText() }
+        val response = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8)).use { it.readText() }
         val json = JSONObject(response)
         return json.has("candidates")
     }
@@ -632,31 +568,26 @@ class SettingsViewModel @Inject constructor(
     private fun parseApiErrorMessage(code: Int, body: String): String {
         val msg = try {
             val json = JSONObject(body)
-            json.optJSONObject("error")?.optString("message")
-                ?: json.optString("message", "").ifBlank { body.take(200) }
+            json.optJSONObject("error")?.optString("message") ?: body.take(200)
         } catch (_: Exception) { body.take(200) }
 
         return when (code) {
-            400 -> "Неверный запрос: $msg"
-            401 -> "Неверный API ключ"
-            403 -> "Доступ запрещён: $msg"
-            429 -> "Превышен лимит запросов"
-            500, 502, 503 -> "Сервер недоступен, попробуйте позже"
-            else -> "Ошибка $code: $msg"
+            400 -> "Неверный формат запроса (400): $msg"
+            401 -> "Неверный API ключ (401)"
+            403 -> "Доступ к модели запрещён (403)"
+            429 -> "Лимит запросов исчерпан (429)"
+            500, 502, 503 -> "Сервер Gemini временно недоступен"
+            else -> "Ошибка API $code: $msg"
         }
     }
-
-    // ═════════════════════════════════════════════════════════════════════════
-    // UTILITIES
-    // ═════════════════════════════════════════════════════════════════════════
 
     fun clearBiometricRequest() {
         _biometricAuthRequest.value = false
     }
 
     fun resetToDefaults() {
-        _geminiModelInput.value = com.opuside.app.core.ai.GeminiModelConfig.GeminiModel.getDefault().modelId
-        _message.value = "⚠️ Settings reset to defaults (not saved)"
+        _geminiModelInput.value = GeminiModelConfig.GeminiModel.getDefault().modelId
+        _message.value = "⚠️ Сброшено к значениям по умолчанию (не сохранено)"
     }
 
     fun clearMessage() {
@@ -664,7 +595,6 @@ class SettingsViewModel @Inject constructor(
     }
 
     companion object {
-        private const val TAG = "SettingsViewModel"
         private const val UNLOCK_TIMEOUT_MS = 5 * 60 * 1000L
     }
 }
