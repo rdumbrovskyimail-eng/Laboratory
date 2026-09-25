@@ -26,34 +26,9 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Network Module v4.0 (LONG CONTEXT + SSE STREAMING STABILITY)
+ * Network Module v4.1
  *
- * ═══════════════════════════════════════════════════════════════════════════
- * КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ ДЛЯ 125K OUTPUT + 1M CONTEXT:
- * ═══════════════════════════════════════════════════════════════════════════
- *
- * 1. OkHttp readTimeout = 0 (INFINITE) — SSE стрим без ограничений
- *    Причина: Claude может думать 2-3 минуты перед первым токеном (thinking)
- *    Защита: MAX_STREAMING_TIME_MS в ClaudeApiClient (90 минут)
- *
- * 2. OkHttp writeTimeout = 0 (INFINITE) — для отправки больших файлов (до 2MB)
- *    ✅ ИСПРАВЛЕНИЕ #5: было 120s, стало 0 (бесконечный)
- *
- * 3. OkHttp pingInterval = 20s — для keep-alive
- *    ✅ ИСПРАВЛЕНИЕ #2: добавлено для поддержания соединения
- *
- * 4. Ktor requestTimeout = INFINITE — SSE стрим без обрывов
- *    Причина: readTimeout=120s убивает соединение если между чанками >120s
- *
- * 5. Ktor socketTimeout = INFINITE — матчит OkHttp readTimeout=0
- *
- * 6. retryOnConnectionFailure(false) — нет скрытых задержек на retry
- *
- * ТЕСТОВЫЙ СЦЕНАРИЙ:
- * - 1MB файл → 270K input tokens
- * - Thinking 40K tokens → 2-5 минут ожидания
- * - Output 125K tokens → 40-67 минут генерации
- * - Общее время: до 90 минут
+ * Предоставляет HTTP-клиенты, API-клиенты GitHub и ToolExecutor с поддержкой AppSettings.
  */
 @Module
 @InstallIn(SingletonComponent::class)
@@ -137,8 +112,9 @@ object NetworkModule {
     @Singleton
     fun provideToolExecutor(
         repoIndexManager: RepoIndexManager,
-        gitHubClient: GitHubApiClient
+        gitHubClient: GitHubApiClient,
+        appSettings: AppSettings
     ): ToolExecutor {
-        return ToolExecutor(repoIndexManager, gitHubClient)
+        return ToolExecutor(repoIndexManager, gitHubClient, appSettings)
     }
 }
