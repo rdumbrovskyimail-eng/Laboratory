@@ -13,6 +13,10 @@ enum class PipelinePhase {
     DONE, CANCELLED, FATAL
 }
 
+/**
+ * Состояние конвейера Pipeline.
+ * Управляет задачами, статусом, выбранной моделью и опциями бэкапа/отчёта.
+ */
 data class PipelineState(
     val phase: PipelinePhase = PipelinePhase.IDLE,
     val tasks: List<FileTask> = emptyList(),
@@ -23,9 +27,15 @@ data class PipelineState(
     val pipelineRunId: String = UUID.randomUUID().toString().take(8),
     val maxParallelTasks: Int = 3,
     val logFilterTaskId: String? = null,
-    val selectedModelApiId: String = "gemini-3.8-flash",
-    val liteThinkingLevel: String = "low",
-    val pipelineMode: PipelineMode = PipelineMode.ONLINE
+    val selectedModelApiId: String = "gemini-3.5-flash-lite", // Модель по умолчанию
+    val pipelineMode: PipelineMode = PipelineMode.ONLINE,
+
+    // ── Независимые опции Бэкапа и TXT-отчёта ──────────────────────
+    val isDetailedReportEnabled: Boolean = false, // Галочка: подробный TXT-отчет
+    val isBackupEnabled: Boolean = true,          // Галочка: создавать точку отката
+    val currentBackupId: String? = null,          // ID текущего снимка
+    val detailedReportText: String? = null,       // Готовый TXT-отчет
+    val isRollingBack: Boolean = false            // Статус процесса отката
 ) {
     val totalTasks: Int get() = tasks.size
     val completedTasks: Int get() = tasks.count { it.status.isTerminal }
@@ -36,9 +46,10 @@ data class PipelineState(
     val deferredTasks: Int get() = tasks.count { it.status == TaskStatus.DEFERRED }
     val progress: Float get() = if (totalTasks == 0) 0f else completedTasks.toFloat() / totalTasks
 
+    // Стоимость по тарифам Flash-Lite ($0.25 - $0.30 за 1M)
     val estimatedCost: Double get() {
         val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
-        return modifyCount * 0.00008 + 0.00005
+        return modifyCount * 0.00004 + 0.00002
     }
 
     val canStart: Boolean get() = phase == PipelinePhase.REVIEWING
@@ -59,6 +70,11 @@ data class PipelineState(
     }
 
     val effectiveModelApiId: String get() = selectedModelApiId
+
+    // Автоматическая фиксация уровня Thinking под модель без ручных настроек:
+    // 3.1 Flash-Lite -> MEDIUM, 3.5 Flash-Lite -> LOW
+    val effectiveThinkingLevel: String
+        get() = if (selectedModelApiId.contains("3.1")) "medium" else "low"
 }
 
 enum class OverallStatus {
@@ -157,7 +173,8 @@ enum class RepoEventType {
     WORKFLOW_TRIGGERED, WORKFLOW_PROGRESS, WORKFLOW_SUCCESS, WORKFLOW_FAILURE,
     INDEX_INVALIDATED, INFO, ERROR,
     CLONE_START, CLONE_PROGRESS, CLONE_DONE,
-    LOCAL_WRITE, LOCAL_COMMIT, PUSH_START, PUSH_DONE, PUSH_FAILED
+    LOCAL_WRITE, LOCAL_COMMIT, PUSH_START, PUSH_DONE, PUSH_FAILED,
+    BACKUP_CREATED, ROLLBACK_STARTED, ROLLBACK_COMPLETED, REPORT_GENERATED
 }
 
 data class PlannerOutput(
@@ -181,13 +198,17 @@ sealed class TaskExecutionResult {
         val resolvedConflict: Boolean,
         val tokensUsed: Int,
         val costEur: Double,
-        val editResult: CreatorAIEditService.EditResult?
+        val editResult: CreatorAIEditService.EditResult?,
+        val originalContent: String? = null,
+        val finalContent: String? = null
     ) : TaskExecutionResult()
 
     data class NoChangesNeeded(
         val commitSha: String,
         val tokensUsed: Int,
-        val costEur: Double
+        val costEur: Double,
+        val originalContent: String? = null,
+        val finalContent: String? = null
     ) : TaskExecutionResult()
 
     data class Deferrable(
