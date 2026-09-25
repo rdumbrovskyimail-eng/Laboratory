@@ -1,32 +1,32 @@
 package com.opuside.app.core.di
 
-import android.content.Context
 import com.opuside.app.BuildConfig
 import com.opuside.app.core.ai.RepoIndexManager
 import com.opuside.app.core.ai.ToolExecutor
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.GitHubApiClient
 import com.opuside.app.core.network.github.GitHubGraphQLClient
-import com.opuside.app.core.security.SecureSettingsDataStore
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
-import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.plugins.logging.*
+import io.ktor.client.request.*
 import io.ktor.serialization.kotlinx.json.*
-import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
+import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
+import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * Network Module v4.1
+ * Network Module v4.2 (High-Throughput & Zero-Abuse Optimized)
  *
  * Предоставляет HTTP-клиенты, API-клиенты GitHub и ToolExecutor с поддержкой AppSettings.
  */
@@ -44,21 +44,58 @@ object NetworkModule {
         }
     }
 
+    /**
+     * Единый высокопроизводительный пул соединений OkHttp с расширенными лимитами очереди
+     */
+    @Provides
+    @Singleton
+    @Named("sharedOkHttp")
+    fun provideSharedOkHttpClient(): OkHttpClient {
+        val dispatcher = Dispatcher().apply {
+            maxRequests = 64
+            maxRequestsPerHost = 20 // Устранена задержка: параллельные запросы к api.github.com больше не блокируются
+        }
+        return OkHttpClient.Builder()
+            .dispatcher(dispatcher)
+            .connectionPool(ConnectionPool(10, 5, TimeUnit.MINUTES))
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
+    }
+
     @Provides
     @Singleton
     @Named("github")
-    fun provideGitHubHttpClient(json: Json): HttpClient {
+    fun provideGitHubHttpClient(
+        @Named("sharedOkHttp") okHttpClient: OkHttpClient,
+        json: Json
+    ): HttpClient {
         return HttpClient(OkHttp) {
             engine {
-                config {
-                    connectTimeout(15, TimeUnit.SECONDS)
-                    readTimeout(30, TimeUnit.SECONDS)
-                    writeTimeout(30, TimeUnit.SECONDS)
-                }
+                preconfigured = okHttpClient
             }
 
             install(ContentNegotiation) {
                 json(json)
+            }
+
+            // Автоматическая обработка редиректов (301, 302, 307) к AWS S3 / ассетам релизов
+            install(HttpRedirect) {
+                checkHttpMethod = false
+                allowHttpsDowngrade = false
+            }
+
+            // Обязательный заголовок User-Agent для исключения 403 Forbidden со стороны GitHub
+            defaultRequest {
+                header("User-Agent", "OpusIDE-Android-Client/1.0")
+            }
+
+            install(HttpTimeout) {
+                requestTimeoutMillis = 60_000
+                connectTimeoutMillis = 15_000
+                socketTimeoutMillis = 60_000
             }
 
             install(Logging) {
@@ -69,12 +106,6 @@ object NetworkModule {
                 }
                 level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
                 sanitizeHeader { name -> name.equals("Authorization", ignoreCase = true) }
-            }
-
-            install(HttpTimeout) {
-                requestTimeoutMillis = 30_000
-                connectTimeoutMillis = 15_000
-                socketTimeoutMillis = 30_000
             }
         }
     }
@@ -94,9 +125,10 @@ object NetworkModule {
     fun provideGitHubGraphQLClient(
         @Named("github") httpClient: HttpClient,
         json: Json,
-        gitHubClient: GitHubApiClient
+        gitHubClient: GitHubApiClient,
+        appSettings: AppSettings
     ): GitHubGraphQLClient {
-        return GitHubGraphQLClient(httpClient, json, gitHubClient)
+        return GitHubGraphQLClient(httpClient, json, gitHubClient, appSettings)
     }
 
     @Provides
