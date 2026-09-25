@@ -24,14 +24,13 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🛡️ PIPELINE BACKUP & AUDIT MANAGER
+ * 🛡️ PIPELINE BACKUP & AUDIT MANAGER v3.2
  *
  * Отвечает за:
- * 1. Моментальное сохранение оригиналов файлов перед началом правок.
- * 2. Полный откат (Rollback) проекта в 1 клик для Offline и Online режимов.
- * 3. Формирование 3-секционного TXT-отчета:
- *    [Полный промпт] -> [Оригинальные файлы] -> [Отредактированные файлы].
- * 4. Хранение истории точек восстановления на диске.
+ * 1. Сохранение снимков оригиналов перед правками.
+ * 2. Полный откат проекта в 1 клик для Offline и Online режимов.
+ * 3. Создание 3-секционного TXT-отчета: [Промпт] -> [Оригиналы] -> [Изменения].
+ * 4. Защиту от падений при вызове Share Sheet из ApplicationContext.
  */
 @Singleton
 class PipelineBackupManager @Inject constructor(
@@ -59,11 +58,8 @@ class PipelineBackupManager @Inject constructor(
         val files: List<BackupFileMeta>,
         val isRestored: Boolean = false
     ) {
-        val formattedDate: String
-            get() = SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(Date(timestamp))
-
-        val affectedFilesCount: Int
-            get() = files.size
+        val formattedDate: String get() = SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(Date(timestamp))
+        val affectedFilesCount: Int get() = files.size
     }
 
     data class BackupFileMeta(
@@ -81,10 +77,6 @@ class PipelineBackupManager @Inject constructor(
     private val baseBackupDir: File
         get() = File(context.filesDir, BACKUPS_DIR).apply { if (!exists()) mkdirs() }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 1. СОЗДАНИЕ СНИМКА (SNAPSHOT) ДО НАЧАЛА ВЫПОЛНЕНИЯ
-    // ═══════════════════════════════════════════════════════════════════════════
-
     suspend fun createSnapshot(
         runId: String,
         userPrompt: String,
@@ -95,63 +87,44 @@ class PipelineBackupManager @Inject constructor(
             val backupId = "backup_${System.currentTimeMillis()}_$runId"
             val backupDir = File(baseBackupDir, backupId).apply { mkdirs() }
             val originalsDir = File(backupDir, "originals").apply { mkdirs() }
-
             val branch = try { appSettings.gitHubConfig.first().branch } catch (_: Exception) { "main" }
             val filesMeta = mutableListOf<BackupFileMeta>()
 
-            Log.i(TAG, "📸 Создание снимка оригиналов: $backupId (${tasks.size} задач, режим=$mode)")
-
             try {
                 for (task in tasks) {
-                    val relativePath = task.filePath.trim().removePrefix("/")
+                    val relPath = task.filePath.trim().removePrefix("/")
                     var originalContent: String? = null
                     var existed = false
 
-                    when (task.operation) {
-                        TaskOperation.MODIFY, TaskOperation.DELETE -> {
-                            if (mode == PipelineMode.OFFLINE) {
-                                val readRes = localRepoManager.readFile(relativePath)
-                                if (readRes.isSuccess) {
-                                    originalContent = readRes.getOrNull()
+                    if (task.operation != TaskOperation.CREATE) {
+                        if (mode == PipelineMode.OFFLINE) {
+                            val r = localRepoManager.readFile(relPath)
+                            if (r.isSuccess) {
+                                originalContent = r.getOrNull()
+                                existed = true
+                            }
+                        } else {
+                            try {
+                                val file = gitHubClient.getFileContent(relPath, branch).getOrNull()
+                                if (file?.content != null) {
+                                    val cleaned = file.content.filter { !it.isWhitespace() }
+                                    originalContent = String(Base64.decode(cleaned, Base64.NO_WRAP), Charsets.UTF_8)
                                     existed = true
                                 }
-                            } else {
-                                try {
-                                    val file = gitHubClient.getFileContent(relativePath, branch).getOrNull()
-                                    if (file?.content != null) {
-                                        val cleaned = file.content.filter { !it.isWhitespace() }
-                                        originalContent = String(Base64.decode(cleaned, Base64.NO_WRAP), Charsets.UTF_8)
-                                        existed = true
-                                    }
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "Не удалось вычитать оригинал $relativePath: ${e.message}")
-                                }
-                            }
-                        }
-                        TaskOperation.CREATE -> {
-                            // Файл создаётся с нуля
-                            existed = false
-                            originalContent = null
+                            } catch (_: Exception) {}
                         }
                     }
 
                     if (originalContent != null) {
-                        val targetFile = File(originalsDir, relativePath)
-                        targetFile.parentFile?.mkdirs()
-                        targetFile.writeText(originalContent, Charsets.UTF_8)
+                        val target = File(originalsDir, relPath)
+                        target.parentFile?.mkdirs()
+                        target.writeText(originalContent, Charsets.UTF_8)
                     }
 
-                    filesMeta.add(
-                        BackupFileMeta(
-                            path = relativePath,
-                            operation = task.operation,
-                            hadOriginalContent = existed
-                        )
-                    )
+                    filesMeta.add(BackupFileMeta(relPath, task.operation, existed))
                 }
 
-                // Сохраняем metadata.json
-                val metadata = JSONObject().apply {
+                val meta = JSONObject().apply {
                     put("id", backupId)
                     put("runId", runId)
                     put("timestamp", System.currentTimeMillis())
@@ -159,50 +132,37 @@ class PipelineBackupManager @Inject constructor(
                     put("mode", mode.name)
                     put("isRestored", false)
                     val arr = JSONArray()
-                    filesMeta.forEach { meta ->
+                    filesMeta.forEach { m ->
                         arr.put(JSONObject().apply {
-                            put("path", meta.path)
-                            put("operation", meta.operation.name)
-                            put("hadOriginalContent", meta.hadOriginalContent)
+                            put("path", m.path)
+                            put("operation", m.operation.name)
+                            put("hadOriginalContent", m.hadOriginalContent)
                         })
                     }
                     put("files", arr)
                 }
 
-                File(backupDir, "metadata.json").writeText(metadata.toString(), Charsets.UTF_8)
+                File(backupDir, "metadata.json").writeText(meta.toString(), Charsets.UTF_8)
                 cleanOldBackups()
-
-                Log.i(TAG, "✅ Снимок $backupId успешно сохранён")
                 Result.success(backupId)
             } catch (e: Exception) {
-                Log.e(TAG, "❌ Ошибка создания снимка оригиналов", e)
                 backupDir.deleteRecursively()
                 Result.failure(e)
             }
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 2. СОХРАНЕНИЕ ОТРЕДАКТИРОВАННЫХ ФАЙЛОВ ПОСЛЕ ЗАВЕРШЕНИЯ
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    suspend fun recordFinalFiles(
-        backupId: String,
-        finalFiles: Map<String, String> // path -> content
-    ): Result<Unit> = mutex.withLock {
+    suspend fun recordFinalFiles(backupId: String, finalFiles: Map<String, String>): Result<Unit> = mutex.withLock {
         withContext(Dispatchers.IO) {
             try {
                 val backupDir = File(baseBackupDir, backupId)
-                if (!backupDir.exists()) return@withContext Result.failure(Exception("Бэкап $backupId не найден"))
-
-                val modifiedDir = File(backupDir, "modified").apply { mkdirs() }
+                if (!backupDir.exists()) return@withContext Result.failure(Exception("Бэкап не найден"))
+                val modDir = File(backupDir, "modified").apply { mkdirs() }
                 finalFiles.forEach { (path, content) ->
-                    val target = File(modifiedDir, path.trim().removePrefix("/"))
-                    target.parentFile?.mkdirs()
-                    target.writeText(content, Charsets.UTF_8)
+                    val t = File(modDir, path.trim().removePrefix("/"))
+                    t.parentFile?.mkdirs()
+                    t.writeText(content, Charsets.UTF_8)
                 }
-
-                Log.d(TAG, "💾 Финальные файлы зафиксированы в бэкапе $backupId (${finalFiles.size} шт)")
                 Result.success(Unit)
             } catch (e: Exception) {
                 Result.failure(e)
@@ -210,209 +170,133 @@ class PipelineBackupManager @Inject constructor(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 3. ОТКАТ (ROLLBACK) К ТОЧКЕ ВОССТАНОВЛЕНИЯ
-    // ═══════════════════════════════════════════════════════════════════════════
-
     suspend fun rollback(backupId: String): Result<RollbackResult> = mutex.withLock {
         withContext(Dispatchers.IO) {
             val backupDir = File(baseBackupDir, backupId)
-            if (!backupDir.exists()) return@withContext Result.failure(Exception("Бэкап $backupId не найден"))
-
             val metaFile = File(backupDir, "metadata.json")
-            if (!metaFile.exists()) return@withContext Result.failure(Exception("Метаданные бэкапа повреждены"))
+            if (!metaFile.exists()) return@withContext Result.failure(Exception("Бэкап поврежден"))
 
-            val metaJson = JSONObject(metaFile.readText(Charsets.UTF_8))
-            val mode = PipelineMode.valueOf(metaJson.optString("mode", PipelineMode.ONLINE.name))
-            val filesArray = metaJson.getJSONArray("files")
+            val meta = JSONObject(metaFile.readText(Charsets.UTF_8))
+            val mode = PipelineMode.valueOf(meta.optString("mode", PipelineMode.ONLINE.name))
+            val filesArr = meta.getJSONArray("files")
             val originalsDir = File(backupDir, "originals")
             val branch = try { appSettings.gitHubConfig.first().branch } catch (_: Exception) { "main" }
 
-            Log.i(TAG, "⏪ Запуск отката к точке $backupId (режим=$mode, файлов=${filesArray.length()})")
-
             try {
-                var restoredCount = 0
+                var restored = 0
                 var rollbackSha: String? = null
 
                 if (mode == PipelineMode.OFFLINE) {
-                    // ── Откат в Offline-режиме ──
                     localRepoManager.ensureCloned().getOrThrow()
-
-                    for (i in 0 until filesArray.length()) {
-                        val item = filesArray.getJSONObject(i)
-                        val path = item.getString("path")
-                        val hadOriginal = item.getBoolean("hadOriginalContent")
-
-                        if (hadOriginal) {
-                            val origFile = File(originalsDir, path)
-                            if (origFile.exists()) {
-                                localRepoManager.writeFile(path, origFile.readText(Charsets.UTF_8)).getOrThrow()
-                                restoredCount++
+                    for (i in 0 until filesArr.length()) {
+                        val item = filesArr.getJSONObject(i)
+                        val p = item.getString("path")
+                        if (item.getBoolean("hadOriginalContent")) {
+                            val f = File(originalsDir, p)
+                            if (f.exists()) {
+                                localRepoManager.writeFile(p, f.readText(Charsets.UTF_8)).getOrThrow()
+                                restored++
                             }
                         } else {
-                            // Файл был создан пайплайном — удаляем его при откате
-                            if (localRepoManager.fileExists(path)) {
-                                localRepoManager.deleteFile(path)
-                                restoredCount++
+                            if (localRepoManager.fileExists(p)) {
+                                localRepoManager.deleteFile(p)
+                                restored++
                             }
                         }
                     }
-
-                    val commitRes = localRepoManager.stageAndCommit("[Rollback] Восстановление до точки #$backupId")
+                    val commitRes = localRepoManager.stageAndCommit("[Rollback] #$backupId")
                     if (commitRes.isSuccess) {
                         rollbackSha = commitRes.getOrNull()
                         localRepoManager.push().getOrThrow()
                     }
                 } else {
-                    // ── Откат в Online-режиме (прямые коммиты через GitHub API) ──
-                    for (i in 0 until filesArray.length()) {
-                        val item = filesArray.getJSONObject(i)
-                        val path = item.getString("path")
-                        val hadOriginal = item.getBoolean("hadOriginalContent")
+                    for (i in 0 until filesArr.length()) {
+                        val item = filesArr.getJSONObject(i)
+                        val p = item.getString("path")
+                        val had = item.getBoolean("hadOriginalContent")
+                        val cur = gitHubClient.getFileContent(p, branch).getOrNull()
 
-                        val currentFile = gitHubClient.getFileContent(path, branch).getOrNull()
-                        val currentSha = currentFile?.sha
-
-                        if (hadOriginal) {
-                            val origFile = File(originalsDir, path)
-                            if (origFile.exists()) {
-                                val content = origFile.readText(Charsets.UTF_8)
+                        if (had) {
+                            val f = File(originalsDir, p)
+                            if (f.exists()) {
                                 val res = gitHubClient.createOrUpdateFile(
-                                    path = path,
-                                    content = content,
-                                    message = "[Rollback] Восстановление $path",
-                                    sha = currentSha,
+                                    path = p,
+                                    content = f.readText(Charsets.UTF_8),
+                                    message = "[Rollback] $p",
+                                    sha = cur?.sha,
                                     branch = branch
                                 )
                                 if (res.isSuccess) {
-                                    restoredCount++
+                                    restored++
                                     rollbackSha = res.getOrNull()?.content?.sha
                                 }
                             }
-                        } else {
-                            // Файл был создан пайплайном — удаляем из GitHub
-                            if (currentSha != null) {
-                                gitHubClient.deleteFile(
-                                    path = path,
-                                    message = "[Rollback] Удаление созданного $path",
-                                    sha = currentSha,
-                                    branch = branch
-                                )
-                                restoredCount++
-                            }
+                        } else if (cur?.sha != null) {
+                            gitHubClient.deleteFile(p, "[Rollback] remove $p", cur.sha, branch)
+                            restored++
                         }
                     }
                 }
 
-                // Помечаем бэкап как восстановленный
-                metaJson.put("isRestored", true)
-                metaFile.writeText(metaJson.toString(), Charsets.UTF_8)
+                meta.put("isRestored", true)
+                metaFile.writeText(meta.toString(), Charsets.UTF_8)
                 repoIndexManager.invalidate()
-
-                Log.i(TAG, "✅ Откат завершён успешно. Восстановлено файлов: $restoredCount")
-                Result.success(RollbackResult(backupId, restoredCount, rollbackSha))
+                Result.success(RollbackResult(backupId, restored, rollbackSha))
             } catch (e: Exception) {
-                Log.e(TAG, "❌ Ошибка при откате", e)
                 Result.failure(e)
             }
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 4. ГЕНЕРАЦИЯ ПОЛНОГО 3-СЕКЦИОННОГО TXT-ОТЧЕТА
-    // ═══════════════════════════════════════════════════════════════════════════
-
     suspend fun generateFullReportText(backupId: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             val backupDir = File(baseBackupDir, backupId)
-            if (!backupDir.exists()) return@withContext Result.failure(Exception("Бэкап $backupId не найден"))
-
             val metaFile = File(backupDir, "metadata.json")
-            if (!metaFile.exists()) return@withContext Result.failure(Exception("Метаданные отсутствуют"))
+            if (!metaFile.exists()) return@withContext Result.failure(Exception("Отчёт отсутствует"))
 
-            val metaJson = JSONObject(metaFile.readText(Charsets.UTF_8))
-            val prompt = metaJson.getString("userPrompt")
-            val timestamp = metaJson.getLong("timestamp")
-            val mode = metaJson.optString("mode", "ONLINE")
-            val runId = metaJson.optString("runId", "unknown")
-            val filesArray = metaJson.getJSONArray("files")
-
+            val meta = JSONObject(metaFile.readText(Charsets.UTF_8))
+            val prompt = meta.getString("userPrompt")
+            val filesArr = meta.getJSONArray("files")
             val originalsDir = File(backupDir, "originals")
             val modifiedDir = File(backupDir, "modified")
 
             val sb = StringBuilder()
-            val div80 = "=".repeat(80)
-            val div40 = "-".repeat(80)
+            val div = "=".repeat(80)
 
-            sb.appendLine(div80)
-            sb.appendLine("OPUSIDE PIPELINE AUDIT REPORT")
-            sb.appendLine("Дата: ${dateFormat.format(Date(timestamp))}")
-            sb.appendLine("Режим: $mode")
-            sb.appendLine("ID запуска: #$runId")
-            sb.appendLine(div80)
-            sb.appendLine()
+            sb.appendLine(div)
+            sb.appendLine("ПОЛНЫЙ АУДИТОРСКИЙ ОТЧЁТ PIPELINE")
+            sb.appendLine("Дата: ${dateFormat.format(Date(meta.getLong("timestamp")))}")
+            sb.appendLine("Режим: ${meta.optString("mode")}")
+            sb.appendLine(div).appendLine()
 
-            // ── СЕКЦИЯ 1: ТОЧНЫЙ ПРОМПТ ──
-            sb.appendLine(div80)
-            sb.appendLine("1. ПОЛНЫЙ ТОЧНЫЙ ПРОМПТ")
-            sb.appendLine(div80)
-            sb.appendLine(prompt.trim())
-            sb.appendLine()
+            sb.appendLine("1. ТОЧНЫЙ ПРОМПТ ПОЛЬЗОВАТЕЛЯ:\n$prompt\n")
 
-            // ── СЕКЦИЯ 2: ОРИГИНАЛЬНЫЕ ФАЙЛЫ ──
-            sb.appendLine(div80)
-            sb.appendLine("2. ОРИГИНАЛЬНЫЕ ФАЙЛЫ (ДО ИЗМЕНЕНИЙ)")
-            sb.appendLine(div80)
-
-            for (i in 0 until filesArray.length()) {
-                val item = filesArray.getJSONObject(i)
-                val path = item.getString("path")
-                val hadOrig = item.getBoolean("hadOriginalContent")
-
-                sb.appendLine(">>> FILE: $path")
-                sb.appendLine(div40)
-                if (hadOrig) {
-                    val file = File(originalsDir, path)
-                    if (file.exists()) {
-                        sb.appendLine(file.readText(Charsets.UTF_8))
-                    } else {
-                        sb.appendLine("[Оригинальный контент не был сохранен]")
-                    }
-                } else {
-                    sb.appendLine("[Файл отсутствовал в репозитории до запуска (CREATE)]")
-                }
+            sb.appendLine(div)
+            sb.appendLine("2. ИСХОДНЫЕ ФАЙЛЫ (ДО ИЗМЕНЕНИЙ):")
+            sb.appendLine(div)
+            for (i in 0 until filesArr.length()) {
+                val item = filesArr.getJSONObject(i)
+                val p = item.getString("path")
+                sb.appendLine("--- FILE: $p ---")
+                val f = File(originalsDir, p)
+                if (f.exists()) sb.appendLine(f.readText(Charsets.UTF_8))
+                else sb.appendLine("[Файл отсутствовал до запуска]")
                 sb.appendLine()
             }
 
-            // ── СЕКЦИЯ 3: ОТРЕДАКТИРОВАННЫЕ ФАЙЛЫ ──
-            sb.appendLine(div80)
-            sb.appendLine("3. ОТРЕДАКТИРОВАННЫЕ ФАЙЛЫ (ПОСЛЕ ИЗМЕНЕНИЙ)")
-            sb.appendLine(div80)
-
-            for (i in 0 until filesArray.length()) {
-                val item = filesArray.getJSONObject(i)
-                val path = item.getString("path")
-                val op = item.optString("operation", "MODIFY")
-
-                sb.appendLine(">>> FILE: $path [$op]")
-                sb.appendLine(div40)
-
-                val file = File(modifiedDir, path)
-                if (file.exists()) {
-                    sb.appendLine(file.readText(Charsets.UTF_8))
-                } else {
-                    if (op == "DELETE") {
-                        sb.appendLine("[Файл удален согласно задаче DELETE]")
-                    } else {
-                        sb.appendLine("[Файл не был изменен или модификация завершилась ошибкой]")
-                    }
-                }
+            sb.appendLine(div)
+            sb.appendLine("3. ОТРЕДАКТИРОВАННЫЕ ФАЙЛЫ (ПОСЛЕ ИЗМЕНЕНИЙ):")
+            sb.appendLine(div)
+            for (i in 0 until filesArr.length()) {
+                val item = filesArr.getJSONObject(i)
+                val p = item.getString("path")
+                val op = item.optString("operation")
+                sb.appendLine("--- FILE: $p [$op] ---")
+                val f = File(modifiedDir, p)
+                if (f.exists()) sb.appendLine(f.readText(Charsets.UTF_8))
+                else sb.appendLine(if (op == "DELETE") "[Файл удалён]" else "[Без изменений]")
                 sb.appendLine()
             }
-
-            sb.appendLine(div80)
-            sb.appendLine("КОНЕЦ ОТЧЕТА")
-            sb.appendLine(div80)
 
             Result.success(sb.toString())
         } catch (e: Exception) {
@@ -420,52 +304,42 @@ class PipelineBackupManager @Inject constructor(
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // 5. УТИЛИТЫ И СПИСОК БЭКАПОВ ДЛЯ UI
-    // ═══════════════════════════════════════════════════════════════════════════
-
     suspend fun getAllBackups(): List<BackupEntry> = withContext(Dispatchers.IO) {
         val list = mutableListOf<BackupEntry>()
-        val dirs = baseBackupDir.listFiles { file -> file.isDirectory } ?: return@withContext emptyList()
-
+        val dirs = baseBackupDir.listFiles { f -> f.isDirectory } ?: return@withContext emptyList()
         for (dir in dirs) {
             try {
-                val metaFile = File(dir, "metadata.json")
-                if (!metaFile.exists()) continue
-
-                val json = JSONObject(metaFile.readText(Charsets.UTF_8))
-                val filesArr = json.getJSONArray("files")
-                val files = (0 until filesArr.length()).map { idx ->
-                    val obj = filesArr.getJSONObject(idx)
+                val mf = File(dir, "metadata.json")
+                if (!mf.exists()) continue
+                val json = JSONObject(mf.readText(Charsets.UTF_8))
+                val fa = json.getJSONArray("files")
+                val files = (0 until fa.length()).map { idx ->
+                    val o = fa.getJSONObject(idx)
                     BackupFileMeta(
-                        path = obj.getString("path"),
-                        operation = TaskOperation.valueOf(obj.optString("operation", TaskOperation.MODIFY.name)),
-                        hadOriginalContent = obj.optBoolean("hadOriginalContent", true)
+                        path = o.getString("path"),
+                        operation = TaskOperation.valueOf(o.getString("operation")),
+                        hadOriginalContent = o.getBoolean("hadOriginalContent")
                     )
                 }
-
                 list.add(
                     BackupEntry(
                         id = json.getString("id"),
-                        runId = json.optString("runId", ""),
+                        runId = json.optString("runId"),
                         timestamp = json.getLong("timestamp"),
                         userPrompt = json.getString("userPrompt"),
-                        mode = PipelineMode.valueOf(json.optString("mode", PipelineMode.ONLINE.name)),
+                        mode = PipelineMode.valueOf(json.optString("mode", "ONLINE")),
                         files = files,
-                        isRestored = json.optBoolean("isRestored", false)
+                        isRestored = json.optBoolean("isRestored")
                     )
                 )
-            } catch (e: Exception) {
-                Log.w(TAG, "Ошибка чтения бэкапа в ${dir.name}: ${e.message}")
-            }
+            } catch (_: Exception) {}
         }
-
         list.sortedByDescending { it.timestamp }
     }
 
     suspend fun deleteBackup(backupId: String): Boolean = withContext(Dispatchers.IO) {
-        val dir = File(baseBackupDir, backupId)
-        if (dir.exists()) dir.deleteRecursively() else false
+        val d = File(baseBackupDir, backupId)
+        if (d.exists()) d.deleteRecursively() else false
     }
 
     fun shareReportFile(context: Context, reportContent: String, title: String = "Pipeline_Report") {
@@ -473,30 +347,29 @@ class PipelineBackupManager @Inject constructor(
             val file = File(context.cacheDir, "${title}_${System.currentTimeMillis()}.txt").apply {
                 writeText(reportContent, Charsets.UTF_8)
             }
-            val uri: Uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.fileprovider",
-                file
-            )
-
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            // КРИТИЧЕСКИЙ ФИКС: Флаг FLAG_ACTIVITY_NEW_TASK добавляется на сам Chooser,
+            // что полностью предотвращает вылет AndroidRuntimeException при вызове с ApplicationContext
+            val chooser = Intent.createChooser(intent, "Сохранить отчет").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            context.startActivity(Intent.createChooser(intent, "Сохранить или отправить отчет"))
+            context.startActivity(chooser)
         } catch (e: Exception) {
             Log.e(TAG, "Ошибка вызова Share Sheet", e)
         }
     }
 
     private fun cleanOldBackups() {
-        val dirs = baseBackupDir.listFiles { file -> file.isDirectory } ?: return
+        val dirs = baseBackupDir.listFiles { f -> f.isDirectory } ?: return
         if (dirs.size > MAX_BACKUPS_TO_KEEP) {
-            val sorted = dirs.sortedBy { it.lastModified() }
-            val toDelete = sorted.take(dirs.size - MAX_BACKUPS_TO_KEEP)
-            toDelete.forEach { it.deleteRecursively() }
+            dirs.sortedBy { it.lastModified() }
+                .take(dirs.size - MAX_BACKUPS_TO_KEEP)
+                .forEach { it.deleteRecursively() }
         }
     }
 }
