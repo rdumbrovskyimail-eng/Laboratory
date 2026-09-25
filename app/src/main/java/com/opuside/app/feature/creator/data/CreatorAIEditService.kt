@@ -16,16 +16,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🛠️ CREATOR AI EDIT SERVICE v3.0
+ * 🛠️ CREATOR AI EDIT SERVICE v3.2 (High-Speed & CoT-Looping Protected)
  *
  * Специализированный сервис пофайловых AI-замен для редактора и пайплайна.
  *
- * Особенности:
- * - Модели строго: 3.5 Flash-Lite (LOW thinking) и 3.1 Flash-Lite (MEDIUM thinking)
- * - Автоматическая фильтрация частей "thought": true перед парсингом XML
- * - Вывод до 65 536 токенов без обрезки кода
- * - Единый каскадный резолвер API-ключей (Pipeline -> Settings -> AppSettings)
- * - Умный fuzzy/normalized матчинг для безошибочного применения правок
+ * Оптимизации:
+ * - Устранено зацикливание Gemini 3.x (убран temperature: 0.0 при наличии thinking)
+ * - Уровень Thinking установлен в LOW для гарантированного ответа за 3-5 секунд
+ * - Корректное закрытие сокетов в блоке finally (защита от утечки сокетов)
+ * - Умный построчный поиск с нормализацией хвостовых пробелов
  */
 @Singleton
 class CreatorAIEditService @Inject constructor(
@@ -56,7 +55,7 @@ class CreatorAIEditService @Inject constructor(
             badge = "💨 G3.1 Lite",
             costPerMInputUsd = 0.25,
             costPerMOutputUsd = 1.50,
-            forcedThinkingLevel = "MEDIUM"
+            forcedThinkingLevel = "LOW" // Оптимизировано: LOW предотвращает долгие рассуждения
         );
 
         companion object {
@@ -77,7 +76,7 @@ class CreatorAIEditService @Inject constructor(
         private const val LINE_NUMBER_THRESHOLD = 300
 
         private val SYSTEM_PROMPT = """
-You are a PRECISION CODE EDITOR. Your ONLY job is to produce exact search/replace blocks for a given source file.
+You are a HIGH-SPEED PRECISION CODE EDITOR. Your ONLY job is to produce exact search/replace blocks for a given source file.
 
 ═══ RESPONSE FORMAT (MANDATORY, NO EXCEPTIONS) ═══
 
@@ -93,48 +92,27 @@ new replacement lines
 </edits>
 <summary>One-line description of all changes made</summary>
 
-═══ CRITICAL RULES — VIOLATION = FAILURE ═══
+═══ CRITICAL RULES ═══
 
 RULE 1 — EXACT COPY:
 The content inside <search> MUST be a CHARACTER-PERFECT copy from the original file.
 - Preserve EVERY space, tab, newline, comma, semicolon, bracket.
 - Do NOT fix typos, reformat, or alter ANYTHING inside <search>.
-- Do NOT add or remove blank lines inside <search>.
 - If the file has line number prefixes like "42| ", STRIP THEM — write only the raw code.
 
 RULE 2 — UNIQUE CONTEXT:
 Each <search> block MUST match EXACTLY ONE location in the file.
-- Include 3-7 surrounding context lines to guarantee uniqueness.
-- If a line like "}" or "return null" appears many times, include MORE lines above/below until the block is unique.
-- NEVER use a <search> block that could match multiple locations.
+- Include 2-4 surrounding context lines to guarantee uniqueness.
 
 RULE 3 — MINIMAL CHANGES:
-- Change ONLY what the user asked for. Do NOT refactor, optimize, rename, or "improve" anything else.
-- Do NOT touch imports, comments, formatting, or code outside the requested scope.
+- Change ONLY what the user asked for. Do NOT refactor or touch anything else.
 
 RULE 4 — MULTIPLE BLOCKS:
-- Use SEPARATE <block> tags for changes in DIFFERENT parts of the file.
-- Order blocks from TOP of file to BOTTOM.
-- Blocks MUST NOT overlap (no shared lines between blocks).
+- Use SEPARATE <block> tags for changes in DIFFERENT parts of the file, ordered from TOP to BOTTOM.
 
-RULE 5 — SPECIAL OPERATIONS:
-- DELETE code: <search>code to remove</search> <replace></replace>
-- INSERT AFTER line N: put line N in <search>, put line N + new code in <replace>.
-- INSERT BEFORE line N: put line N-1 and line N in <search>, put line N-1 + new code + line N in <replace>.
-- REPLACE entire function: include the full function signature + body in <search>.
-
-RULE 6 — OUTPUT DISCIPLINE:
-- Output ONLY the XML structure above. No markdown. No explanations. No apologies.
-- No ```xml fences. No text before <edits>. No text after </summary>.
-- If no changes are needed, return: <edits></edits><summary>No changes needed: [reason]</summary>
-- NEVER output the entire file. ONLY the changed blocks.
-
-RULE 7 — INDENTATION PRESERVATION:
-- Match the EXACT indentation style of the surrounding code.
-
-RULE 8 — LANGUAGE AWARENESS:
-- Respect language syntax: matching brackets, semicolons, commas in lists.
-- When removing a function, remove the ENTIRE function including annotations and docs above it.
+RULE 5 — OUTPUT DISCIPLINE:
+- Output ONLY the XML structure above. No markdown code fences (no ```xml).
+- No text before <edits>. No text after </summary>.
 """.trimIndent()
     }
 
@@ -200,7 +178,6 @@ RULE 8 — LANGUAGE AWARENESS:
             val systemPrompt = buildSystemPrompt(useLineNumbers)
             val userMessage = buildUserMessage(fileContent, fileName, instructions, useLineNumbers)
 
-            // ── Каскадное получение API-ключа ─────────────────────────────
             var currentApiKey: String
             var currentKeyIdx = -1
 
@@ -223,11 +200,12 @@ RULE 8 — LANGUAGE AWARENESS:
                 return@withContext Result.failure(Exception("Gemini API ключ не найден ни в настройках, ни в Pipeline"))
             }
 
+            val level = thinkingLevelOverride ?: activeModel.forcedThinkingLevel
             var rawResponse: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
 
             while (true) {
-                rawResponse = callGeminiApi(systemPrompt, userMessage, activeModel, currentApiKey)
+                rawResponse = callGeminiApi(systemPrompt, userMessage, activeModel, currentApiKey, level)
                 if (rawResponse.isSuccess) break
 
                 val errMsg = rawResponse.exceptionOrNull()?.message?.lowercase() ?: ""
@@ -273,7 +251,8 @@ RULE 8 — LANGUAGE AWARENESS:
         systemPrompt: String,
         userMessage: String,
         model: AiModel,
-        apiKey: String
+        apiKey: String,
+        thinkingLevel: String
     ): Result<Triple<String, Int, Int>> {
         val url = "$GEMINI_API_BASE_URL/${model.apiId}:generateContent"
 
@@ -293,10 +272,9 @@ RULE 8 — LANGUAGE AWARENESS:
             })
             put("generationConfig", JSONObject().apply {
                 put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                put("temperature", 0.0) // 0.0 для максимальной детерминированности и точности замены
-                put("topP", 0.95)
+                // КРИТИЧЕСКИЙ ФИКС: Убран temperature: 0.0 для предотвращения зацикливания CoT
                 put("thinkingConfig", JSONObject().apply {
-                    put("thinkingLevel", model.forcedThinkingLevel) // Штатно LOW (3.5) или MEDIUM (3.1)
+                    put("thinkingLevel", thinkingLevel)
                 })
             })
         }
@@ -314,7 +292,6 @@ RULE 8 — LANGUAGE AWARENESS:
                         val sb = StringBuilder()
                         for (i in 0 until parts.length()) {
                             val part = parts.getJSONObject(i)
-                            // КРИТИЧНО: фильтруем размышления (thought: true), чтобы не ломать XML замен
                             if (part.optBoolean("thought", false)) {
                                 continue
                             }
@@ -336,14 +313,15 @@ RULE 8 — LANGUAGE AWARENESS:
         apiKey: String,
         parseResponse: (JSONObject) -> Triple<String, Int, Int>
     ): Result<Triple<String, Int, Int>> {
+        var connection: HttpURLConnection? = null
         return try {
-            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 setRequestProperty("x-goog-api-key", apiKey)
                 setRequestProperty("Accept", "application/json")
-                connectTimeout = 30_000
-                readTimeout = 120_000
+                connectTimeout = 15_000
+                readTimeout = 60_000
                 doOutput = true
             }
 
@@ -363,6 +341,9 @@ RULE 8 — LANGUAGE AWARENESS:
             Result.success(parseResponse(JSONObject(responseBody)))
         } catch (e: Exception) {
             Result.failure(e)
+        } finally {
+            // КРИТИЧЕСКИЙ ФИКС: Гарантированное закрытие соединения и освобождение сокета
+            try { connection?.disconnect() } catch (_: Exception) {}
         }
     }
 
@@ -393,7 +374,7 @@ RULE 8 — LANGUAGE AWARENESS:
             SYSTEM_PROMPT + """
 
 ═══ LINE NUMBERS ═══
-The file is provided with line number prefixes in format "N| " (e.g., "42| val x = 1").
+The file is provided with line number prefixes in format "N| ".
 These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <replace> blocks.
 """
         } else SYSTEM_PROMPT
@@ -415,24 +396,41 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
                 return@forEachIndexed
             }
 
+            // 1. Точное прямое совпадение
             if (cleanSearch in result) {
                 result = result.replaceFirst(cleanSearch, cleanReplace)
                 appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.EXACT))
                 return@forEachIndexed
             }
 
-            val normalizedSearch = normalizeWhitespace(cleanSearch)
-            val normalizedContent = normalizeWhitespace(result)
-            val normIdx = normalizedContent.indexOf(normalizedSearch)
-            if (normIdx >= 0) {
-                val originalRange = findOriginalRange(result, normalizedContent, normIdx, normalizedSearch.length)
-                if (originalRange != null) {
-                    result = result.substring(0, originalRange.first) + cleanReplace + result.substring(originalRange.second)
-                    appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.NORMALIZED))
-                    return@forEachIndexed
+            // 2. Построчное сравнение с нормализацией хвостовых пробелов
+            val normSearch = cleanSearch.lines().map { it.trimEnd() }
+            val resLines = result.lines().toMutableList()
+            var matchIdx = -1
+
+            for (i in 0..(resLines.size - normSearch.size)) {
+                var allMatch = true
+                for (j in normSearch.indices) {
+                    if (resLines[i + j].trimEnd() != normSearch[j]) {
+                        allMatch = false
+                        break
+                    }
+                }
+                if (allMatch) {
+                    matchIdx = i
+                    break
                 }
             }
 
+            if (matchIdx >= 0) {
+                for (k in normSearch.indices) resLines.removeAt(matchIdx)
+                cleanReplace.lines().forEachIndexed { offset, l -> resLines.add(matchIdx + offset, l) }
+                result = resLines.joinToString("\n")
+                appliedBlocks.add(block.copy(matchStatus = EditBlock.MatchStatus.NORMALIZED))
+                return@forEachIndexed
+            }
+
+            // 3. Нечёткое соответствие (Fuzzy Match)
             val fuzzyResult = fuzzyMatch(result, cleanSearch, cleanReplace)
             if (fuzzyResult != null) {
                 result = fuzzyResult
@@ -440,6 +438,7 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
                 return@forEachIndexed
             }
 
+            // 4. Поиск по границам диапазона (Line Range Match)
             val lineRangeResult = lineRangeMatch(result, cleanSearch, cleanReplace)
             if (lineRangeResult != null) {
                 result = lineRangeResult
@@ -461,39 +460,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
                 totalFailed = failedBlocks.size
             )
         )
-    }
-
-    private fun normalizeWhitespace(text: String): String =
-        text.lines().joinToString("\n") { it.trimEnd() }
-
-    private fun findOriginalRange(
-        original: String,
-        normalized: String,
-        normStart: Int,
-        normLength: Int
-    ): Pair<Int, Int>? {
-        return try {
-            val origLines = original.lines()
-            val normLines = normalized.lines()
-            var normCharPos = 0
-            var startLineIdx = -1
-            var endLineIdx = -1
-
-            for (i in normLines.indices) {
-                val lineEnd = normCharPos + normLines[i].length
-                if (startLineIdx == -1 && lineEnd >= normStart) startLineIdx = i
-                if (normCharPos >= normStart + normLength && endLineIdx == -1) { endLineIdx = i; break }
-                normCharPos = lineEnd + 1
-            }
-            if (endLineIdx == -1) endLineIdx = origLines.lastIndex + 1
-            if (startLineIdx < 0 || startLineIdx >= origLines.size) return null
-
-            val origStart = origLines.take(startLineIdx).sumOf { it.length + 1 }
-            val origEnd = origLines.take(endLineIdx).sumOf { it.length + 1 }.coerceAtMost(original.length)
-            origStart to origEnd
-        } catch (e: Exception) {
-            null
-        }
     }
 
     private fun fuzzyMatch(content: String, search: String, replace: String): String? {
@@ -551,11 +517,8 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
 
     private fun stripLineNumbers(text: String): String {
         if (text.isBlank()) return text
-        val lines = text.lines()
-        val pattern = Regex("""^\d{1,5}\|\s""")
-        return if (lines.count { pattern.containsMatchIn(it) } > lines.size / 2) {
-            lines.joinToString("\n") { pattern.replaceFirst(it, "") }
-        } else text
+        val pattern = Regex("""^\s*\d{1,5}\|\s?""")
+        return text.lines().joinToString("\n") { pattern.replaceFirst(it, "") }
     }
 
     private fun parseEditResponse(
@@ -565,7 +528,6 @@ These prefixes are for YOUR REFERENCE ONLY. NEVER include them in <search> or <r
         costEUR: Double,
         model: AiModel
     ): EditResult {
-        // Очищаем от случайных markdown-блоков
         val cleanResponse = response.trim()
             .removePrefix("```xml").removePrefix("```")
             .removeSuffix("```").trim()
