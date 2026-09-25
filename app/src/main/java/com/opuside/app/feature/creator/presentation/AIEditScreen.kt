@@ -22,47 +22,49 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.opuside.app.feature.creator.data.CreatorAIEditService
 
-private object EditColors {
-    val bg = Color(0xFF0D1117)
-    val surface = Color(0xFF161B22)
-    val surfaceElevated = Color(0xFF1C2128)
-    val border = Color(0xFF30363D)
+// ═══════════════════════════════════════════════════════════════════════════
+// LIGHT PROFESSIONAL THEME (Samsung S23 Ultra AMOLED Optimized)
+// ═══════════════════════════════════════════════════════════════════════════
 
-    val text1 = Color(0xFFE6EDF3)
-    val text2 = Color(0xFF8B949E)
-    val text3 = Color(0xFF6E7681)
+private object EditColorsLight {
+    val bg = Color(0xFFF8F9FA)
+    val surface = Color(0xFFFFFFFF)
+    val surfaceElevated = Color(0xFFF1F3F5)
+    val border = Color(0xFFE2E8F0)
+    val borderStrong = Color(0xFFCBD5E1)
 
-    val green = Color(0xFF3FB950)
-    val greenBg = Color(0xFF0D2818)
-    val greenBorder = Color(0xFF238636)
+    val textPrimary = Color(0xFF0F172A)
+    val textSecondary = Color(0xFF475569)
+    val textTertiary = Color(0xFF94A3B8)
 
-    val red = Color(0xFFF85149)
-    val redBg = Color(0xFF2D1214)
-    val redBorder = Color(0xFFDA3633)
+    val blue = Color(0xFF2563EB)
+    val blueBg = Color(0xFFEFF6FF)
 
-    val blue = Color(0xFF58A6FF)
-    val blueBg = Color(0xFF0C2D6B)
+    val green = Color(0xFF059669)
+    val greenBg = Color(0xFFECFDF5)
+    val greenText = Color(0xFF065F46)
+    val greenBorder = Color(0xFFA7F3D0)
 
-    val yellow = Color(0xFFD29922)
-    val yellowBg = Color(0xFF2D2200)
+    val red = Color(0xFFDC2626)
+    val redBg = Color(0xFFFEF2F2)
+    val redText = Color(0xFF991B1B)
+    val redBorder = Color(0xFFFECACA)
 
-    val orange = Color(0xFFF0883E)
-    val orangeBg = Color(0xFF2D1A00)
-
-    val geminiFlash = Color(0xFF81C995)
-    val geminiFlashBg = Color(0xFF0D2418)
+    val amber = Color(0xFFD97706)
+    val amberBg = Color(0xFFFFFBEB)
+    val amberText = Color(0xFF92400E)
 }
 
 private val CreatorAIEditService.AiModel.accentColor: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.geminiFlash
-        CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlash
+        CreatorAIEditService.AiModel.GEMINI_3_5_FLASH_LITE -> EditColorsLight.blue
+        CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColorsLight.green
     }
 
 private val CreatorAIEditService.AiModel.accentBg: Color
     get() = when (this) {
-        CreatorAIEditService.AiModel.GEMINI_3_8_FLASH -> EditColors.geminiFlashBg
-        CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColors.geminiFlashBg
+        CreatorAIEditService.AiModel.GEMINI_3_5_FLASH_LITE -> EditColorsLight.blueBg
+        CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE -> EditColorsLight.greenBg
     }
 
 @Composable
@@ -85,44 +87,54 @@ fun AIEditScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(EditColors.bg)
+            .background(EditColorsLight.bg)
     ) {
-        Surface(
-            color = EditColors.surface,
-            shadowElevation = 4.dp,
-            modifier = Modifier.fillMaxWidth()
+        // ── ШАПКА ЭКРАНА ───────────────────────────────────────────────
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+            colors = CardDefaults.cardColors(containerColor = EditColorsLight.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
         ) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = onClose, modifier = Modifier.size(40.dp)) {
-                    Icon(Icons.Default.Close, "Close", tint = EditColors.text2)
+                    Icon(Icons.Default.Close, "Close", tint = EditColorsLight.textSecondary)
                 }
-                Spacer(Modifier.width(8.dp))
+                Spacer(Modifier.width(6.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "AI EDIT",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Black,
-                        color = EditColors.text1,
-                        letterSpacing = 1.sp
+                        "AI Редактор файла",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = EditColorsLight.textPrimary
                     )
                     Text(
                         fileName,
-                        fontSize = 12.sp,
-                        color = EditColors.text3,
+                        fontSize = 11.sp,
+                        color = EditColorsLight.textSecondary,
                         fontFamily = FontFamily.Monospace,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+
+                // Переключатель активной модели (3.5 Lite <-> 3.1 Lite)
                 Surface(
+                    onClick = {
+                        val next = if (selectedModel == CreatorAIEditService.AiModel.GEMINI_3_5_FLASH_LITE)
+                            CreatorAIEditService.AiModel.GEMINI_3_1_FLASH_LITE
+                        else
+                            CreatorAIEditService.AiModel.GEMINI_3_5_FLASH_LITE
+                        onModelChange(next)
+                    },
                     shape = RoundedCornerShape(20.dp),
                     color = selectedModel.accentBg,
-                    border = BorderStroke(1.5.dp, selectedModel.accentColor)
+                    border = BorderStroke(1.dp, selectedModel.accentColor)
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -147,16 +159,15 @@ fun AIEditScreen(
             }
         }
 
-        HorizontalDivider(color = EditColors.border, thickness = 1.dp)
-
+        // ── ОСНОВНОЙ КОНТЕНТ ──────────────────────────────────────────
         Column(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(scrollState)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            InstructionsSection(
+            InstructionsSectionLight(
                 instructions = instructions,
                 onInstructionsChange = { instructions = it },
                 onPaste = {
@@ -168,7 +179,7 @@ fun AIEditScreen(
                 enabled = !isProcessing
             )
 
-            FileInfoChip(
+            FileInfoChipLight(
                 fileName = fileName,
                 contentLength = fileContent.length,
                 lineCount = fileContent.lines().size
@@ -176,21 +187,18 @@ fun AIEditScreen(
 
             when (editStatus) {
                 is CreatorAIEditService.EditStatus.Processing ->
-                    ProcessingIndicator(model = selectedModel)
+                    ProcessingIndicatorLight(model = selectedModel)
                 is CreatorAIEditService.EditStatus.Success ->
-                    EditResultSection(
-                        result = editStatus.result,
-                        newContent = editStatus.newContent,
-                        originalContent = fileContent
-                    )
+                    EditResultSectionLight(result = editStatus.result)
                 is CreatorAIEditService.EditStatus.Error ->
-                    ErrorSection(message = editStatus.message)
+                    ErrorSectionLight(message = editStatus.message)
                 is CreatorAIEditService.EditStatus.Idle ->
-                    HintSection()
+                    HintSectionLight()
             }
         }
 
-        BottomBar(
+        // ── НИЖНЯЯ ПАНЕЛЬ ДЕЙСТВИЙ И ТОКЕНОВ ──────────────────────────
+        BottomBarLight(
             editStatus = editStatus,
             selectedModel = selectedModel,
             instructionsNotEmpty = instructions.isNotBlank(),
@@ -201,20 +209,25 @@ fun AIEditScreen(
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ВВОД ИНСТРУКЦИЙ
+// ═══════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun InstructionsSection(
+private fun InstructionsSectionLight(
     instructions: String,
     onInstructionsChange: (String) -> Unit,
     onPaste: () -> Unit,
     onClear: () -> Unit,
     enabled: Boolean
 ) {
-    Surface(
-        color = EditColors.surface,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, EditColors.border)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = EditColorsLight.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
+        Column(modifier = Modifier.padding(14.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -224,54 +237,52 @@ private fun InstructionsSection(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.Edit, null, tint = EditColors.blue, modifier = Modifier.size(20.dp))
-                    Text("Инструкции", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = EditColors.text1)
+                    Icon(Icons.Default.EditNote, null, tint = EditColorsLight.blue, modifier = Modifier.size(20.dp))
+                    Text("Инструкции для AI", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = EditColorsLight.textPrimary)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     IconButton(onClick = onPaste, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Default.ContentPaste, "Paste", tint = EditColors.text3, modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.ContentPaste, "Вставить", tint = EditColorsLight.textSecondary, modifier = Modifier.size(16.dp))
                     }
                     if (instructions.isNotEmpty()) {
                         IconButton(onClick = onClear, modifier = Modifier.size(32.dp)) {
-                            Icon(Icons.Default.ClearAll, "Clear", tint = EditColors.text3, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.ClearAll, "Очистить", tint = EditColorsLight.textSecondary, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
 
             OutlinedTextField(
                 value = instructions,
                 onValueChange = onInstructionsChange,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 160.dp, max = 400.dp),
+                    .heightIn(min = 140.dp, max = 340.dp),
                 enabled = enabled,
                 placeholder = {
                     Text(
-                        "Опишите изменения. Примеры:\n\n" +
-                                "• Замени className на newClassName\n" +
-                                "• Удали функцию processData()\n" +
-                                "• Добавь проверку null перед вызовом api\n" +
-                                "• Измени параметр timeout с 30 на 60",
-                        color = EditColors.text3,
-                        fontSize = 13.sp,
-                        lineHeight = 20.sp
+                        "Опишите правки простыми словами:\n\n" +
+                                "• Замени имя метода foo() на bar()\n" +
+                                "• Добавь проверку на null перед вызовом api\n" +
+                                "• Перепиши тело функции loadData на корутины",
+                        color = EditColorsLight.textTertiary,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp
                     )
                 },
                 textStyle = LocalTextStyle.current.copy(
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     fontFamily = FontFamily.Monospace,
-                    color = EditColors.text1,
-                    lineHeight = 20.sp
+                    color = EditColorsLight.textPrimary,
+                    lineHeight = 18.sp
                 ),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = EditColors.blue,
-                    unfocusedBorderColor = EditColors.border,
-                    cursorColor = EditColors.blue,
-                    disabledBorderColor = EditColors.border.copy(alpha = 0.5f),
-                    disabledTextColor = EditColors.text2
+                    focusedContainerColor = EditColorsLight.surfaceElevated,
+                    unfocusedContainerColor = EditColorsLight.surfaceElevated,
+                    focusedBorderColor = EditColorsLight.blue,
+                    unfocusedBorderColor = EditColorsLight.border
                 ),
                 shape = RoundedCornerShape(10.dp)
             )
@@ -283,9 +294,9 @@ private fun InstructionsSection(
                 horizontalArrangement = Arrangement.End
             ) {
                 Text(
-                    "${instructions.length} chars • ~${instructions.length / 4} tokens",
+                    "${instructions.length} симв. · ~${instructions.length / 4} токенов",
                     fontSize = 10.sp,
-                    color = EditColors.text3,
+                    color = EditColorsLight.textSecondary,
                     fontFamily = FontFamily.Monospace
                 )
             }
@@ -294,91 +305,99 @@ private fun InstructionsSection(
 }
 
 @Composable
-private fun FileInfoChip(
+private fun FileInfoChipLight(
     fileName: String,
     contentLength: Int,
     lineCount: Int
 ) {
     Surface(
-        color = EditColors.surfaceElevated,
+        color = EditColorsLight.surfaceElevated,
         shape = RoundedCornerShape(8.dp),
-        border = BorderStroke(1.dp, EditColors.border)
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Icon(Icons.Default.Description, null, tint = EditColors.text3, modifier = Modifier.size(16.dp))
-            Text(fileName, fontSize = 12.sp, color = EditColors.text2, fontFamily = FontFamily.Monospace)
-            Text("•", color = EditColors.text3, fontSize = 12.sp)
-            Text(
-                "${contentLength / 1024}KB • ~${contentLength / 4} tokens",
-                fontSize = 11.sp,
-                color = EditColors.text3,
-                fontFamily = FontFamily.Monospace
-            )
-            if (lineCount > 300) {
-                Text("•", color = EditColors.text3, fontSize = 12.sp)
-                Text("📏 line numbers ON", fontSize = 10.sp, color = EditColors.yellow, fontFamily = FontFamily.Monospace)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProcessingIndicator(model: CreatorAIEditService.AiModel) {
-    val infiniteTransition = rememberInfiniteTransition(label = "processing")
-    val alpha by infiniteTransition.animateFloat(
-        initialValue = 0.4f, targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
-        label = "pulse"
-    )
-
-    Surface(
-        color = model.accentBg,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, model.accentColor.copy(alpha = 0.3f)),
+        border = BorderStroke(0.5.dp, EditColorsLight.border),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
-            modifier = Modifier.padding(20.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(28.dp),
-                color = model.accentColor.copy(alpha = alpha),
-                strokeWidth = 3.dp
+            Icon(Icons.Default.Description, null, tint = EditColorsLight.textSecondary, modifier = Modifier.size(15.dp))
+            Text(fileName, fontSize = 11.sp, color = EditColorsLight.textPrimary, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold)
+            Text("·", color = EditColorsLight.textTertiary, fontSize = 11.sp)
+            Text(
+                "${contentLength / 1024} KB · $lineCount строк",
+                fontSize = 10.sp,
+                color = EditColorsLight.textSecondary,
+                fontFamily = FontFamily.Monospace
             )
-            Column {
-                Text(
-                    "${model.displayName} обрабатывает...",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = model.accentColor
-                )
-                Text("Анализ кода и генерация блоков замен", fontSize = 12.sp, color = EditColors.text3)
+            if (lineCount > 300) {
+                Spacer(Modifier.weight(1f))
+                Text("📏 Line markers ON", fontSize = 9.sp, color = EditColorsLight.amber, fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ИНДИКАТОР ВЫПОЛНЕНИЯ
+// ═══════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun EditResultSection(
-    result: CreatorAIEditService.EditResult,
-    newContent: String,
-    originalContent: String
-) {
+private fun ProcessingIndicatorLight(model: CreatorAIEditService.AiModel) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = model.accentBg),
+        border = BorderStroke(1.dp, model.accentColor.copy(alpha = 0.3f))
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(24.dp),
+                color = model.accentColor,
+                strokeWidth = 2.5.dp
+            )
+            Column {
+                Text(
+                    "${model.displayName} анализирует код...",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = model.accentColor
+                )
+                Text(
+                    "Генерация блоков замен (режим ${model.forcedThinkingLevel} thinking)",
+                    fontSize = 11.sp,
+                    color = EditColorsLight.textSecondary
+                )
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// РЕЗУЛЬТАТ ЗАМЕН
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun EditResultSectionLight(result: CreatorAIEditService.EditResult) {
     val hasFailedBlocks = result.blocks.any {
         it.matchStatus == CreatorAIEditService.EditBlock.MatchStatus.NOT_FOUND
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Surface(
-            color = if (hasFailedBlocks) EditColors.yellowBg else EditColors.greenBg,
-            shape = RoundedCornerShape(10.dp),
-            border = BorderStroke(1.dp, if (hasFailedBlocks) EditColors.yellow else EditColors.greenBorder)
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (hasFailedBlocks) EditColorsLight.amberBg else EditColorsLight.greenBg
+            ),
+            border = BorderStroke(
+                1.dp,
+                if (hasFailedBlocks) EditColorsLight.amber.copy(alpha = 0.4f) else EditColorsLight.greenBorder
+            )
         ) {
             Row(
                 modifier = Modifier.padding(14.dp),
@@ -388,121 +407,110 @@ private fun EditResultSection(
                 Icon(
                     if (hasFailedBlocks) Icons.Default.Warning else Icons.Default.CheckCircle,
                     null,
-                    tint = if (hasFailedBlocks) EditColors.yellow else EditColors.green,
-                    modifier = Modifier.size(24.dp)
+                    tint = if (hasFailedBlocks) EditColorsLight.amber else EditColorsLight.green,
+                    modifier = Modifier.size(22.dp)
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         result.summary,
                         fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (hasFailedBlocks) EditColors.yellow else EditColors.green
+                        fontWeight = FontWeight.Bold,
+                        color = if (hasFailedBlocks) EditColorsLight.amberText else EditColorsLight.greenText
                     )
-                    Spacer(Modifier.height(4.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "${result.blocks.size} блок(ов)",
-                            fontSize = 10.sp,
-                            color = EditColors.text3,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text("•", fontSize = 10.sp, color = EditColors.text3)
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = result.model.accentBg,
-                            border = BorderStroke(1.dp, result.model.accentColor.copy(alpha = 0.3f))
-                        ) {
-                            Text(
-                                result.model.badge,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = result.model.accentColor,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    }
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "${result.blocks.size} блок(ов) · ${result.model.displayName}",
+                        fontSize = 10.sp,
+                        color = EditColorsLight.textSecondary,
+                        fontFamily = FontFamily.Monospace
+                    )
                 }
             }
         }
 
         result.blocks.forEachIndexed { index, block ->
-            DiffBlockCard(index = index + 1, block = block)
+            DiffBlockCardLight(index = index + 1, block = block)
         }
     }
 }
 
 @Composable
-private fun DiffBlockCard(index: Int, block: CreatorAIEditService.EditBlock) {
-    Surface(
-        color = EditColors.surface,
-        shape = RoundedCornerShape(10.dp),
+private fun DiffBlockCardLight(index: Int, block: CreatorAIEditService.EditBlock) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = EditColorsLight.surface),
         border = BorderStroke(
             1.dp,
             when (block.matchStatus) {
-                CreatorAIEditService.EditBlock.MatchStatus.NOT_FOUND -> EditColors.redBorder
+                CreatorAIEditService.EditBlock.MatchStatus.NOT_FOUND -> EditColorsLight.redBorder
                 CreatorAIEditService.EditBlock.MatchStatus.FUZZY,
-                CreatorAIEditService.EditBlock.MatchStatus.LINE_RANGE -> EditColors.yellow.copy(alpha = 0.5f)
-                else -> EditColors.border
+                CreatorAIEditService.EditBlock.MatchStatus.LINE_RANGE -> EditColorsLight.amber.copy(alpha = 0.4f)
+                else -> EditColorsLight.border
             }
         ),
-        modifier = Modifier.fillMaxWidth()
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column {
-            Surface(color = EditColors.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(EditColorsLight.surfaceElevated)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    Surface(
+                        shape = CircleShape,
+                        color = EditColorsLight.blue.copy(alpha = 0.15f),
+                        modifier = Modifier.size(20.dp)
                     ) {
-                        Surface(
-                            shape = CircleShape,
-                            color = EditColors.blue.copy(alpha = 0.2f),
-                            modifier = Modifier.size(22.dp)
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text("$index", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = EditColors.blue)
-                            }
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("$index", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = EditColorsLight.blue)
                         }
-                        Text("Block $index", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = EditColors.text2)
                     }
-                    MatchStatusBadge(status = block.matchStatus)
+                    Text("Блок $index", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EditColorsLight.textPrimary)
                 }
+                MatchStatusBadgeLight(status = block.matchStatus)
             }
 
-            HorizontalDivider(color = EditColors.border, thickness = 1.dp)
+            HorizontalDivider(color = EditColorsLight.border, thickness = 0.5.dp)
 
             if (block.search.isNotBlank()) {
-                DiffCodeBlock(
-                    label = "REMOVE", code = block.search,
-                    bgColor = EditColors.redBg, labelColor = EditColors.red,
-                    linePrefix = "−", prefixColor = EditColors.red
+                DiffCodeBlockLight(
+                    label = "УДАЛИТЬ",
+                    code = block.search,
+                    bgColor = EditColorsLight.redBg,
+                    labelColor = EditColorsLight.red,
+                    textColor = EditColorsLight.redText,
+                    prefix = "−"
                 )
             }
 
             if (block.search.isNotBlank() && block.replace.isNotBlank()) {
-                HorizontalDivider(color = EditColors.border, thickness = 1.dp)
+                HorizontalDivider(color = EditColorsLight.border, thickness = 0.5.dp)
             }
 
             if (block.replace.isNotBlank()) {
-                DiffCodeBlock(
-                    label = if (block.search.isBlank()) "INSERT" else "ADD",
+                DiffCodeBlockLight(
+                    label = if (block.search.isBlank()) "ВСТАВИТЬ" else "ДОБАВИТЬ",
                     code = block.replace,
-                    bgColor = EditColors.greenBg, labelColor = EditColors.green,
-                    linePrefix = "+", prefixColor = EditColors.green
+                    bgColor = EditColorsLight.greenBg,
+                    labelColor = EditColorsLight.green,
+                    textColor = EditColorsLight.greenText,
+                    prefix = "+"
                 )
             } else if (block.search.isNotBlank()) {
-                Surface(color = EditColors.redBg, modifier = Modifier.fillMaxWidth()) {
+                Surface(color = EditColorsLight.redBg, modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        "  (deleted)", modifier = Modifier.padding(8.dp),
-                        fontSize = 11.sp, color = EditColors.red.copy(alpha = 0.7f),
+                        "  (код будет полностью удалён)",
+                        modifier = Modifier.padding(8.dp),
+                        fontSize = 11.sp,
+                        color = EditColorsLight.redText,
                         fontFamily = FontFamily.Monospace
                     )
                 }
@@ -512,49 +520,59 @@ private fun DiffBlockCard(index: Int, block: CreatorAIEditService.EditBlock) {
 }
 
 @Composable
-private fun MatchStatusBadge(status: CreatorAIEditService.EditBlock.MatchStatus) {
+private fun MatchStatusBadgeLight(status: CreatorAIEditService.EditBlock.MatchStatus) {
     val (text, color, bgColor) = when (status) {
         CreatorAIEditService.EditBlock.MatchStatus.EXACT ->
-            Triple("✓ EXACT", EditColors.green, EditColors.greenBg)
+            Triple("✓ ТОЧНОЕ", EditColorsLight.green, EditColorsLight.greenBg)
         CreatorAIEditService.EditBlock.MatchStatus.NORMALIZED ->
-            Triple("✓ NORM", EditColors.green, EditColors.greenBg)
+            Triple("✓ NORM", EditColorsLight.green, EditColorsLight.greenBg)
         CreatorAIEditService.EditBlock.MatchStatus.FUZZY ->
-            Triple("~ FUZZY", EditColors.yellow, EditColors.yellowBg)
+            Triple("~ FUZZY", EditColorsLight.amber, EditColorsLight.amberBg)
         CreatorAIEditService.EditBlock.MatchStatus.LINE_RANGE ->
-            Triple("~ RANGE", EditColors.orange, EditColors.orangeBg)
+            Triple("~ RANGE", EditColorsLight.amber, EditColorsLight.amberBg)
         CreatorAIEditService.EditBlock.MatchStatus.NOT_FOUND ->
-            Triple("✗ NOT FOUND", EditColors.red, EditColors.redBg)
+            Triple("✗ НЕ НАЙДЕН", EditColorsLight.red, EditColorsLight.redBg)
         CreatorAIEditService.EditBlock.MatchStatus.PENDING ->
-            Triple("⏳", EditColors.text3, EditColors.surfaceElevated)
+            Triple("⏳", EditColorsLight.textTertiary, EditColorsLight.surfaceElevated)
     }
 
     Surface(
-        shape = RoundedCornerShape(6.dp), color = bgColor,
-        border = BorderStroke(1.dp, color.copy(alpha = 0.4f))
+        shape = RoundedCornerShape(4.dp),
+        color = bgColor,
+        border = BorderStroke(0.5.dp, color.copy(alpha = 0.4f))
     ) {
         Text(
-            text, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-            fontSize = 9.sp, fontWeight = FontWeight.ExtraBold,
-            color = color, fontFamily = FontFamily.Monospace, letterSpacing = 0.3.sp
+            text,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            color = color,
+            fontFamily = FontFamily.Monospace
         )
     }
 }
 
 @Composable
-private fun DiffCodeBlock(
-    label: String, code: String, bgColor: Color, labelColor: Color,
-    linePrefix: String, prefixColor: Color
+private fun DiffCodeBlockLight(
+    label: String,
+    code: String,
+    bgColor: Color,
+    labelColor: Color,
+    textColor: Color,
+    prefix: String
 ) {
     Surface(color = bgColor, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(8.dp)) {
             Text(
-                label, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold,
-                color = labelColor, letterSpacing = 0.5.sp,
-                modifier = Modifier.padding(bottom = 4.dp)
+                label,
+                fontSize = 9.sp,
+                fontWeight = FontWeight.Bold,
+                color = labelColor,
+                modifier = Modifier.padding(bottom = 2.dp)
             )
             val lines = code.lines()
-            val displayLines = if (lines.size > 20) {
-                lines.take(10) + listOf("... (${lines.size - 20} more lines) ...") + lines.takeLast(10)
+            val displayLines = if (lines.size > 24) {
+                lines.take(12) + listOf("... (скрыто ${lines.size - 24} строк) ...") + lines.takeLast(12)
             } else lines
 
             Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
@@ -562,16 +580,17 @@ private fun DiffCodeBlock(
                     displayLines.forEach { line ->
                         Row {
                             Text(
-                                "$linePrefix ",
+                                "$prefix ",
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
-                                color = prefixColor.copy(alpha = 0.6f)
+                                color = labelColor,
+                                fontWeight = FontWeight.Bold
                             )
                             Text(
                                 line,
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
-                                color = labelColor.copy(alpha = 0.9f),
+                                color = textColor,
                                 lineHeight = 16.sp
                             )
                         }
@@ -583,58 +602,64 @@ private fun DiffCodeBlock(
 }
 
 @Composable
-private fun ErrorSection(message: String) {
-    Surface(
-        color = EditColors.redBg, shape = RoundedCornerShape(10.dp),
-        border = BorderStroke(1.dp, EditColors.redBorder), modifier = Modifier.fillMaxWidth()
+private fun ErrorSectionLight(message: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        colors = CardDefaults.cardColors(containerColor = EditColorsLight.redBg),
+        border = BorderStroke(1.dp, EditColorsLight.redBorder)
     ) {
         Row(
             modifier = Modifier.padding(14.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Icon(Icons.Default.Error, null, tint = EditColors.red, modifier = Modifier.size(24.dp))
-            Text(message, fontSize = 13.sp, color = EditColors.red, modifier = Modifier.weight(1f))
+            Icon(Icons.Default.Error, null, tint = EditColorsLight.red, modifier = Modifier.size(20.dp))
+            Text(message, fontSize = 12.sp, color = EditColorsLight.redText, modifier = Modifier.weight(1f))
         }
     }
 }
 
 @Composable
-private fun HintSection() {
-    Surface(
-        color = EditColors.surfaceElevated, shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, EditColors.border), modifier = Modifier.fillMaxWidth()
+private fun HintSectionLight() {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = EditColorsLight.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Icon(Icons.Default.Lightbulb, null, tint = EditColors.yellow, modifier = Modifier.size(20.dp))
-                Text("Как использовать", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = EditColors.text1)
+                Icon(Icons.Default.Lightbulb, null, tint = EditColorsLight.amber, modifier = Modifier.size(18.dp))
+                Text("Как работает AI редактор", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = EditColorsLight.textPrimary)
             }
             listOf(
-                "📝" to "Опишите изменения на любом языке",
-                "📋" to "Скопируйте инструкции из чата AI и вставьте",
-                "🔄" to "Несколько замен — AI создаст отдельные блоки",
-                "⚡" to "Gemini 3.8 Flash — высокая точность, глубокий кодинг",
-                "👁️" to "Превью diff перед применением + статус матчинга",
-                "✅" to "Нажмите «Применить» после проверки блоков"
+                "📝" to "Опишите задачу — модель вернёт только точные блоки замен.",
+                "⚡" to "3.5 Flash-Lite (Low Thinking) обеспечивает максимальную скорость.",
+                "💨" to "3.1 Flash-Lite (Medium Thinking) даёт повышенную точность рассуждений.",
+                "🔍" to "Перед применением проверьте превью зелёных и красных блоков."
             ).forEach { (emoji, text) ->
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(emoji, fontSize = 16.sp)
-                    Text(text, fontSize = 12.sp, color = EditColors.text2, lineHeight = 18.sp)
+                    Text(emoji, fontSize = 14.sp)
+                    Text(text, fontSize = 11.sp, color = EditColorsLight.textSecondary)
                 }
             }
         }
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// НИЖНЯЯ ПАНЕЛЬ И ДЕЙСТВИЯ
+// ═══════════════════════════════════════════════════════════════════════════
+
 @Composable
-private fun BottomBar(
+private fun BottomBarLight(
     editStatus: CreatorAIEditService.EditStatus,
     selectedModel: CreatorAIEditService.AiModel,
     instructionsNotEmpty: Boolean,
@@ -644,78 +669,62 @@ private fun BottomBar(
 ) {
     val isSuccess = editStatus is CreatorAIEditService.EditStatus.Success
     val isProcessing = editStatus is CreatorAIEditService.EditStatus.Processing
-    val isError = editStatus is CreatorAIEditService.EditStatus.Error
-
     val successResult = (editStatus as? CreatorAIEditService.EditStatus.Success)?.result
-    val usedModel = successResult?.model ?: selectedModel
 
-    val hasFailedBlocks = successResult?.blocks?.any {
-        it.matchStatus == CreatorAIEditService.EditBlock.MatchStatus.NOT_FOUND
-    } ?: false
-
-    val statusColor = when {
-        isSuccess && !hasFailedBlocks -> EditColors.green
-        isSuccess && hasFailedBlocks -> EditColors.yellow
-        isProcessing -> usedModel.accentColor
-        isError -> EditColors.red
-        else -> EditColors.text3
-    }
-
-    Surface(color = EditColors.surface, shadowElevation = 8.dp, modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+        colors = CardDefaults.cardColors(containerColor = EditColorsLight.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+    ) {
         Column {
-            Box(modifier = Modifier
-                .fillMaxWidth()
-                .height(3.dp)
-                .background(statusColor))
-
             if (isSuccess && successResult != null) {
-                Surface(color = EditColors.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
+                Surface(color = EditColorsLight.surfaceElevated, modifier = Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TokenChip("INPUT", "%,d".format(successResult.inputTokens), EditColors.blue)
-                        Text("＋", fontSize = 12.sp, color = EditColors.text3)
-                        TokenChip("OUTPUT", "%,d".format(successResult.outputTokens), EditColors.orange)
-                        Text("＝", fontSize = 12.sp, color = EditColors.text3)
-                        TokenChip(
-                            "TOTAL",
-                            "%,d".format(successResult.inputTokens + successResult.outputTokens),
-                            EditColors.text1
-                        )
-                        Text("•", fontSize = 14.sp, color = EditColors.text3)
-                        TokenChip("COST", "€${String.format("%.4f", successResult.costEUR)}", EditColors.green)
+                        TokenChipLight("ВХОД", "%,d".format(successResult.inputTokens), EditColorsLight.blue)
+                        Text("+", fontSize = 11.sp, color = EditColorsLight.textTertiary)
+                        TokenChipLight("ВЫХОД", "%,d".format(successResult.outputTokens), EditColorsLight.amber)
+                        Text("=", fontSize = 11.sp, color = EditColorsLight.textTertiary)
+                        TokenChipLight("ИТОГО", "%,d".format(successResult.inputTokens + successResult.outputTokens), EditColorsLight.textPrimary)
+                        Text("·", fontSize = 12.sp, color = EditColorsLight.textTertiary)
+                        TokenChipLight("СТОИМОСТЬ", "€${String.format(java.util.Locale.US, "%.4f", successResult.costEUR)}", EditColorsLight.green)
                     }
                 }
-                HorizontalDivider(color = EditColors.border, thickness = 1.dp)
+                HorizontalDivider(color = EditColorsLight.border, thickness = 0.5.dp)
             }
 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(statusColor))
+                    val statusDotColor = when {
+                        isSuccess -> EditColorsLight.green
+                        isProcessing -> selectedModel.accentColor
+                        else -> EditColorsLight.textTertiary
+                    }
+                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(statusDotColor))
                     Text(
                         when {
-                            isSuccess && !hasFailedBlocks -> "✅ Код обработан"
-                            isSuccess && hasFailedBlocks -> "⚠️ Частично"
-                            isProcessing -> "⏳ Обработка..."
-                            isError -> "❌ Ошибка"
-                            else -> "⏸ Ожидание"
+                            isSuccess -> "Готово к применению"
+                            isProcessing -> "Обработка..."
+                            else -> "Ожидание"
                         },
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = statusColor
+                        color = EditColorsLight.textPrimary
                     )
                 }
 
@@ -723,49 +732,44 @@ private fun BottomBar(
                     if (isSuccess) {
                         OutlinedButton(
                             onClick = onDiscard,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EditColors.text2),
-                            border = BorderStroke(1.dp, EditColors.border),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, EditColorsLight.borderStrong)
                         ) {
-                            Text("Сброс", fontSize = 13.sp)
+                            Text("Сброс", fontSize = 12.sp, color = EditColorsLight.textSecondary)
                         }
 
                         Button(
                             onClick = onApply,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (hasFailedBlocks) EditColors.yellow else EditColors.green,
-                                contentColor = Color.White
-                            ),
-                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
+                            shape = RoundedCornerShape(10.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = EditColorsLight.green)
                         ) {
-                            Icon(Icons.Default.Check, null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("Применить", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                            Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp), tint = Color.White)
+                            Spacer(Modifier.width(4.dp))
+                            Text("Применить", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
                         }
                     } else {
                         Button(
                             onClick = onProcess,
                             enabled = instructionsNotEmpty && !isProcessing,
+                            shape = RoundedCornerShape(10.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = selectedModel.accentColor,
-                                contentColor = Color.White,
-                                disabledContainerColor = EditColors.border,
-                                disabledContentColor = EditColors.text3
-                            ),
-                            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp)
+                                disabledContainerColor = EditColorsLight.border
+                            )
                         ) {
                             if (isProcessing) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White
+                                    modifier = Modifier.size(14.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color.White
                                 )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Генерация...", fontSize = 12.sp, color = Color.White)
                             } else {
-                                Icon(Icons.Default.AutoFixHigh, null, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.AutoFixHigh, null, modifier = Modifier.size(16.dp), tint = Color.White)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Обработать", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
                             }
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                if (isProcessing) "Обработка..." else "Обработать",
-                                fontSize = 13.sp, fontWeight = FontWeight.Bold
-                            )
                         }
                     }
                 }
@@ -775,9 +779,9 @@ private fun BottomBar(
 }
 
 @Composable
-private fun TokenChip(label: String, value: String, color: Color) {
+private fun TokenChipLight(label: String, value: String, color: Color) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, fontSize = 8.sp, fontWeight = FontWeight.Bold, color = color.copy(alpha = 0.6f), letterSpacing = 0.5.sp)
-        Text(value, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = color, fontFamily = FontFamily.Monospace)
+        Text(label, fontSize = 8.sp, fontWeight = FontWeight.Bold, color = EditColorsLight.textTertiary)
+        Text(value, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = color, fontFamily = FontFamily.Monospace)
     }
 }
