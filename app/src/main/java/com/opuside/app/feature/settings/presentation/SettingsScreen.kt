@@ -37,7 +37,7 @@ import com.opuside.app.core.security.SecureSettingsDataStore
 import com.opuside.app.core.ui.theme.AppTheme
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LIGHT PROFESSIONAL THEME (Samsung S23 Ultra Optimized)
+// LIGHT PROFESSIONAL THEME (Samsung S23 Ultra AMOLED Optimized)
 // ═══════════════════════════════════════════════════════════════════════════
 
 private object SettingsTheme {
@@ -59,6 +59,8 @@ private object SettingsTheme {
     val amberSoft = Color(0xFFFFFBEB)
     val red = Color(0xFFDC2626)
     val redSoft = Color(0xFFFEF2F2)
+    val purple = Color(0xFF7C3AED)          // Исправлено: добавлен цвет purple
+    val purpleSoft = Color(0xFFF5F3FF)      // Исправлено: добавлен цвет purpleSoft
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -319,7 +321,6 @@ fun SettingsScreen(
             // НАСТРОЙКИ GEMINI API
             // ═══════════════════════════════════════════════════════════════════════
             SettingsSectionCard(title = "Google Gemini API", icon = Icons.Default.AutoAwesome, iconTint = SettingsTheme.green) {
-                // Заголовок ключей
                 Row(
                     Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -452,7 +453,6 @@ fun SettingsScreen(
 
                 Spacer(Modifier.height(10.dp))
 
-                // Информационная плашка
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
