@@ -91,66 +91,20 @@ private const val AI_PROMPT_TEMPLATE = """Ты — инструмент точе
 </edits>
 <summary>[Краткое описание правок одной строкой на русском языке]</summary>
 
-═══ ПРАВИЛА ДЛЯ ОПЕРАЦИЙ (КАК ВЫПОЛНЯТЬ ДЕЙСТВИЯ) ═══
+═══ ПРАВИЛА ДЛЯ ОПЕРАЦИЙ ═══
 
-1. ЗАМЕНА (Что-то изменить):
-В <search> копируешь старый код + 2-3 соседние строки для уникальности. В <replace> вставляешь обновленный код с теми же соседними строками.
-Пример:
-<block>
-<search>
-val timeout = 30
-val isRetry = false
-</search>
-<replace>
-val timeout = 60
-val isRetry = true
-</replace>
-</block>
+1. ЗАМЕНА:
+В <search> копируешь старый код + 2-3 соседние строки. В <replace> вставляешь обновленный код с теми же соседними строками.
 
-2. УДАЛЕНИЕ (Что-то вырезать):
-В <search> помещаешь код, который нужно удалить (+ строку выше и ниже). В <replace> оставляешь только строки выше и ниже (сам удаляемый код не пишешь).
-Пример:
-<block>
-<search>
-fun oldUnusedFunction() {
-    println("deprecated")
-}
-</search>
-<replace>
-</replace>
-</block>
+2. УДАЛЕНИЕ:
+В <search> помещаешь удаляемый код. В <replace></replace> оставляешь пустоту.
 
-3. ВСТАВКА ПОСЛЕ (Добавить код после определенной строки):
-В <search> помещаешь строку-ориентир. В <replace> пишешь эту же строку-ориентир, а сразу под ней — твой новый код.
-Пример:
-<block>
-<search>
-val name: String = "App"
-</search>
-<replace>
-val name: String = "App"
-val version: Int = 2
-</replace>
-</block>
-
-4. ВСТАВКА ДО (Добавить код перед определенной строкой):
-В <search> помещаешь строку-ориентир. В <replace> сначала пишешь свой новый код, а затем строку-ориентир.
-Пример:
-<block>
-<search>
-class MainActivity : ComponentActivity() {
-</search>
-<replace>
-@AndroidEntryPoint
-class MainActivity : ComponentActivity() {
-</replace>
-</block>
+3. ВСТАВКА:
+В <search> помещаешь строку-ориентир. В <replace> пишешь строку-ориентир и добавляемый код.
 
 ═══ СТРОГИЕ ПРАВИЛА ═══
-- Содержимое тега <search> обязано быть СИМВОЛ В СИМВОЛ скопировано из оригинала (каждый пробел, отступ, перенос строки, запятая). Не исправляй опечатки внутри <search>!
-- ВСЕГДА захватывай 2–4 строки окружающего контекста, чтобы блок <search> встречался в файле РОВНО ОДИН РАЗ.
-- Соблюдай точные отступы (табы или пробелы), как в исходном файле.
-- Если меняется несколько мест в файле — делай отдельные теги <block>...</block> по порядку сверху вниз.
+- Содержимое тега <search> обязано быть СИМВОЛ В СИМВОЛ скопировано из оригинала (каждый пробел, отступ, перенос строки).
+- ВСЕГДА захватывай 2–4 строки окружающего контекста для уникальности поиска.
 - Не выводи весь файл целиком — только изменённые участки."""
 
 @Composable
@@ -403,7 +357,6 @@ private fun InstructionsSectionLight(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Новая кнопка шаблона
                     Surface(
                         onClick = onShowTemplate,
                         shape = RoundedCornerShape(8.dp),
@@ -741,18 +694,36 @@ private fun DiffCodeBlockLight(
     textColor: Color,
     prefix: String
 ) {
+    var expanded by remember { mutableStateOf(false) }
+
     Surface(color = bgColor, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(8.dp)) {
-            Text(
-                label,
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                color = labelColor,
-                modifier = Modifier.padding(bottom = 2.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    label,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = labelColor,
+                    modifier = Modifier.padding(bottom = 2.dp)
+                )
+                if (code.lines().size > 24) {
+                    Text(
+                        text = if (expanded) "Свернуть" else "Развернуть (${code.lines().size} строк)",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = EditColorsLight.blue,
+                        modifier = Modifier.clickable { expanded = !expanded }
+                    )
+                }
+            }
+
             val lines = code.lines()
-            val displayLines = if (lines.size > 24) {
-                lines.take(12) + listOf("... (скрыто ${lines.size - 24} строк) ...") + lines.takeLast(12)
+            val displayLines = if (!expanded && lines.size > 24) {
+                lines.take(12) + listOf("... (нажмите «Развернуть», чтобы увидеть все ${lines.size} строк) ...") + lines.takeLast(12)
             } else lines
 
             Row(modifier = Modifier.horizontalScroll(rememberScrollState())) {
@@ -819,7 +790,7 @@ private fun HintSectionLight() {
             listOf(
                 "📝" to "Опишите задачу — модель вернёт только точные блоки замен.",
                 "⚡" to "3.5 Flash-Lite (Low Thinking) обеспечивает максимальную скорость.",
-                "💨" to "3.1 Flash-Lite (Medium Thinking) даёт повышенную точность рассуждений.",
+                "💨" to "3.1 Flash-Lite (Low Thinking) даёт ультра-бюджетный отклик.",
                 "📋" to "Нажмите «Шаблон ИИ», чтобы скопировать инструкцию для стороннего чат-бота."
             ).forEach { (emoji, text) ->
                 Row(
