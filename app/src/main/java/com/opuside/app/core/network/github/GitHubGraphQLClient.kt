@@ -1,6 +1,6 @@
 package com.opuside.app.core.network.github
 
-import com.opuside.app.BuildConfig
+import com.opuside.app.core.data.AppSettings
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.header
@@ -9,6 +9,7 @@ import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.*
@@ -17,21 +18,16 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 /**
- * GitHub GraphQL клиент для batch-операций.
+ * GitHub GraphQL клиент для batch-операций v2.2.
  * 
- * Позволяет загружать до 20 файлов одним запросом,
- * что значительно быстрее REST API.
- * 
- * ✅ ИСПРАВЛЕНО:
- * - Проблема №4: Добавлена валидация BuildConfig полей
- * - Проблема №10: Добавлена проверка размера файлов и разбиение на batches
- * - Проблема №18 (BUG #18): Добавлен escaping для GraphQL query
+ * Токен и репозиторий считываются динамически из AppSettings (без хардкода BuildConfig).
  */
 @Singleton
 class GitHubGraphQLClient @Inject constructor(
     @Named("github") private val httpClient: HttpClient,
     private val json: Json,
-    private val gitHubClient: GitHubApiClient
+    private val gitHubClient: GitHubApiClient,
+    private val appSettings: AppSettings
 ) {
     companion object {
         private const val GRAPHQL_URL = "https://api.github.com/graphql"
@@ -39,17 +35,13 @@ class GitHubGraphQLClient @Inject constructor(
         private const val MAX_BATCH_SIZE_BYTES = 500_000
     }
 
-    private val owner: String
-        get() = BuildConfig.GITHUB_OWNER.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("GITHUB_OWNER not configured in local.properties")
-
-    private val repo: String
-        get() = BuildConfig.GITHUB_REPO.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("GITHUB_REPO not configured in local.properties")
-
-    private val token: String
-        get() = BuildConfig.GITHUB_TOKEN.takeIf { it.isNotBlank() }
-            ?: throw IllegalStateException("GITHUB_TOKEN not configured in local.properties")
+    private suspend fun getRepoConfig(): com.opuside.app.core.data.GitHubConfig {
+        val config = appSettings.gitHubConfig.first()
+        if (config.owner.isBlank() || config.repo.isBlank() || config.token.isBlank()) {
+            throw IllegalStateException("GitHub configuration is incomplete in settings")
+        }
+        return config
+    }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // BATCH FILE LOADING
@@ -65,7 +57,7 @@ class GitHubGraphQLClient @Inject constructor(
         for (path in paths) {
             val result = gitHubClient.getFileContent(path, ref)
             result.onSuccess { content ->
-                filesWithSize.add(path to (content.size ?: 0))
+                filesWithSize.add(path to content.size)
             }.onFailure {
                 filesWithSize.add(path to 1000)
             }
@@ -113,12 +105,19 @@ class GitHubGraphQLClient @Inject constructor(
             return Result.failure(IllegalArgumentException("Max $MAX_FILES_PER_REQUEST files per request"))
         }
 
-        val query = buildBatchQuery(paths, ref)
+        val cfg = try {
+            getRepoConfig()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+
+        val query = buildBatchQuery(cfg.owner, cfg.repo, paths, ref)
 
         return try {
             val response = httpClient.post(GRAPHQL_URL) {
                 contentType(ContentType.Application.Json)
-                header("Authorization", "Bearer $token")
+                header("Authorization", "Bearer ${cfg.token}")
+                header("User-Agent", "OpusIDE-Android-Client/1.0")
                 setBody(GraphQLRequest(query))
             }
 
@@ -184,11 +183,17 @@ class GitHubGraphQLClient @Inject constructor(
         ref: String = "HEAD",
         recursive: Boolean = false
     ): Result<List<TreeEntry>> {
+        val cfg = try {
+            getRepoConfig()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+
         val expression = if (path.isEmpty()) "$ref:" else "$ref:$path"
         
         val query = """
             query {
-                repository(owner: "$owner", name: "$repo") {
+                repository(owner: "${cfg.owner}", name: "${cfg.repo}") {
                     object(expression: "$expression") {
                         ... on Tree {
                             entries {
@@ -223,7 +228,8 @@ class GitHubGraphQLClient @Inject constructor(
         return try {
             val response = httpClient.post(GRAPHQL_URL) {
                 contentType(ContentType.Application.Json)
-                header("Authorization", "Bearer $token")
+                header("Authorization", "Bearer ${cfg.token}")
+                header("User-Agent", "OpusIDE-Android-Client/1.0")
                 setBody(GraphQLRequest(query))
             }
 
@@ -267,9 +273,15 @@ class GitHubGraphQLClient @Inject constructor(
     }
 
     suspend fun getLastCommit(ref: String = "HEAD"): Result<CommitInfo> {
+        val cfg = try {
+            getRepoConfig()
+        } catch (e: Exception) {
+            return Result.failure(e)
+        }
+
         val query = """
             query {
-                repository(owner: "$owner", name: "$repo") {
+                repository(owner: "${cfg.owner}", name: "${cfg.repo}") {
                     object(expression: "$ref") {
                         ... on Commit {
                             oid
@@ -289,7 +301,8 @@ class GitHubGraphQLClient @Inject constructor(
         return try {
             val response = httpClient.post(GRAPHQL_URL) {
                 contentType(ContentType.Application.Json)
-                header("Authorization", "Bearer $token")
+                header("Authorization", "Bearer ${cfg.token}")
+                header("User-Agent", "OpusIDE-Android-Client/1.0")
                 setBody(GraphQLRequest(query))
             }
 
@@ -320,7 +333,7 @@ class GitHubGraphQLClient @Inject constructor(
     // HELPERS
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private fun buildBatchQuery(paths: List<String>, ref: String): String {
+    private fun buildBatchQuery(owner: String, repo: String, paths: List<String>, ref: String): String {
         val fileQueries = paths.mapIndexed { index, path ->
             val escapedPath = path.replace("\\", "\\\\").replace("\"", "\\\"")
             """
@@ -345,9 +358,9 @@ class GitHubGraphQLClient @Inject constructor(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 // DATA CLASSES
-// ═══════════════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════════
 
 @Serializable
 private data class GraphQLRequest(
