@@ -16,17 +16,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 📋 PIPELINE PLANNER v3.0 (Gemini Flash-Lite Powered)
+ * 📋 PIPELINE PLANNER v3.2 (High-Speed & CoT Protected)
  *
- * Отвечает за интеллектуальный парсинг единого промпта пользователя
- * и составление строгого JSON-плана задач (MODIFY, CREATE, DELETE).
- *
- * Особенности:
- * - Модели: 3.5 Flash-Lite (LOW thinking) или 3.1 Flash-Lite (MEDIUM thinking)
- * - Строгая схема OpenAPI JSON Schema с типами UPPERCASE
- * - Фильтрация thought-блоков для защиты целостности JSON
- * - Вывод до 32 768 токенов для объемных CREATE задач
- * - Каскадный подбор API-ключей без ложных падений
+ * Отвечает за парсинг промпта пользователя и составление JSON-плана задач.
  */
 @Singleton
 class PipelinePlanner @Inject constructor(
@@ -38,106 +30,25 @@ class PipelinePlanner @Inject constructor(
     companion object {
         private const val TAG = "PipelinePlanner"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val MAX_OUTPUT_TOKENS = 32768
+        private const val MAX_OUTPUT_TOKENS = 16384
         private const val MAX_TASKS_LIMIT = 100
 
         private val PLANNER_SYSTEM_PROMPT = """
-You are a precision TASK PLANNER for a code modification pipeline.
+You are a HIGH-SPEED TASK PLANNER for a code modification pipeline.
 
 ═══ YOUR JOB ═══
-
-The user will give you a large multi-file modification request. You receive:
-1. The full user prompt
-2. A list of all real file paths in the repository
-
-You MUST return a JSON object containing an array of tasks. Each task is
-ONE file with ONE operation extracted from the user prompt.
+Analyze the user prompt and match operations to existing or new files.
+Return a JSON object containing an array of tasks according to the schema.
 
 ═══ TASK TYPES ═══
-
-Each task has an "operation" field — either "modify", "create", or "delete".
-
-▸ MODIFY task (default):
-  - Modifies an existing file in the repository
-  - "operation": "modify"
-  - "file": EXACT path from the provided file list (no guessing!)
-  - "instructions": verbatim instructions from user prompt for THIS file
-  - "content": null
-  - "package": null
-
-▸ CREATE task:
-  - Creates a NEW file that does not yet exist in the repository
-  - "operation": "create"
-  - "file": full path to the new file IF user specified one; otherwise null
-  - "instructions": brief description (e.g. "New utility class") — optional
-  - "content": THE COMPLETE FILE CONTENT, character-for-character from user
-    prompt, including package declaration, imports, all code
-  - "package": Kotlin package name IF mentioned by user (e.g. "com.x.y.feature")
-    or extractable from content's package declaration; otherwise null
-
-▸ DELETE task:
-  - Deletes an existing file from the repository
-  - "operation": "delete"
-  - "file": EXACT path from the provided file list (no guessing!)
-  - "instructions": brief reason for deletion (optional)
-  - "content": null
-  - "package": null
+- "modify": Changes an existing file in the repository ("file" must be exact path from the list).
+- "create": Adds a new file ("file" path or "package", "content" must be complete verbatim code).
+- "delete": Deletes an existing file ("file" must be exact path from the list).
 
 ═══ STRICT RULES ═══
-
-RULE 1 — DETECT CREATE TASKS:
-Look for phrases like:
-- "Создать новый файл..."
-- "Создай файл по пути..."
-- "Создать XxxScreen.kt с этим кодом:"
-- "Новый файл в пакете com.x.y"
-- "Add a new file..."
-- "Create file..."
-These signal a CREATE task. If unsure, prefer MODIFY (safer).
-
-RULE 1a — DETECT DELETE TASKS:
-Look for phrases like:
-- "Удали файл..."
-- "Удалить файл X.kt"
-- "Убери из репо файл..."
-- "Delete file..."
-- "Remove file..."
-These signal a DELETE task. "file" MUST be the EXACT path from the provided
-file list — same rule as MODIFY (no guessing). If the path cannot be matched
-in the file list, OMIT that task.
-
-RULE 2 — CREATE PATH/PACKAGE HANDLING:
-- If user gave a FULL path like "app/src/main/java/com/x/Y.kt" → use it as "file"
-- If user gave only a package like "com.opuside.app.feature.x" → put it in
-  "package" field, leave "file" null (system will derive the path)
-- If user gave BOTH a path AND a package → include both; system will validate
-- If user gave NEITHER but provided content → leave both null;
-  system will derive from the content's package declaration
-
-RULE 3 — CREATE CONTENT IS VERBATIM:
-The "content" field MUST contain the EXACT content user provided.
-Do NOT clean up. Do NOT reformat. Do NOT remove blank lines.
-Include ALL imports and declarations verbatim.
-
-RULE 4 — MODIFY EXACT FILE PATHS:
-For MODIFY tasks, "file" MUST be a path EXACTLY as it appears in the file list.
-NEVER invent paths. NEVER abbreviate.
-If you cannot find a clear match for a MODIFY task, OMIT that task.
-
-RULE 5 — ONE FILE = ONE TASK:
-- If user describes 5 changes for 5 different files, return 5 tasks
-- If user describes 2 changes both in file X, MERGE them into ONE MODIFY task
-- NEVER create multiple tasks for the same file path
-
-RULE 6 — MODIFY INSTRUCTIONS VERBATIM:
-For MODIFY tasks, copy the relevant section of the user prompt verbatim.
-Do NOT summarize. The downstream AI editor will see ONLY this text + the file.
-
-RULE 7 — ORDER PRESERVATION:
-Keep tasks in the same order they appear in the user prompt.
-
-RULE 8 — OUTPUT FORMAT (Strict JSON):
-Return JSON according to the schema. No markdown, no commentary.
+1. "file" for modify/delete MUST match a real file from the provided list. No guessing!
+2. "content" for create MUST contain full, complete source code verbatim.
+3. Return ONLY valid JSON adhering to the schema. No markdown, no explanations.
 """.trimIndent()
     }
 
@@ -156,23 +67,23 @@ Return JSON according to the schema. No markdown, no commentary.
                                 JsonPrimitive("create"),
                                 JsonPrimitive("delete")
                             )))
-                            put("description", "Type of operation on the file")
+                            put("description", "Type of operation")
                         })
                         put("file", buildJsonObject {
                             put("type", "STRING")
-                            put("description", "Full repository path (empty for create-by-package)")
+                            put("description", "Full repository path")
                         })
                         put("instructions", buildJsonObject {
                             put("type", "STRING")
-                            put("description", "Verbatim modification instructions (for modify) or description (for create)")
+                            put("description", "Verbatim instructions from user prompt")
                         })
                         put("content", buildJsonObject {
                             put("type", "STRING")
-                            put("description", "Full content for create task; empty for modify")
+                            put("description", "Full code content for create task")
                         })
                         put("package", buildJsonObject {
                             put("type", "STRING")
-                            put("description", "Kotlin package for create task; empty otherwise")
+                            put("description", "Kotlin package for create task")
                         })
                     })
                     put("required", JsonArray(listOf(
@@ -202,9 +113,7 @@ Return JSON according to the schema. No markdown, no commentary.
                 )
             }
 
-            // Определение целевой модели и режима Thinking
             val effectiveModel = GeminiModel.fromModelId(modelApiId ?: "") ?: GeminiModel.getDefault()
-            val thinkingLevel = effectiveModel.forcedThinkingLevel.apiName // LOW для 3.5, MEDIUM для 3.1
 
             // Каскадный подбор API-ключа
             val rotatorKeyInfo = keyRotator.currentKey()
@@ -215,22 +124,28 @@ Return JSON according to the schema. No markdown, no commentary.
 
             if (currentApiKey.isNullOrBlank()) {
                 return@withContext Result.failure(
-                    IllegalStateException("Gemini API ключ не найден. Задайте его в Настройках или на экране Pipeline.")
+                    IllegalStateException("Gemini API ключ не найден")
                 )
             }
 
             var currentRotatorIdx = rotatorKeyInfo?.second ?: -1
 
-            val pathsText = filePaths.joinToString("\n")
+            // Оптимизация: исключаем мусор сборки и бинарники для сокращения токенов
+            val cleanPaths = filePaths.filter { p ->
+                !p.startsWith(".") && !p.startsWith("build/") && !p.contains("/build/") &&
+                !p.endsWith(".png") && !p.endsWith(".jar") && !p.endsWith(".webp") &&
+                !p.endsWith(".so") && !p.endsWith(".aar")
+            }.take(1000)
+
             val userMessage = buildString {
-                appendLine("═══ USER PROMPT (verbatim) ═══")
+                appendLine("═══ USER PROMPT ═══")
                 appendLine(userPrompt)
                 appendLine()
-                appendLine("═══ AVAILABLE FILES IN REPOSITORY (${filePaths.size} total) ═══")
-                appendLine(pathsText)
+                appendLine("═══ AVAILABLE REPOSITORY FILES (${cleanPaths.size}) ═══")
+                appendLine(cleanPaths.joinToString("\n"))
             }
 
-            Log.d(TAG, "📤 Планирование [${effectiveModel.displayName}, thinking=$thinkingLevel]: prompt=${userPrompt.length}ch, files=${filePaths.size}")
+            Log.d(TAG, "📤 Планирование [${effectiveModel.displayName}]: prompt=${userPrompt.length}ch, files=${cleanPaths.size}")
 
             var result: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
             var attempts = 0
@@ -239,7 +154,6 @@ Return JSON according to the schema. No markdown, no commentary.
                 result = callGemini(
                     apiKey = currentApiKey!!,
                     model = effectiveModel,
-                    thinkingLevel = thinkingLevel,
                     userMessage = userMessage
                 )
 
@@ -249,7 +163,6 @@ Return JSON according to the schema. No markdown, no commentary.
                 if (!isQuotaError(errMsg)) break
 
                 if (currentRotatorIdx >= 0) {
-                    Log.w(TAG, "⚠️ Превышен лимит (429) на ключе #$currentRotatorIdx, переключаем ключ...")
                     val next = keyRotator.burnAndRotate(currentRotatorIdx)
                     if (next != null) {
                         currentApiKey = next.first
@@ -275,10 +188,6 @@ Return JSON according to the schema. No markdown, no commentary.
                 )
             }
 
-            if (plannedTasks.size > MAX_TASKS_LIMIT) {
-                Log.w(TAG, "⚠️ Сформировано ${plannedTasks.size} задач (лимит=$MAX_TASKS_LIMIT)")
-            }
-
             val resolvedTasks = resolvePaths(plannedTasks, filePaths)
             val cost = (inputTokens * effectiveModel.inputPricePerM + outputTokens * effectiveModel.outputPricePerM) / 1_000_000.0 * 0.92
 
@@ -291,10 +200,6 @@ Return JSON according to the schema. No markdown, no commentary.
                 tokensUsed = inputTokens + outputTokens,
                 costEur = cost
             ))
-        } catch (e: java.net.SocketTimeoutException) {
-            Result.failure(Exception("Таймаут соединения планировщика. Попробуйте снова."))
-        } catch (e: java.net.UnknownHostException) {
-            Result.failure(Exception("Нет подключения к интернету."))
         } catch (e: Exception) {
             Log.e(TAG, "❌ Ошибка планирования", e)
             Result.failure(e)
@@ -307,10 +212,8 @@ Return JSON according to the schema. No markdown, no commentary.
     ): List<PlannedTask> {
         val seen = mutableSetOf<String>()
         val result = mutableListOf<PlannedTask>()
-        val pathSet: Set<String> = filePaths.toSet()
-        val nameToFullPaths: Map<String, List<String>> = filePaths.groupBy {
-            it.substringAfterLast('/')
-        }
+        val pathSet = filePaths.toSet()
+        val nameToFullPaths = filePaths.groupBy { it.substringAfterLast('/') }
         val sourceRoot = detectSourceRoot(filePaths)
 
         for ((idx, task) in plannedTasks.withIndex()) {
@@ -321,19 +224,15 @@ Return JSON according to the schema. No markdown, no commentary.
                 }
                 TaskOperation.CREATE -> {
                     val resolved = resolveCreatePath(task, idx, sourceRoot, pathSet)
-                    if (resolved == null) {
-                        Log.w(TAG, "Пропуск задачи CREATE #$idx: не удалось определить путь")
-                        continue
+                    if (resolved != null) {
+                        addOrMerge(result, seen, resolved)
                     }
-                    addOrMerge(result, seen, resolved)
                 }
                 TaskOperation.DELETE -> {
                     val resolved = resolveModifyPath(task, pathSet, nameToFullPaths)
-                    if (resolved.file !in pathSet) {
-                        Log.w(TAG, "Пропуск задачи DELETE #$idx: файл '${resolved.file}' не найден в репозитории")
-                        continue
+                    if (resolved.file in pathSet) {
+                        addOrMerge(result, seen, resolved)
                     }
-                    addOrMerge(result, seen, resolved)
                 }
             }
         }
@@ -355,10 +254,7 @@ Return JSON according to the schema. No markdown, no commentary.
             val fileName = rawPath.substringAfterLast('/')
             val candidates = nameToFullPaths[fileName] ?: emptyList()
             when {
-                candidates.isEmpty() -> {
-                    Log.w(TAG, "⚠️ Путь не найден в индексе: $rawPath")
-                    rawPath
-                }
+                candidates.isEmpty() -> rawPath
                 candidates.size == 1 -> candidates[0]
                 else -> {
                     val rawSegments = rawPath.split('/').filter { it.isNotBlank() }.toSet()
@@ -394,10 +290,6 @@ Return JSON according to the schema. No markdown, no commentary.
             rawPath != null -> "$rawPath/$finalName"
             effectivePkg != null -> "${sourceRoot}${effectivePkg.replace('.', '/')}/$finalName"
             else -> "${sourceRoot}generated/$finalName"
-        }
-
-        if (existingPaths.contains(finalPath)) {
-            Log.w(TAG, "⚠️ Целевой файл CREATE уже существует: $finalPath")
         }
 
         return task.copy(
@@ -459,7 +351,6 @@ Return JSON according to the schema. No markdown, no commentary.
                         instructions = existing.instructions +
                                 "\n\n--- ДОПОЛНИТЕЛЬНО ---\n\n" + task.instructions
                     )
-                    Log.d(TAG, "🔀 Объединены задачи MODIFY для: $path")
                 }
             }
             return
@@ -471,7 +362,6 @@ Return JSON according to the schema. No markdown, no commentary.
     private fun callGemini(
         apiKey: String,
         model: GeminiModel,
-        thinkingLevel: String,
         userMessage: String
     ): Result<Triple<String, Int, Int>> {
         var connection: HttpURLConnection? = null
@@ -494,12 +384,11 @@ Return JSON according to the schema. No markdown, no commentary.
                 )))
                 put("generationConfig", buildJsonObject {
                     put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                    put("temperature", 0.0) // Детерминированность для точности следования схеме
-                    put("topP", 0.95)
+                    // Оптимизировано: убран temperature 0.0, thinkingLevel зафиксирован на LOW
                     put("responseMimeType", "application/json")
                     put("responseJsonSchema", responseSchema)
                     put("thinkingConfig", buildJsonObject {
-                        put("thinkingLevel", JsonPrimitive(thinkingLevel))
+                        put("thinkingLevel", JsonPrimitive("LOW"))
                     })
                 })
             }
@@ -509,8 +398,8 @@ Return JSON according to the schema. No markdown, no commentary.
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 setRequestProperty("x-goog-api-key", apiKey)
                 setRequestProperty("Accept", "application/json")
-                connectTimeout = 30_000
-                readTimeout = 120_000
+                connectTimeout = 15_000
+                readTimeout = 45_000
                 doOutput = true
                 doInput = true
             }
@@ -524,7 +413,6 @@ Return JSON according to the schema. No markdown, no commentary.
                 val errorBody = connection.errorStream?.let {
                     BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
                 } ?: "HTTP $responseCode"
-                Log.e(TAG, "❌ Ошибка API планировщика $responseCode: ${errorBody.take(400)}")
                 return Result.failure(Exception(formatApiError(responseCode, errorBody)))
             }
 
@@ -543,15 +431,10 @@ Return JSON according to the schema. No markdown, no commentary.
             val parts = content["parts"]?.jsonArray
                 ?: return Result.failure(Exception("Планировщик: отсутствуют parts"))
 
-            // КРИТИЧНО: фильтруем thought: true, собирая только чистый JSON
             val rawJson = parts.filter { part ->
                 part.jsonObject["thought"]?.jsonPrimitive?.booleanOrNull != true
             }.joinToString("") { part ->
                 part.jsonObject["text"]?.jsonPrimitive?.contentOrNull ?: ""
-            }
-
-            if (rawJson.isBlank()) {
-                return Result.failure(Exception("Планировщик вернул пустой текст ответа"))
             }
 
             val usage = json["usageMetadata"]?.jsonObject
@@ -563,9 +446,7 @@ Return JSON according to the schema. No markdown, no commentary.
         } catch (e: Exception) {
             Result.failure(e)
         } finally {
-            try {
-                connection?.disconnect()
-            } catch (_: Exception) { }
+            try { connection?.disconnect() } catch (_: Exception) { }
         }
     }
 
@@ -613,7 +494,6 @@ Return JSON according to the schema. No markdown, no commentary.
 
             Result.success(tasks)
         } catch (e: Exception) {
-            Log.e(TAG, "❌ Ошибка парсинга JSON плана: ${rawJson.take(300)}", e)
             Result.failure(Exception("Не удалось распарсить JSON план: ${e.message}"))
         }
     }
@@ -627,7 +507,7 @@ Return JSON according to the schema. No markdown, no commentary.
         return when (code) {
             400 -> "Планировщик: ошибка параметров запроса (400): $msg"
             401 -> "Планировщик: неверный API-ключ Gemini"
-            403 -> "Планировщик: доступ к модели запрещён (403)"
+            403 -> "Планировщик: доступ запрещён (403)"
             429 -> "Планировщик: превышен лимит запросов (429)"
             500, 502, 503 -> "Планировщик: сервер Gemini временно недоступен"
             else -> "Планировщик: ошибка $code ($msg)"
