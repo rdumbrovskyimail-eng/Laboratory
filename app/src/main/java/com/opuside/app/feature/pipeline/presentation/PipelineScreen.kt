@@ -2,6 +2,7 @@ package com.opuside.app.feature.pipeline.presentation
 
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -42,14 +43,14 @@ private fun formatLogTime(timestamp: Long): String =
     synchronized(LOG_TIME_FORMATTER) { LOG_TIME_FORMATTER.format(Date(timestamp)) }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// LIGHT PROFESSIONAL COLOR PALETTE (AMOLED High-Contrast Crisp Light)
+// LIGHT PROFESSIONAL THEME (Samsung S23 Ultra AMOLED Optimized)
 // ═══════════════════════════════════════════════════════════════════════════
 
 private object PipelineTheme {
     val background = Color(0xFFF8F9FA)      // Мягкий светлый холст
     val surface = Color(0xFFFFFFFF)         // Чистые белые карточки
     val surfaceSecondary = Color(0xFFF1F3F5)// Фон логов и внутренних панелей
-    val border = Color(0xFFE2E8F0)          // Тонкая аккуратная граница
+    val border = Color(0xFFE2E8F0)          // Тонкая граница
     val borderStrong = Color(0xFFCBD5E1)
 
     val textPrimary = Color(0xFF0F172A)     // Глубокий slate для идеальной резкости
@@ -773,7 +774,7 @@ private fun PromptSectionLight(
             AnimatedVisibility(visible = expanded) {
                 OutlinedTextField(
                     value = prompt,
-                    onValueChange = onPromptChange,
+                    onPromptChange = onPromptChange,
                     readOnly = isRunning,
                     placeholder = {
                         Text(
