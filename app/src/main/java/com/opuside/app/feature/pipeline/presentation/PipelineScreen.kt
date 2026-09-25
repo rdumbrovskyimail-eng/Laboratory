@@ -4,7 +4,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -47,25 +46,25 @@ private fun formatLogTime(timestamp: Long): String =
 // ═══════════════════════════════════════════════════════════════════════════
 
 private object PipelineTheme {
-    val background = Color(0xFFF8F9FA)      // Мягкий светлый холст
-    val surface = Color(0xFFFFFFFF)         // Чистые белые карточки
-    val surfaceSecondary = Color(0xFFF1F3F5)// Фон логов и внутренних панелей
-    val border = Color(0xFFE2E8F0)          // Тонкая граница
+    val background = Color(0xFFF8F9FA)
+    val surface = Color(0xFFFFFFFF)
+    val surfaceSecondary = Color(0xFFF1F3F5)
+    val border = Color(0xFFE2E8F0)
     val borderStrong = Color(0xFFCBD5E1)
 
-    val textPrimary = Color(0xFF0F172A)     // Глубокий slate для идеальной резкости
+    val textPrimary = Color(0xFF0F172A)
     val textSecondary = Color(0xFF475569)
     val textTertiary = Color(0xFF94A3B8)
 
-    val blue = Color(0xFF2563EB)            // Акцентный синий Google/Apple
+    val blue = Color(0xFF2563EB)
     val blueSoft = Color(0xFFEFF6FF)
-    val green = Color(0xFF059669)           // Изумрудный для успеха и бэкапов
+    val green = Color(0xFF059669)
     val greenSoft = Color(0xFFECFDF5)
-    val amber = Color(0xFFD97706)           // Предупреждения
+    val amber = Color(0xFFD97706)
     val amberSoft = Color(0xFFFFFBEB)
-    val red = Color(0xFFDC2626)             // Ошибки и остановка
+    val red = Color(0xFFDC2626)
     val redSoft = Color(0xFFFEF2F2)
-    val purple = Color(0xFF7C3AED)          // План и сводки
+    val purple = Color(0xFF7C3AED)
     val purpleSoft = Color(0xFFF5F3FF)
 }
 
@@ -97,6 +96,7 @@ fun PipelineScreen(
     var showBackupsSheet by remember { mutableStateOf(false) }
     var showKeysExpanded by remember { mutableStateOf(false) }
     var backupToRollback by remember { mutableStateOf<PipelineBackupManager.BackupEntry?>(null) }
+    var showFullReportDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.phase) {
         if (state.isRunning && promptExpanded) {
@@ -143,7 +143,7 @@ fun PipelineScreen(
                 onToggleBackup = viewModel::toggleBackup
             )
 
-            // ── Селектор моделей (строго 3.5 Lite и 3.1 Lite) ─────────────
+            // ── Селектор моделей (3.5 Lite и 3.1 Lite) ────────────────────
             ModelSelectorLight(
                 selected = state.selectedModelApiId,
                 interactive = !state.isRunning,
@@ -232,9 +232,8 @@ fun PipelineScreen(
                 Spacer(Modifier.height(12.dp))
                 FinalReportCardLight(
                     report = report,
-                    onShareDetailed = {
-                        viewModel.shareFullReport(context)
-                    }
+                    onViewFull = { showFullReportDialog = true },
+                    onShareDetailed = { viewModel.shareFullReport(context) }
                 )
             }
 
@@ -246,6 +245,56 @@ fun PipelineScreen(
 
             Spacer(Modifier.height(32.dp))
         }
+    }
+
+    // ── Встроенный диалог полного просмотра и копирования отчёта ──────────
+    if (showFullReportDialog) {
+        val reportContent = state.detailedReportText ?: state.finalReport ?: "Отчёт ещё не сформирован"
+        AlertDialog(
+            onDismissRequest = { showFullReportDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Description, null, tint = PipelineTheme.blue, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Полный аудит Pipeline", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 450.dp)
+                ) {
+                    SelectionContainer {
+                        Text(
+                            text = reportContent,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = PipelineTheme.textPrimary,
+                            modifier = Modifier.verticalScroll(rememberScrollState())
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.copyReportToClipboard(context)
+                        showFullReportDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PipelineTheme.blue)
+                ) {
+                    Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Скопировать всё")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFullReportDialog = false }) { Text("Закрыть") }
+            },
+            containerColor = PipelineTheme.surface
+        )
     }
 
     // ── Шторка бэкапов (Backups Bottom Sheet) ──────────────────────────────
@@ -275,8 +324,7 @@ fun PipelineScreen(
             title = { Text("Откатить проект?", fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    "Все затронутые файлы (${backup.affectedFilesCount} шт.) будут полностью возвращены к исходному состоянию на момент ${backup.formattedDate}.\n\n" +
-                            "Режим: ${backup.mode.displayName}",
+                    "Все затронутые файлы (${backup.affectedFilesCount} шт.) будут возвращены к состоянию на момент ${backup.formattedDate}.\n\nРежим: ${backup.mode.displayName}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = PipelineTheme.textSecondary
                 )
@@ -469,7 +517,7 @@ private fun PipelineOptionsSection(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ВЫБОР МОДЕЛИ (СТРОГО 3.5 И 3.1 FLASH-LITE)
+// ВЫБОР МОДЕЛИ
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -503,7 +551,7 @@ private fun ModelSelectorLight(
                 )
                 ModelPill(
                     title = "💨 3.1 Flash-Lite",
-                    subtitle = "MEDIUM thinking · $0.25/M",
+                    subtitle = "LOW thinking · $0.25/M",
                     isSelected = selected.contains("3.1"),
                     enabled = interactive,
                     modifier = Modifier.weight(1f),
@@ -731,7 +779,7 @@ private fun KeyInputField(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ВВОД ПРОМПТА (ИСПРАВЛЕНА СТРОКА 775: onValueChange = onPromptChange)
+// ВВОД ПРОМПТА (ИСПРАВЛЕНО: onValueChange = onPromptChange)
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
@@ -771,7 +819,7 @@ private fun PromptSectionLight(
             AnimatedVisibility(visible = expanded) {
                 OutlinedTextField(
                     value = prompt,
-                    onValueChange = onPromptChange, // ИСПРАВЛЕНО: было onPromptChange = onPromptChange
+                    onValueChange = onPromptChange, // Корректное обновление значения
                     readOnly = isRunning,
                     placeholder = {
                         Text(
@@ -1106,7 +1154,11 @@ private fun LogLineItem(icon: String, message: String, timestamp: Long) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun FinalReportCardLight(report: String, onShareDetailed: () -> Unit) {
+private fun FinalReportCardLight(
+    report: String,
+    onViewFull: () -> Unit,
+    onShareDetailed: () -> Unit
+) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -1122,15 +1174,27 @@ private fun FinalReportCardLight(report: String, onShareDetailed: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("📊 Финальная сводка", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
-                OutlinedButton(
-                    onClick = onShareDetailed,
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                    modifier = Modifier.height(32.dp)
-                ) {
-                    Icon(Icons.Default.Share, null, modifier = Modifier.size(14.dp))
-                    Spacer(Modifier.width(4.dp))
-                    Text("TXT Отчёт", fontSize = 11.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedButton(
+                        onClick = onViewFull,
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Icon(Icons.Default.Visibility, null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Просмотр", fontSize = 11.sp)
+                    }
+                    Button(
+                        onClick = onShareDetailed,
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.height(32.dp)
+                    ) {
+                        Icon(Icons.Default.Share, null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Файл", fontSize = 11.sp)
+                    }
                 }
             }
             Spacer(Modifier.height(10.dp))
