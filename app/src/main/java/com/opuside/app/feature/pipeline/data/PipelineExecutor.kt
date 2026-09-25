@@ -20,6 +20,15 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * ⚡ PIPELINE EXECUTOR v3.0 (Flash-Lite & Backup-Ready)
+ *
+ * Отвечает за пофайловое выполнение плана:
+ * - Модели: Gemini 3.5 Flash-Lite (LOW thinking) или 3.1 Flash-Lite (MEDIUM thinking)
+ * - Режимы: Online (прямые коммиты GitHub API) и Offline (локальный git-клон)
+ * - Фиксация исходного и измененного кода для генерации детального TXT-отчета
+ * - Авто-разрешение конфликтов (409) и троттлинг запросов к GitHub API
+ */
 @Singleton
 class PipelineExecutor @Inject constructor(
     private val gitHubClient: GitHubApiClient,
@@ -34,7 +43,7 @@ class PipelineExecutor @Inject constructor(
         private const val CONFLICT_RETRY_MAX = 3
         private const val NETWORK_RETRY_MAX = 2
         private const val INTER_FILE_DELAY_MS = 1500L
-        private val MODEL = CreatorAIEditService.AiModel.GEMINI_3_8_FLASH
+        private val DEFAULT_MODEL = CreatorAIEditService.AiModel.GEMINI_3_5_FLASH_LITE
 
         private const val RETRY_HINT_PREFIX = """
 [RETRY ATTEMPT — previous edit failed]
@@ -57,6 +66,7 @@ You MUST:
 
     private val githubWriteMutex = Mutex()
     @Volatile private var lastGithubWriteMs: Long = 0L
+
     private suspend fun throttleGithubWrite() {
         githubWriteMutex.withLock {
             val now = System.currentTimeMillis()
@@ -94,6 +104,11 @@ You MUST:
     ): Flow<ExecutorEvent> = channelFlow {
         val startTime = System.currentTimeMillis()
         val taskId = task.id
+        val effectiveModel = if (overrideModelApiId != null) {
+            CreatorAIEditService.AiModel.fromApiId(overrideModelApiId)
+        } else {
+            DEFAULT_MODEL
+        }
 
         send(ExecutorEvent.Gemini(GeminiLogEvent(
             type = GeminiEventType.TASK_START,
@@ -104,21 +119,26 @@ You MUST:
         )))
 
         try {
+            // ── Задача CREATE ──────────────────────────────────────────
             if (task.operation == TaskOperation.CREATE) {
                 if (offlineMode) executeCreateTaskOffline(task, taskId, startTime)
                 else executeCreateTask(task, taskId, startTime)
                 return@channelFlow
             }
+
+            // ── Задача DELETE ──────────────────────────────────────────
             if (task.operation == TaskOperation.DELETE) {
                 if (offlineMode) executeDeleteTaskOffline(task, taskId, startTime)
                 else executeDeleteTaskOnline(task, taskId, startTime)
                 return@channelFlow
             }
 
+            // ── Задача MODIFY: чтение исходного кода ───────────────────
             val readOutcome = if (offlineMode) readFileOffline(task.filePath)
                               else readFile(task.filePath)
             val originalContent: String
             val originalSha: String
+
             when (readOutcome) {
                 is ReadOutcome.FatalErr -> {
                     send(ExecutorEvent.Final(TaskExecutionResult.Fatal(
@@ -141,28 +161,28 @@ You MUST:
             send(ExecutorEvent.Repo(RepoLogEvent(
                 type = RepoEventType.FILE_READ,
                 icon = "📄",
-                message = "Прочитан: ${task.filePath} (${originalContent.length / 1024}KB)",
+                message = "Прочитан: ${task.filePath.substringAfterLast('/')} (${originalContent.length / 1024}KB)",
                 taskId = taskId
             )))
 
             val effectiveInstructions = if (isRetryPass) RETRY_HINT_PREFIX + task.instructions
                                         else task.instructions
-            val modelLabel = overrideModelApiId ?: MODEL.apiId
 
             send(ExecutorEvent.Gemini(GeminiLogEvent(
                 type = GeminiEventType.AI_REQUEST,
                 icon = "📤",
-                message = "→ $modelLabel (${effectiveInstructions.length}ch)",
+                message = "→ ${effectiveModel.displayName} (${effectiveInstructions.length}ch)",
                 taskId = taskId
             )))
 
+            // ── Вызов AI-сервиса правок ────────────────────────────────
             val editResult = aiEditService.processEdit(
                 fileContent = originalContent,
                 fileName = task.filePath.substringAfterLast('/'),
                 instructions = effectiveInstructions,
-                model = MODEL,
+                model = effectiveModel,
                 usePipelineKeys = true,
-                customModelApiId = overrideModelApiId,
+                customModelApiId = effectiveModel.apiId,
                 thinkingLevelOverride = thinkingLevelOverride
             ).getOrElse { e ->
                 val code = classifyAiError(e)
@@ -181,7 +201,7 @@ You MUST:
             send(ExecutorEvent.Gemini(GeminiLogEvent(
                 type = GeminiEventType.AI_RESPONSE,
                 icon = "📥",
-                message = "AI: ${editResult.blocks.size} блок(ов), " +
+                message = "${effectiveModel.badge}: ${editResult.blocks.size} блок(ов), " +
                         "${editResult.inputTokens}in+${editResult.outputTokens}out, " +
                         "€${String.format(java.util.Locale.US, "%.5f", editResult.costEUR)}",
                 taskId = taskId,
@@ -191,6 +211,7 @@ You MUST:
 
             val tokensTotal = editResult.inputTokens + editResult.outputTokens
 
+            // ── Если модель не нашла изменений ────────────────────────
             if (editResult.blocks.isEmpty()) {
                 send(ExecutorEvent.Gemini(GeminiLogEvent(
                     type = GeminiEventType.INFO, icon = "⚪",
@@ -205,11 +226,14 @@ You MUST:
                 send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
                     commitSha = originalSha,
                     tokensUsed = tokensTotal,
-                    costEur = editResult.costEUR
+                    costEur = editResult.costEUR,
+                    originalContent = originalContent,
+                    finalContent = originalContent
                 )))
                 return@channelFlow
             }
 
+            // ── Локальное применение блоков замены ─────────────────────
             val applyResult = aiEditService.applyEdits(originalContent, editResult.blocks)
                 .getOrElse { e ->
                     send(ExecutorEvent.Gemini(GeminiLogEvent(
@@ -251,6 +275,7 @@ You MUST:
                 taskId = taskId
             )))
 
+            // ── Сохранение: Offline или Online ─────────────────────────
             if (offlineMode) {
                 val writeRes = localRepoManager.writeFile(task.filePath, applyResult.newContent)
                 if (writeRes.isFailure) {
@@ -274,7 +299,9 @@ You MUST:
                     resolvedConflict = false,
                     tokensUsed = tokensTotal,
                     costEur = editResult.costEUR,
-                    editResult = editResult
+                    editResult = editResult,
+                    originalContent = originalContent,
+                    finalContent = applyResult.newContent
                 )))
             } else {
                 val outcome = commit(
@@ -300,7 +327,9 @@ You MUST:
                             resolvedConflict = outcome.resolvedConflict,
                             tokensUsed = tokensTotal,
                             costEur = editResult.costEUR,
-                            editResult = editResult
+                            editResult = editResult,
+                            originalContent = originalContent,
+                            finalContent = applyResult.newContent
                         )))
                     }
                     is CommitOutcome.FatalErr -> send(ExecutorEvent.Final(
@@ -347,7 +376,7 @@ You MUST:
 
         send(ExecutorEvent.Gemini(GeminiLogEvent(
             type = GeminiEventType.INFO, icon = "➕",
-            message = "Создание файла: ${task.filePath} (${content.length} ch)",
+            message = "Создание файла: ${task.filePath.substringAfterLast('/')} (${content.length} ch)",
             taskId = taskId
         )))
 
@@ -358,8 +387,8 @@ You MUST:
             send(ExecutorEvent.Repo(RepoLogEvent(
                 type = RepoEventType.INFO,
                 icon = if (existingSha != null) "🔄" else "✓",
-                message = if (existingSha != null) "CREATE→OVERWRITE: ${task.filePath}"
-                          else "Путь свободен: ${task.filePath}",
+                message = if (existingSha != null) "CREATE→OVERWRITE: ${task.filePath.substringAfterLast('/')}"
+                          else "Путь свободен: ${task.filePath.substringAfterLast('/')}",
                 taskId = taskId
             )))
         } catch (_: Exception) { }
@@ -385,7 +414,9 @@ You MUST:
                 )))
                 send(ExecutorEvent.Final(TaskExecutionResult.Success(
                     commitSha = outcome.sha, resolvedConflict = false,
-                    tokensUsed = 0, costEur = 0.0, editResult = null
+                    tokensUsed = 0, costEur = 0.0, editResult = null,
+                    originalContent = "",
+                    finalContent = content
                 )))
             }
             is CommitOutcome.FatalErr -> send(ExecutorEvent.Final(
@@ -431,8 +462,8 @@ You MUST:
         send(ExecutorEvent.Repo(RepoLogEvent(
             type = RepoEventType.INFO,
             icon = if (alreadyExists) "🔄" else "✓",
-            message = if (alreadyExists) "CREATE→OVERWRITE (offline): ${task.filePath}"
-                      else "Путь свободен (offline): ${task.filePath}",
+            message = if (alreadyExists) "CREATE→OVERWRITE (offline): ${task.filePath.substringAfterLast('/')}"
+                      else "Путь свободен (offline): ${task.filePath.substringAfterLast('/')}",
             taskId = taskId
         )))
 
@@ -458,7 +489,9 @@ You MUST:
             resolvedConflict = false,
             tokensUsed = 0,
             costEur = 0.0,
-            editResult = null
+            editResult = null,
+            originalContent = "",
+            finalContent = content
         )))
     }
 
@@ -552,8 +585,7 @@ You MUST:
                     e.statusCode == 409 || e.message.contains("does not match", ignoreCase = true) -> {
                         notify(ExecutorEvent.Repo(RepoLogEvent(
                             type = RepoEventType.COMMIT_CONFLICT, icon = "⚠️",
-                            message = "409 (попытка ${attempt + 1}/$CONFLICT_RETRY_MAX) — auto KEEP_MINE" +
-                                    if (isCreate) " (CREATE→OVERWRITE)" else "",
+                            message = "409 (попытка ${attempt + 1}/$CONFLICT_RETRY_MAX) — auto KEEP_MINE",
                             taskId = taskId
                         )))
                         val fresh = gitHubClient.getFileContent(path, branch).getOrNull()
@@ -627,7 +659,7 @@ You MUST:
 
         send(ExecutorEvent.Gemini(GeminiLogEvent(
             type = GeminiEventType.INFO, icon = "🗑",
-            message = "Удаление файла (online): ${task.filePath}",
+            message = "Удаление файла (online): ${task.filePath.substringAfterLast('/')}",
             taskId = taskId
         )))
 
@@ -635,13 +667,19 @@ You MUST:
         if (fileInfo == null) {
             send(ExecutorEvent.Repo(RepoLogEvent(
                 type = RepoEventType.INFO, icon = "⚪",
-                message = "Файл уже не существует: ${task.filePath}", taskId = taskId
+                message = "Файл уже не существует: ${task.filePath.substringAfterLast('/')}", taskId = taskId
             )))
             send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
-                commitSha = "not-found", tokensUsed = 0, costEur = 0.0
+                commitSha = "not-found", tokensUsed = 0, costEur = 0.0,
+                originalContent = "", finalContent = ""
             )))
             return
         }
+
+        val originalContent = try {
+            val raw = fileInfo.content ?: ""
+            String(Base64.decode(raw.filter { !it.isWhitespace() }, Base64.NO_WRAP), Charsets.UTF_8)
+        } catch (_: Exception) { "" }
 
         throttleGithubWrite()
         val result = gitHubClient.deleteFileExt(
@@ -675,7 +713,9 @@ You MUST:
             resolvedConflict = false,
             tokensUsed = 0,
             costEur = 0.0,
-            editResult = null
+            editResult = null,
+            originalContent = originalContent,
+            finalContent = ""
         )))
         delay(INTER_FILE_DELAY_MS)
     }
@@ -685,20 +725,23 @@ You MUST:
     ) {
         send(ExecutorEvent.Gemini(GeminiLogEvent(
             type = GeminiEventType.INFO, icon = "🗑",
-            message = "Удаление файла (offline): ${task.filePath}",
+            message = "Удаление файла (offline): ${task.filePath.substringAfterLast('/')}",
             taskId = taskId
         )))
 
         if (!localRepoManager.fileExists(task.filePath)) {
             send(ExecutorEvent.Repo(RepoLogEvent(
                 type = RepoEventType.INFO, icon = "⚪",
-                message = "Файл уже не существует в клоне: ${task.filePath}", taskId = taskId
+                message = "Файл уже не существует в клоне: ${task.filePath.substringAfterLast('/')}", taskId = taskId
             )))
             send(ExecutorEvent.Final(TaskExecutionResult.NoChangesNeeded(
-                commitSha = "not-found", tokensUsed = 0, costEur = 0.0
+                commitSha = "not-found", tokensUsed = 0, costEur = 0.0,
+                originalContent = "", finalContent = ""
             )))
             return
         }
+
+        val originalContent = localRepoManager.readFile(task.filePath).getOrDefault("")
 
         val result = localRepoManager.deleteFile(task.filePath)
         if (result.isFailure) {
@@ -721,7 +764,9 @@ You MUST:
             resolvedConflict = false,
             tokensUsed = 0,
             costEur = 0.0,
-            editResult = null
+            editResult = null,
+            originalContent = originalContent,
+            finalContent = ""
         )))
     }
 }
