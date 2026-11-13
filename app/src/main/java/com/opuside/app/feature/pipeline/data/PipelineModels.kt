@@ -1,6 +1,5 @@
 package com.opuside.app.feature.pipeline.data
 
-import com.opuside.app.feature.creator.data.CreatorAIEditService
 import java.util.UUID
 
 enum class PipelineMode(val displayName: String, val emoji: String) {
@@ -14,8 +13,8 @@ enum class PipelinePhase {
 }
 
 /**
- * Состояние конвейера Pipeline v3.2.
- * Управляет задачами, статусом, выбранной моделью и опциями бэкапа/отчёта.
+ * Состояние конвейера Pipeline v4.0.
+ * Модель не выбирается — всегда [PipelineAiConfig.MODEL_ID].
  */
 data class PipelineState(
     val phase: PipelinePhase = PipelinePhase.IDLE,
@@ -27,15 +26,20 @@ data class PipelineState(
     val pipelineRunId: String = UUID.randomUUID().toString().take(8),
     val maxParallelTasks: Int = 3,
     val logFilterTaskId: String? = null,
-    val selectedModelApiId: String = "gemini-3.5-flash-lite",
     val pipelineMode: PipelineMode = PipelineMode.ONLINE,
+    /** Комментарий планировщика (что он понял / что не смог сопоставить). */
+    val planNotes: String? = null,
+    /** Сколько code-блоков найдено в промпте. */
+    val promptBlocksCount: Int = 0,
+    /** Сколько пар «Найти / Заменить на» разобрано из промпта. */
+    val promptPairsCount: Int = 0,
 
     // ── Независимые опции Бэкапа и TXT-отчёта ──────────────────────
-    val isDetailedReportEnabled: Boolean = true, // Включено по умолчанию для гарантированного вывода полного текста
-    val isBackupEnabled: Boolean = true,          // Галочка: создавать точку отката
-    val currentBackupId: String? = null,          // ID текущего снимка
-    val detailedReportText: String? = null,       // Готовый полный TXT-отчет
-    val isRollingBack: Boolean = false            // Статус процесса отката
+    val isDetailedReportEnabled: Boolean = true,
+    val isBackupEnabled: Boolean = true,
+    val currentBackupId: String? = null,
+    val detailedReportText: String? = null,
+    val isRollingBack: Boolean = false
 ) {
     val totalTasks: Int get() = tasks.size
     val completedTasks: Int get() = tasks.count { it.status.isTerminal }
@@ -46,12 +50,7 @@ data class PipelineState(
     val deferredTasks: Int get() = tasks.count { it.status == TaskStatus.DEFERRED }
     val progress: Float get() = if (totalTasks == 0) 0f else completedTasks.toFloat() / totalTasks
 
-    val estimatedCost: Double get() {
-        val modifyCount = tasks.count { it.operation == TaskOperation.MODIFY }
-        return modifyCount * 0.00004 + 0.00002
-    }
-
-    val canStart: Boolean get() = phase == PipelinePhase.REVIEWING
+    val canStart: Boolean get() = phase == PipelinePhase.REVIEWING && tasks.isNotEmpty()
     val canStop: Boolean get() = phase == PipelinePhase.EXECUTING ||
             phase == PipelinePhase.DEFERRED_PASS || phase == PipelinePhase.PLANNING
     val isRunning: Boolean get() = phase == PipelinePhase.PLANNING ||
@@ -68,10 +67,7 @@ data class PipelineState(
         else -> OverallStatus.SUCCESS_PARTIAL
     }
 
-    val effectiveModelApiId: String get() = selectedModelApiId
-
-    // Фиксированный режим low для предотвращения задержек генерации
-    val effectiveThinkingLevel: String get() = "low"
+    val modelDisplayName: String get() = PipelineAiConfig.DISPLAY_NAME
 }
 
 enum class OverallStatus {
@@ -94,8 +90,16 @@ data class FileTask(
     val filePath: String,
     val originalPathFromAi: String,
     val instructions: String,
-    val newFileContent: String? = null,
-    val packageName: String? = null,
+    /** Номера code-блоков промпта, относящихся к файлу (передаются исполнителю дословно). */
+    val codeBlocks: List<Int> = emptyList(),
+    /** Блок с ПОЛНЫМ итоговым содержимым файла (копируется как есть, без модели). */
+    val fullContentBlock: Int? = null,
+    /** Номера пар «Найти / Заменить на» для этого файла (применяются кодом дословно). */
+    val editPairs: List<Int> = emptyList(),
+    /** true — все правки файла покрыты парами, модель не нужна. */
+    val pairsOnly: Boolean = false,
+    /** Предупреждение планировщика (например, путь не найден / create→modify). */
+    val warning: String? = null,
     val status: TaskStatus = TaskStatus.PENDING,
     val attempts: Int = 0,
     val lastError: String? = null,
@@ -103,7 +107,10 @@ data class FileTask(
     val commitSha: String? = null,
     val resolvedConflict: Boolean = false,
     val tokensUsed: Int = 0,
-    val durationMs: Long = 0
+    val costEur: Double = 0.0,
+    val durationMs: Long = 0,
+    /** Краткое описание того, что реально сделано (от модели или движка). */
+    val resultSummary: String? = null
 )
 
 enum class TaskStatus {
@@ -117,18 +124,23 @@ enum class TaskStatus {
 }
 
 enum class TaskErrorCode(val displayName: String) {
-    NOT_FOUND_BLOCKS("AI не смог найти блоки замены в файле"),
+    NOT_FOUND_BLOCKS("Модель указала место правки, которого нет в файле"),
     FILE_NOT_FOUND("Файл не найден в репозитории"),
     FILE_ALREADY_EXISTS("Файл уже существует (для создания)"),
-    HTTP_409_UNRESOLVED("Конфликт версий не разрешён после retry"),
+    HTTP_409_UNRESOLVED("Файл изменился в репозитории во время работы"),
     HTTP_5XX_SERVER("Сервер GitHub/Gemini временно недоступен"),
     HTTP_429_RATE_LIMIT("Превышен лимит запросов API"),
     NETWORK_ERROR("Сетевая ошибка"),
-    AI_EMPTY_RESPONSE("AI вернул пустой ответ"),
-    AI_INVALID_RESPONSE("AI вернул некорректный ответ"),
+    AI_EMPTY_RESPONSE("Модель вернула пустой ответ"),
+    AI_INVALID_RESPONSE("Модель вернула некорректный ответ"),
+    AI_BLOCKED("Ответ заблокирован фильтром Gemini"),
+    OUTPUT_TRUNCATED("Ответ модели обрезан по лимиту токенов"),
+    LAZY_PLACEHOLDER("Модель вставила плейсхолдер вместо кода"),
+    VALIDATION_FAILED("Результат не прошёл проверку целостности"),
     PATH_RESOLVE_FAILED("Не удалось определить точный путь к файлу"),
-    INVALID_CREATE_CONTENT("Контент для создания файла не указан"),
-    TASK_TIMEOUT("Задача превысила лимит времени (5 минут)"),
+    INVALID_CREATE_CONTENT("Нет содержимого для создания файла"),
+    AUTH_ERROR("Ошибка авторизации GitHub/Gemini"),
+    TASK_TIMEOUT("Задача превысила лимит времени"),
     UNKNOWN("Неизвестная ошибка")
 }
 
@@ -147,7 +159,7 @@ data class GeminiLogEvent(
 enum class GeminiEventType {
     PLANNER_START, PLANNER_DONE, TASK_START, AI_REQUEST, AI_RESPONSE,
     AI_BLOCKS_PARSED, AI_APPLY_OK, AI_APPLY_FAIL, AI_RETRY,
-    SUMMARY_START, SUMMARY_DONE, ERROR, INFO
+    SUMMARY_START, SUMMARY_DONE, ERROR, INFO, GUARD_REJECT
 }
 
 data class RepoLogEvent(
@@ -178,15 +190,19 @@ data class PlannerOutput(
     val tasks: List<PlannedTask>,
     val rawJson: String,
     val tokensUsed: Int,
-    val costEur: Double
+    val costEur: Double,
+    val notes: String?
 )
 
 data class PlannedTask(
     val operation: TaskOperation = TaskOperation.MODIFY,
     val file: String,
     val instructions: String = "",
-    val content: String? = null,
-    val packageName: String? = null
+    val codeBlocks: List<Int> = emptyList(),
+    val fullContentBlock: Int? = null,
+    val editPairs: List<Int> = emptyList(),
+    val pairsOnly: Boolean = false,
+    val warning: String? = null
 )
 
 sealed class TaskExecutionResult {
@@ -195,7 +211,7 @@ sealed class TaskExecutionResult {
         val resolvedConflict: Boolean,
         val tokensUsed: Int,
         val costEur: Double,
-        val editResult: CreatorAIEditService.EditResult?,
+        val summary: String? = null,
         val originalContent: String? = null,
         val finalContent: String? = null
     ) : TaskExecutionResult()
@@ -208,12 +224,23 @@ sealed class TaskExecutionResult {
         val finalContent: String? = null
     ) : TaskExecutionResult()
 
+    /** Временная проблема — задача пойдёт в повторный проход. */
     data class Deferrable(
         val errorCode: TaskErrorCode,
         val message: String,
-        val tokensUsed: Int = 0
+        val tokensUsed: Int = 0,
+        val costEur: Double = 0.0
     ) : TaskExecutionResult()
 
+    /** Задача провалена окончательно, но конвейер продолжает работу. */
+    data class Failed(
+        val errorCode: TaskErrorCode,
+        val message: String,
+        val tokensUsed: Int = 0,
+        val costEur: Double = 0.0
+    ) : TaskExecutionResult()
+
+    /** Проблема уровня всего конвейера (авторизация, конфиг) — останавливаем всё. */
     data class Fatal(
         val errorCode: TaskErrorCode,
         val message: String
