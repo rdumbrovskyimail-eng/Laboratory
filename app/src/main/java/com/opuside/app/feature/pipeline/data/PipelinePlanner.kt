@@ -1,521 +1,560 @@
 package com.opuside.app.feature.pipeline.data
 
 import android.util.Log
-import com.opuside.app.core.ai.GeminiModelConfig.GeminiModel
-import com.opuside.app.core.data.AppSettings
-import com.opuside.app.core.security.SecureSettingsDataStore
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.*
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 📋 PIPELINE PLANNER v3.2 (High-Speed & CoT Protected)
+ * 📋 PIPELINE PLANNER v4.0
  *
- * Отвечает за парсинг промпта пользователя и составление JSON-плана задач.
+ * Разбивает промпт пользователя на пофайловые задачи. Работает только на
+ * [PipelineAiConfig.MODEL_ID].
+ *
+ * Ключевые отличия от v3.2 (из-за которых ломался AndroidManifest.xml):
+ *  - планировщик НЕ пишет код: содержимое файлов берётся из блоков промпта по номеру
+ *    или генерируется исполнителем отдельно, с собственным лимитом токенов;
+ *  - CREATE для существующего пути автоматически превращается в MODIFY;
+ *  - планировщику показывается весь список файлов (до 6000), а не первые 1000;
+ *  - пути с `..` и абсолютные пути отбрасываются.
  */
 @Singleton
 class PipelinePlanner @Inject constructor(
-    private val secureSettings: SecureSettingsDataStore,
-    private val appSettings: AppSettings,
-    private val keyRotator: PipelineKeyRotator
+    private val client: PipelineGeminiClient
 ) {
 
     companion object {
         private const val TAG = "PipelinePlanner"
-        private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
-        private const val MAX_OUTPUT_TOKENS = 16384
         private const val MAX_TASKS_LIMIT = 100
 
+        private val EXCLUDED_SEGMENTS = setOf(
+            ".git", ".gradle", ".idea", "build", ".cxx", ".externalNativeBuild",
+            "node_modules", ".kotlin", "captures", ".DS_Store"
+        )
+        private val BINARY_EXT = setOf(
+            "png", "jpg", "jpeg", "webp", "gif", "ico", "bmp", "jar", "aar", "so", "apk", "aab",
+            "keystore", "jks", "ttf", "otf", "woff", "woff2", "mp3", "mp4", "wav", "ogg", "zip",
+            "gz", "7z", "pdf", "bin", "dex", "class", "lock"
+        )
+
         private val PLANNER_SYSTEM_PROMPT = """
-You are a HIGH-SPEED TASK PLANNER for a code modification pipeline.
+You are the PLANNER of a multi-file code modification pipeline for a software repository.
+Split the user's request into per-file tasks. You do NOT write code — separate executors do that.
 
-═══ YOUR JOB ═══
-Analyze the user prompt and match operations to existing or new files.
-Return a JSON object containing an array of tasks according to the schema.
+OPERATIONS
+- "modify": change an EXISTING file. "file" must be copied exactly from the REPOSITORY FILES list.
+- "create": add a NEW file that is NOT in the list. Choose a path that fits the project structure
+  (for Kotlin/Java the directory must match the package).
+- "delete": remove an existing file — ONLY when the user explicitly asks to delete/remove that file.
 
-═══ TASK TYPES ═══
-- "modify": Changes an existing file in the repository ("file" must be exact path from the list).
-- "create": Adds a new file ("file" path or "package", "content" must be complete verbatim code).
-- "delete": Deletes an existing file ("file" must be exact path from the list).
+CRITICAL RULES
+1. If a file already exists in REPOSITORY FILES, the operation MUST be "modify" — never "create",
+   even when the user provides its complete new content.
+2. Exactly ONE task per file. Merge all changes for the same file into a single task.
+3. "instructions": a complete, self-contained description of EVERY change for this file, so that an engineer
+   who sees ONLY this file plus these instructions can do it. Copy concrete details from the request verbatim:
+   identifiers, signatures, values, strings, XML attributes, where exactly to insert. Never drop details.
+   Do not describe changes that belong to other files. Write in the language of the user's request.
+4. "code_blocks": numbers N of the user's code blocks (⟦CODE BLOCK #N⟧) that contain code for this file. [] if none.
+5. "full_content_block": number of a code block that contains the COMPLETE final content of this file —
+   the entire file from the first line to the last, not a fragment, snippet or diff. Otherwise -1.
+   When in doubt, use -1.
+6. Include only files the request asks to change, plus files whose change is strictly required for the
+   requested change to work (e.g. registering a new Activity/Service in AndroidManifest.xml, a new dependency
+   in build.gradle). For such required files describe ONLY the minimal addition — never ask to rewrite them.
+7. Never invent paths for modify/delete. If a file the user mentions is not in the list, explain it in "notes".
+8. "notes": short remarks for the user (ambiguities, missing files). Empty string if none.
 
-═══ STRICT RULES ═══
-1. "file" for modify/delete MUST match a real file from the provided list. No guessing!
-2. "content" for create MUST contain full, complete source code verbatim.
-3. Return ONLY valid JSON adhering to the schema. No markdown, no explanations.
+EDIT PAIRS (explicit "Найти / Заменить на" instructions)
+9. The user's explicit find/replace instructions were already parsed by code into numbered pairs (⟦EDIT PAIRS INDEX⟧).
+   Code applies them VERBATIM. Put each pair number into "edit_pairs" of the task for the file it belongs to —
+   every pair exactly once. A pair marked "(explicit)" belongs to the file written next to it.
+10. Never copy a pair's text into "instructions" and never use a pair's code block as "full_content_block".
+11. "pairs_only": true when the pairs cover ALL changes the user wants in this file (then "instructions" is a one-line
+    summary). If the user ALSO describes other changes for this file in words, set false and describe ONLY those other
+    changes in "instructions". When in doubt, false. Tasks without pairs: "edit_pairs": [] and "pairs_only": false.
 """.trimIndent()
-    }
 
-    private val responseSchema = buildJsonObject {
-        put("type", "OBJECT")
-        put("properties", buildJsonObject {
-            put("tasks", buildJsonObject {
-                put("type", "ARRAY")
-                put("items", buildJsonObject {
-                    put("type", "OBJECT")
-                    put("properties", buildJsonObject {
-                        put("operation", buildJsonObject {
-                            put("type", "STRING")
-                            put("enum", JsonArray(listOf(
-                                JsonPrimitive("modify"),
-                                JsonPrimitive("create"),
-                                JsonPrimitive("delete")
-                            )))
-                            put("description", "Type of operation")
+        private val PLAN_SCHEMA: JsonObject = buildJsonObject {
+            put("type", "object")
+            put("properties", buildJsonObject {
+                put("tasks", buildJsonObject {
+                    put("type", "array")
+                    put("items", buildJsonObject {
+                        put("type", "object")
+                        put("properties", buildJsonObject {
+                            put("operation", buildJsonObject {
+                                put("type", "string")
+                                put("enum", JsonArray(listOf(
+                                    JsonPrimitive("modify"), JsonPrimitive("create"), JsonPrimitive("delete")
+                                )))
+                            })
+                            put("file", buildJsonObject {
+                                put("type", "string")
+                                put("description", "Full repository path")
+                            })
+                            put("instructions", buildJsonObject {
+                                put("type", "string")
+                                put("description", "Complete, detailed instructions for this file only")
+                            })
+                            put("code_blocks", buildJsonObject {
+                                put("type", "array")
+                                put("items", buildJsonObject { put("type", "integer") })
+                            })
+                            put("full_content_block", buildJsonObject {
+                                put("type", "integer")
+                                put("description", "Block with the COMPLETE file content, or -1")
+                            })
+                            put("edit_pairs", buildJsonObject {
+                                put("type", "array")
+                                put("items", buildJsonObject { put("type", "integer") })
+                                put("description", "Numbers of EDIT PAIRS for this file")
+                            })
+                            put("pairs_only", buildJsonObject {
+                                put("type", "boolean")
+                                put("description", "true if edit_pairs cover ALL changes for this file")
+                            })
                         })
-                        put("file", buildJsonObject {
-                            put("type", "STRING")
-                            put("description", "Full repository path")
-                        })
-                        put("instructions", buildJsonObject {
-                            put("type", "STRING")
-                            put("description", "Verbatim instructions from user prompt")
-                        })
-                        put("content", buildJsonObject {
-                            put("type", "STRING")
-                            put("description", "Full code content for create task")
-                        })
-                        put("package", buildJsonObject {
-                            put("type", "STRING")
-                            put("description", "Kotlin package for create task")
-                        })
+                        put("required", JsonArray(listOf(
+                            JsonPrimitive("operation"), JsonPrimitive("file"), JsonPrimitive("instructions"),
+                            JsonPrimitive("code_blocks"), JsonPrimitive("full_content_block"),
+                            JsonPrimitive("edit_pairs"), JsonPrimitive("pairs_only")
+                        )))
                     })
-                    put("required", JsonArray(listOf(
-                        JsonPrimitive("operation"),
-                        JsonPrimitive("instructions")
-                    )))
                 })
+                put("notes", buildJsonObject { put("type", "string") })
             })
-        })
-        put("required", JsonArray(listOf(JsonPrimitive("tasks"))))
+            put("required", JsonArray(listOf(JsonPrimitive("tasks"), JsonPrimitive("notes"))))
+        }
     }
 
-    suspend fun plan(
-        userPrompt: String,
-        filePaths: List<String>,
-        modelApiId: String? = null
-    ): Result<PlannerOutput> = withContext(Dispatchers.IO) {
-        try {
-            if (userPrompt.isBlank()) {
-                return@withContext Result.failure(
-                    IllegalArgumentException("Промпт не может быть пустым")
-                )
-            }
-            if (filePaths.isEmpty()) {
-                return@withContext Result.failure(
-                    IllegalStateException("Репозиторий пуст или индекс ещё не загружен")
-                )
-            }
+    suspend fun plan(ctx: PipelineRunContext, filePaths: List<String>): Result<PlannerOutput> {
+        if (ctx.userPrompt.isBlank()) {
+            return Result.failure(IllegalArgumentException("Промпт не может быть пустым"))
+        }
+        if (filePaths.isEmpty()) {
+            return Result.failure(IllegalStateException("Репозиторий пуст или индекс ещё не загружен"))
+        }
 
-            val effectiveModel = GeminiModel.fromModelId(modelApiId ?: "") ?: GeminiModel.getDefault()
-
-            // Каскадный подбор API-ключа
-            val rotatorKeyInfo = keyRotator.currentKey()
-            var currentApiKey = rotatorKeyInfo?.first
-                ?: secureSettings.getActiveGeminiApiKey().first().ifBlank { null }
-                ?: secureSettings.getGeminiApiKey().first().ifBlank { null }
-                ?: appSettings.geminiApiKey.first().ifBlank { null }
-
-            if (currentApiKey.isNullOrBlank()) {
-                return@withContext Result.failure(
-                    IllegalStateException("Gemini API ключ не найден")
-                )
-            }
-
-            var currentRotatorIdx = rotatorKeyInfo?.second ?: -1
-
-            // Оптимизация: исключаем мусор сборки и бинарники для сокращения токенов
-            val cleanPaths = filePaths.filter { p ->
-                !p.startsWith(".") && !p.startsWith("build/") && !p.contains("/build/") &&
-                !p.endsWith(".png") && !p.endsWith(".jar") && !p.endsWith(".webp") &&
-                !p.endsWith(".so") && !p.endsWith(".aar")
-            }.take(1000)
-
-            val userMessage = buildString {
-                appendLine("═══ USER PROMPT ═══")
-                appendLine(userPrompt)
+        val plannerPaths = selectPathsForPlanner(filePaths)
+        val userMessage = buildString {
+            appendLine("═══ USER REQUEST ═══")
+            appendLine(PromptBlockExtractor.renderForPlanner(ctx))
+            appendLine()
+            if (ctx.blocks.isNotEmpty()) {
+                appendLine("═══ CODE BLOCKS INDEX ═══")
+                ctx.blocks.forEach { b ->
+                    val firstLine = b.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim()?.take(100).orEmpty()
+                    appendLine("#${b.index} · ${b.info.ifBlank { "no info" }} · ${b.lineCount} lines" +
+                            (if (b.leadIn.isNotBlank()) " · context: ${b.leadIn.take(140)}" else "") +
+                            " · first line: $firstLine")
+                }
                 appendLine()
-                appendLine("═══ AVAILABLE REPOSITORY FILES (${cleanPaths.size}) ═══")
-                appendLine(cleanPaths.joinToString("\n"))
             }
-
-            Log.d(TAG, "📤 Планирование [${effectiveModel.displayName}]: prompt=${userPrompt.length}ch, files=${cleanPaths.size}")
-
-            var result: Result<Triple<String, Int, Int>> = Result.failure(Exception("not called"))
-            var attempts = 0
-
-            while (attempts < 2) {
-                result = callGemini(
-                    apiKey = currentApiKey!!,
-                    model = effectiveModel,
-                    userMessage = userMessage
-                )
-
-                if (result.isSuccess) break
-
-                val errMsg = result.exceptionOrNull()?.message
-                if (!isQuotaError(errMsg)) break
-
-                if (currentRotatorIdx >= 0) {
-                    val next = keyRotator.burnAndRotate(currentRotatorIdx)
-                    if (next != null) {
-                        currentApiKey = next.first
-                        currentRotatorIdx = next.second
-                        attempts++
-                        continue
-                    }
+            if (ctx.pairs.isNotEmpty()) {
+                appendLine("═══ EDIT PAIRS INDEX (parsed by code, applied verbatim — assign each to a file) ═══")
+                ctx.pairs.forEach { p ->
+                    appendLine("⟦EDIT PAIR #${p.index}⟧ ${p.kind.label}" +
+                            (p.fileHint?.let { " · file: $it${if (p.strongHint) " (explicit)" else " (mentioned nearby)"}" } ?: " · file: ?") +
+                            " · find: \"${p.findPreview}\" (${p.findLines} lines)" +
+                            (if (p.kind != PairKind.DELETE) " · new: \"${p.replacementPreview}\" (${p.replacementLines} lines)" else "") +
+                            (if (p.blockIndices.isNotEmpty()) " · blocks ${p.blockIndices.sorted().joinToString { "#$it" }}" else ""))
                 }
-                break
+                appendLine()
             }
+            appendLine("═══ REPOSITORY FILES (${plannerPaths.size}${if (plannerPaths.size < filePaths.size) " of ${filePaths.size}, binaries/build outputs hidden" else ""}) ═══")
+            plannerPaths.forEach { appendLine(it) }
+        }
 
-            val (rawJson, inputTokens, outputTokens) = result.getOrElse {
-                return@withContext Result.failure(it)
-            }
+        Log.d(TAG, "📤 Планирование [${PipelineAiConfig.MODEL_ID}]: prompt=${ctx.userPrompt.length}ch, " +
+                "blocks=${ctx.blocks.size}, files=${plannerPaths.size}")
 
-            val plannedTasks = parsePlanResponse(rawJson).getOrElse {
-                return@withContext Result.failure(it)
-            }
+        val response = client.generate(PipelineGeminiClient.Request(
+            tag = "planner",
+            systemPrompt = PLANNER_SYSTEM_PROMPT,
+            userMessage = userMessage,
+            thinking = PipelineAiConfig.PLANNER_THINKING,
+            maxOutputTokens = PipelineAiConfig.PLANNER_MAX_OUTPUT,
+            readTimeoutMs = PipelineAiConfig.PLANNER_READ_TIMEOUT_MS,
+            responseJsonSchema = PLAN_SCHEMA
+        )).getOrElse { e ->
+            val msg = if (e is PipelineGeminiClient.GeminiCallException &&
+                e.kind == PipelineGeminiClient.FailureKind.TRUNCATED
+            ) "План не поместился в ответ модели. Разбейте промпт на несколько запусков." else e.message
+            return Result.failure(Exception("Планировщик: $msg", e))
+        }
 
-            if (plannedTasks.isEmpty()) {
-                return@withContext Result.failure(
-                    IllegalStateException("Планировщик не сформировал задачи. Проверьте формулировку промпта.")
-                )
-            }
-
-            val resolvedTasks = resolvePaths(plannedTasks, filePaths)
-            val cost = (inputTokens * effectiveModel.inputPricePerM + outputTokens * effectiveModel.outputPricePerM) / 1_000_000.0 * 0.92
-
-            Log.d(TAG, "✅ План сформирован: ${resolvedTasks.size} задач [${effectiveModel.displayName}] " +
-                    "(${inputTokens}in + ${outputTokens}out, €${String.format(java.util.Locale.US, "%.5f", cost)})")
-
-            Result.success(PlannerOutput(
-                tasks = resolvedTasks,
-                rawJson = rawJson,
-                tokensUsed = inputTokens + outputTokens,
-                costEur = cost
+        val (rawTasks, modelNotes) = parsePlan(response.text).getOrElse { return Result.failure(it) }
+        if (rawTasks.isEmpty()) {
+            return Result.failure(IllegalStateException(
+                "Планировщик не сформировал задачи." + (if (!modelNotes.isNullOrBlank()) " Комментарий: $modelNotes" else "")
             ))
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Ошибка планирования", e)
-            Result.failure(e)
+        }
+
+        val resolverNotes = mutableListOf<String>()
+        val resolved = resolvePaths(rawTasks, filePaths, ctx, resolverNotes).take(MAX_TASKS_LIMIT)
+        if (resolved.isEmpty()) {
+            return Result.failure(IllegalStateException(
+                "Ни одну задачу не удалось сопоставить с файлами репозитория. " + resolverNotes.joinToString(" ")
+            ))
+        }
+
+        val notes = buildList {
+            if (!modelNotes.isNullOrBlank()) add(modelNotes.trim())
+            addAll(resolverNotes)
+        }.joinToString("\n").ifBlank { null }
+
+        Log.d(TAG, "✅ План: ${resolved.size} задач (${response.inputTokens}in + ${response.billedOutputTokens}out, " +
+                "€${String.format(java.util.Locale.US, "%.5f", response.costEur)})")
+
+        return Result.success(PlannerOutput(
+            tasks = resolved,
+            rawJson = response.text,
+            tokensUsed = response.totalTokens,
+            costEur = response.costEur,
+            notes = notes
+        ))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // PATHS FOR PLANNER
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private fun selectPathsForPlanner(all: List<String>): List<String> {
+        val filtered = all.filter { p ->
+            val segments = p.split('/')
+            segments.none { it in EXCLUDED_SEGMENTS } &&
+                    p.substringAfterLast('.', "").lowercase() !in BINARY_EXT
+        }
+        if (filtered.size <= PipelineAiConfig.PLANNER_MAX_PATHS) return filtered
+        // Если файлов слишком много — приоритет исходникам и конфигам
+        val priorityExt = setOf("kt", "kts", "java", "xml", "gradle", "toml", "json", "yml", "yaml", "properties", "pro", "md")
+        val (prio, rest) = filtered.partition { it.substringAfterLast('.', "").lowercase() in priorityExt }
+        return (prio + rest).take(PipelineAiConfig.PLANNER_MAX_PATHS)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // PARSE
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private fun parsePlan(raw: String): Result<Pair<List<PlannedTask>, String?>> = try {
+        val cleaned = raw.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+        val root = Json.parseToJsonElement(cleaned).jsonObject
+        val tasksArray = root["tasks"] as? JsonArray
+            ?: return Result.failure(Exception("JSON плана не содержит массива 'tasks'"))
+        val notes = root["notes"]?.jsonPrimitive?.contentOrNull
+
+        val tasks = tasksArray.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val operation = when (obj["operation"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
+                "create" -> TaskOperation.CREATE
+                "delete" -> TaskOperation.DELETE
+                else -> TaskOperation.MODIFY
+            }
+            val file = obj["file"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val instructions = obj["instructions"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val blocks = (obj["code_blocks"] as? JsonArray).orEmpty()
+                .mapNotNull { (it as? JsonPrimitive)?.intOrNull }
+            val full = obj["full_content_block"]?.jsonPrimitive?.intOrNull?.takeIf { it > 0 }
+            val pairs = (obj["edit_pairs"] as? JsonArray).orEmpty()
+                .mapNotNull { (it as? JsonPrimitive)?.intOrNull }
+            val pairsOnly = obj["pairs_only"]?.jsonPrimitive?.booleanOrNull ?: false
+
+            if (file.isBlank()) return@mapNotNull null
+            if (operation == TaskOperation.MODIFY && instructions.isBlank() && full == null && pairs.isEmpty()) return@mapNotNull null
+
+            PlannedTask(
+                operation = operation,
+                file = file,
+                instructions = instructions.ifBlank {
+                    when {
+                        operation == TaskOperation.DELETE -> "Удалить файл"
+                        pairs.isNotEmpty() -> "Применить замены ${pairs.joinToString { "#$it" }}"
+                        else -> "Привести файл к содержимому из блока #$full"
+                    }
+                },
+                codeBlocks = blocks,
+                fullContentBlock = full,
+                editPairs = pairs,
+                pairsOnly = pairsOnly && pairs.isNotEmpty()
+            )
+        }
+        Result.success(tasks to notes)
+    } catch (e: Exception) {
+        Result.failure(Exception("Не удалось разобрать JSON плана: ${e.message?.take(160)}"))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // RESOLVE
+    // ═══════════════════════════════════════════════════════════════════════
+
+    private fun normalizePath(raw: String): String? {
+        var p = raw.trim().replace('\\', '/').trim('`', '"', '\'')
+        while (p.startsWith("./")) p = p.removePrefix("./")
+        p = p.removePrefix("/").replace(Regex("/{2,}"), "/")
+        if (p.isBlank()) return null
+        if (p.split('/').any { it == ".." }) return null
+        return p
+    }
+
+    private class PathIndex(paths: List<String>) {
+        val exact: Set<String> = paths.toSet()
+        val lower: Map<String, String> = paths.associateBy { it.lowercase() }
+        val byName: Map<String, List<String>> = paths.groupBy { it.substringAfterLast('/') }
+
+        fun resolveExisting(path: String): String? {
+            if (path in exact) return path
+            lower[path.lowercase()]?.let { return it }
+            val name = path.substringAfterLast('/')
+            val candidates = byName[name].orEmpty()
+            if (candidates.isEmpty()) return null
+            if (candidates.size == 1) return candidates[0]
+            // Несколько файлов с таким именем — выбираем по совпадающим сегментам пути,
+            // но только если победитель однозначен.
+            val rawSegments = path.split('/').filter { it.isNotBlank() }.toSet()
+            val scored = candidates.map { c -> c to c.split('/').count { it in rawSegments } }
+                .sortedByDescending { it.second }
+            return if (scored[0].second > scored[1].second) scored[0].first else null
         }
     }
 
-    private fun resolvePaths(
-        plannedTasks: List<PlannedTask>,
-        filePaths: List<String>
+    internal fun resolvePaths(
+        planned: List<PlannedTask>,
+        filePaths: List<String>,
+        ctx: PipelineRunContext,
+        notes: MutableList<String>
     ): List<PlannedTask> {
-        val seen = mutableSetOf<String>()
-        val result = mutableListOf<PlannedTask>()
-        val pathSet = filePaths.toSet()
-        val nameToFullPaths = filePaths.groupBy { it.substringAfterLast('/') }
+        val index = PathIndex(filePaths)
         val sourceRoot = detectSourceRoot(filePaths)
+        val result = LinkedHashMap<String, PlannedTask>()
+        val pairBlocks = ctx.pairBlockIndices
+        val validBlocks = ctx.blocks.map { it.index }.toSet()
+        val validPairs = ctx.pairs.map { it.index }.toSet()
 
-        for ((idx, task) in plannedTasks.withIndex()) {
-            when (task.operation) {
+        for (task0 in planned) {
+            val path = normalizePath(task0.file)
+            if (path == null) {
+                notes += "Отброшена задача с некорректным путём «${task0.file}»."
+                continue
+            }
+            // Блоки пар не могут быть «полным файлом» и не дублируются как справочные блоки
+            val full = task0.fullContentBlock?.takeIf { it in validBlocks && it !in pairBlocks }
+            val blocks = (task0.codeBlocks.filter { it in validBlocks && it !in pairBlocks } + listOfNotNull(full)).distinct()
+            val pairs = task0.editPairs.filter { it in validPairs }.distinct()
+            val task = task0.copy(
+                file = path, codeBlocks = blocks, fullContentBlock = full,
+                editPairs = pairs, pairsOnly = task0.pairsOnly && pairs.isNotEmpty()
+            )
+
+            val finalTask: PlannedTask? = when (task.operation) {
                 TaskOperation.MODIFY -> {
-                    val resolved = resolveModifyPath(task, pathSet, nameToFullPaths)
-                    addOrMerge(result, seen, resolved)
-                }
-                TaskOperation.CREATE -> {
-                    val resolved = resolveCreatePath(task, idx, sourceRoot, pathSet)
-                    if (resolved != null) {
-                        addOrMerge(result, seen, resolved)
+                    val existing = index.resolveExisting(path)
+                    when {
+                        existing != null -> task.copy(
+                            file = existing,
+                            warning = if (existing != path) "Путь уточнён: $path → $existing" else null
+                        )
+                        full != null -> task.copy(
+                            operation = TaskOperation.CREATE,
+                            warning = "Файл не найден в репозитории — будет создан из блока #$full"
+                        )
+                        else -> task.copy(warning = "Файл не найден в репозитории — задача, скорее всего, завершится ошибкой")
                     }
                 }
+                TaskOperation.CREATE -> resolveCreate(task, index, sourceRoot, ctx, notes)
                 TaskOperation.DELETE -> {
-                    val resolved = resolveModifyPath(task, pathSet, nameToFullPaths)
-                    if (resolved.file in pathSet) {
-                        addOrMerge(result, seen, resolved)
-                    }
+                    val existing = index.resolveExisting(path)
+                    if (existing == null) {
+                        notes += "Удаление «$path» пропущено: файла нет в репозитории."
+                        null
+                    } else task.copy(file = existing)
                 }
             }
+            if (finalTask != null) merge(result, finalTask, notes)
         }
-
-        return result
+        if (ctx.pairs.isNotEmpty()) assignPairs(result, index, ctx, notes)
+        return result.values.toList()
     }
 
-    private fun resolveModifyPath(
-        task: PlannedTask,
-        pathSet: Set<String>,
-        nameToFullPaths: Map<String, List<String>>
-    ): PlannedTask {
-        val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim()
-        if (rawPath.isBlank()) return task
+    /**
+     * Окончательная привязка пар «Найти / Заменить на» к файлам:
+     *  1) явно указанный файл («Файл: …», заголовок, info-строка блока) важнее мнения модели;
+     *  2) иначе — как решил планировщик;
+     *  3) не привязанные — по упоминанию файла рядом или к единственной задаче-правке.
+     */
+    private fun assignPairs(
+        result: LinkedHashMap<String, PlannedTask>,
+        index: PathIndex,
+        ctx: PipelineRunContext,
+        notes: MutableList<String>
+    ) {
+        val owner = LinkedHashMap<Int, String>()
+        for ((path, t) in result) {
+            if (t.operation != TaskOperation.MODIFY) continue
+            for (p in t.editPairs) owner.putIfAbsent(p, path)
+        }
+        for (pair in ctx.pairs) {
+            if (!pair.strongHint) continue
+            val target = pair.fileHint?.let { normalizePath(it) }?.let { index.resolveExisting(it) } ?: continue
+            val prev = owner[pair.index]
+            if (prev != target) {
+                if (prev != null) notes += "Пара #${pair.index} привязана к $target (файл указан в промпте явно), а не к $prev."
+                owner[pair.index] = target
+            }
+        }
+        val modifyPaths = result.values.filter { it.operation == TaskOperation.MODIFY }.map { it.file }
+        for (pair in ctx.pairs) {
+            if (owner.containsKey(pair.index)) continue
+            val nearby = pair.fileHint?.let { normalizePath(it) }?.let { index.resolveExisting(it) }
+            val target = nearby ?: modifyPaths.singleOrNull()
+            if (target != null) owner[pair.index] = target
+            else notes += "Пара #${pair.index} («${pair.findPreview.take(50)}») не привязана к файлу — укажите «Файл: путь» перед «Найти»."
+        }
 
-        val resolvedPath = if (pathSet.contains(rawPath)) {
-            rawPath
-        } else {
-            val fileName = rawPath.substringAfterLast('/')
-            val candidates = nameToFullPaths[fileName] ?: emptyList()
+        val byPath = owner.entries.groupBy({ it.value }, { it.key })
+        for ((path, t) in result.toList()) {
+            val mine = byPath[path].orEmpty().sorted()
             when {
-                candidates.isEmpty() -> rawPath
-                candidates.size == 1 -> candidates[0]
-                else -> {
-                    val rawSegments = rawPath.split('/').filter { it.isNotBlank() }.toSet()
-                    candidates.maxByOrNull { candidate ->
-                        candidate.split('/').count { it in rawSegments }
-                    } ?: candidates[0]
+                // Задача существовала только ради пар, которые уехали в другой файл — она лишняя
+                t.pairsOnly && t.editPairs.isNotEmpty() && mine.isEmpty() -> {
+                    result.remove(path)
+                    notes += "Задача для $path убрана: её замены относятся к другому файлу."
                 }
+                t.operation != TaskOperation.MODIFY && t.editPairs.isNotEmpty() -> {
+                    result[path] = t.copy(editPairs = emptyList(), pairsOnly = false)
+                }
+                else -> result[path] = t.copy(editPairs = mine, pairsOnly = t.pairsOnly && mine.isNotEmpty())
             }
         }
-        return task.copy(file = resolvedPath)
+        for ((path, ps) in byPath) {
+            if (path in result) continue
+            result[path] = PlannedTask(
+                operation = TaskOperation.MODIFY,
+                file = path,
+                instructions = "Применить замены ${ps.sorted().joinToString { "#$it" }}",
+                editPairs = ps.sorted(),
+                pairsOnly = true
+            )
+        }
     }
 
-    private fun resolveCreatePath(
+    private fun resolveCreate(
         task: PlannedTask,
-        index: Int,
+        index: PathIndex,
         sourceRoot: String,
-        existingPaths: Set<String>
+        ctx: PipelineRunContext,
+        notes: MutableList<String>
     ): PlannedTask? {
-        val content = task.content ?: return null
-        val rawPath = task.file.trim().removePrefix("/").removePrefix("./").trim().ifBlank { null }
-        val providedPkg = task.packageName?.trim()?.ifBlank { null }
+        var path = task.file
 
-        val pkgFromContent = extractPackageFromContent(content)
-        val effectivePkg = providedPkg ?: pkgFromContent
-
-        val nameFromPath = rawPath?.substringAfterLast('/')?.takeIf { it.contains('.') }
-        val nameFromContent = deriveFileNameFromContent(content)
-        val finalName = nameFromPath ?: nameFromContent ?: "GeneratedFile${index + 1}.kt"
-
-        val finalPath: String = when {
-            rawPath != null && nameFromPath != null -> rawPath
-            rawPath != null && rawPath.endsWith('/') -> "$rawPath$finalName"
-            rawPath != null -> "$rawPath/$finalName"
-            effectivePkg != null -> "${sourceRoot}${effectivePkg.replace('.', '/')}/$finalName"
-            else -> "${sourceRoot}generated/$finalName"
+        // 1) Точное совпадение с существующим файлом → это правка, а не создание.
+        //    Именно здесь раньше перезаписывался AndroidManifest.xml.
+        (path.takeIf { it in index.exact } ?: index.lower[path.lowercase()])?.let { existing ->
+            return task.copy(
+                operation = TaskOperation.MODIFY,
+                file = existing,
+                warning = "Файл уже существует — «Создать» заменено на «Изменить» (оригинал не будет затёрт)"
+            )
         }
 
-        return task.copy(
-            file = finalPath,
-            packageName = effectivePkg
+        // 2) Указано только имя файла без папки, и такой файл в репо один → тоже правка.
+        if (!path.contains('/')) {
+            val candidates = index.byName[path].orEmpty()
+            if (candidates.size == 1) {
+                return task.copy(
+                    operation = TaskOperation.MODIFY,
+                    file = candidates[0],
+                    warning = "Файл «$path» уже есть в ${candidates[0]} — «Создать» заменено на «Изменить»"
+                )
+            }
+        }
+
+        // 3) Путь без имени файла → выводим имя из кода блока.
+        val blockContent = ctx.block(task.fullContentBlock)?.content
+            ?: task.codeBlocks.firstNotNullOfOrNull { ctx.block(it)?.content }
+        val hasFileName = path.substringAfterLast('/').contains('.')
+        if (!hasFileName) {
+            val name = blockContent?.let { deriveFileNameFromContent(it) }
+            if (name == null) {
+                notes += "Создание «$path» пропущено: не удалось определить имя файла."
+                return null
+            }
+            path = path.trimEnd('/') + "/" + name
+        }
+
+        // 4) Только имя файла, папки нет → кладём по package.
+        if (!path.contains('/')) {
+            val pkg = blockContent?.let { extractPackage(it) }
+            path = if (pkg != null && (path.endsWith(".kt") || path.endsWith(".java"))) {
+                "$sourceRoot${pkg.replace('.', '/')}/$path"
+            } else path
+        }
+
+        return task.copy(file = path)
+    }
+
+    private fun merge(result: LinkedHashMap<String, PlannedTask>, task: PlannedTask, notes: MutableList<String>) {
+        val existing = result[task.file]
+        if (existing == null) {
+            result[task.file] = task
+            return
+        }
+        if (existing.operation == TaskOperation.DELETE || task.operation == TaskOperation.DELETE) {
+            if (existing.operation != task.operation) {
+                notes += "Для «${task.file}» план содержит и удаление, и изменение — оставлено первое действие (${existing.operation.displayName})."
+            }
+            return
+        }
+        result[task.file] = existing.copy(
+            instructions = existing.instructions + "\n\n--- ДОПОЛНИТЕЛЬНО ---\n\n" + task.instructions,
+            codeBlocks = (existing.codeBlocks + task.codeBlocks).distinct(),
+            fullContentBlock = existing.fullContentBlock ?: task.fullContentBlock,
+            editPairs = (existing.editPairs + task.editPairs).distinct(),
+            pairsOnly = existing.pairsOnly && task.pairsOnly,
+            warning = listOfNotNull(existing.warning, task.warning).distinct().joinToString("; ").ifBlank { null }
         )
     }
 
-    private fun extractPackageFromContent(content: String): String? {
-        val regex = Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE)
-        return regex.find(content)?.groupValues?.get(1)?.trim()?.ifBlank { null }
-    }
+    private fun extractPackage(content: String): String? =
+        Regex("""^\s*package\s+([\w.]+)""", RegexOption.MULTILINE).find(content)?.groupValues?.get(1)
 
     private fun deriveFileNameFromContent(content: String): String? {
+        val isJava = Regex("""^\s*(public\s+)?(final\s+)?(abstract\s+)?class\s+\w+\s*(extends|implements|\{)""", RegexOption.MULTILINE)
+            .containsMatchIn(content) && content.contains(';')
+        val ext = if (isJava) "java" else "kt"
         val patterns = listOf(
-            Regex("""(?:public\s+|internal\s+|private\s+)?(?:abstract\s+|sealed\s+|open\s+|data\s+|enum\s+)?class\s+(\w+)"""),
-            Regex("""(?:public\s+|internal\s+|private\s+)?object\s+(\w+)"""),
-            Regex("""(?:public\s+|internal\s+|private\s+)?interface\s+(\w+)"""),
-            Regex("""@Composable\s+(?:public\s+|internal\s+|private\s+)?fun\s+(\w+)\s*\("""),
-            Regex("""(?:public\s+|internal\s+)?fun\s+(\w+)\s*\(""")
+            Regex("""(?:public\s+|internal\s+|private\s+)?(?:abstract\s+|sealed\s+|open\s+|data\s+|enum\s+|annotation\s+|value\s+)?class\s+(\w+)"""),
+            Regex("""(?:public\s+|internal\s+|private\s+)?(?:data\s+)?object\s+(\w+)"""),
+            Regex("""(?:public\s+|internal\s+|private\s+)?(?:fun\s+)?interface\s+(\w+)"""),
+            Regex("""@Composable\s+(?:public\s+|internal\s+|private\s+)?fun\s+(\w+)\s*\(""")
         )
-        for (pattern in patterns) {
-            val m = pattern.find(content)
-            if (m != null) {
-                val name = m.groupValues[1]
-                if (name.isNotBlank()) return "$name.kt"
-            }
+        for (p in patterns) {
+            val name = p.find(content)?.groupValues?.get(1)
+            if (!name.isNullOrBlank()) return "$name.$ext"
         }
         return null
     }
 
     private fun detectSourceRoot(filePaths: List<String>): String {
-        val packageRoots = setOf("com", "org", "io", "net", "ru", "de", "tech")
+        val packageRoots = setOf("com", "org", "io", "net", "ru", "de", "tech", "dev", "app", "me")
         for (path in filePaths) {
-            if (!path.endsWith(".kt")) continue
+            if (!path.endsWith(".kt") && !path.endsWith(".java")) continue
             val parts = path.split('/')
-            val pkgStartIdx = parts.indexOfFirst { it in packageRoots }
-            if (pkgStartIdx > 0) {
-                return parts.take(pkgStartIdx).joinToString("/") + "/"
+            val javaIdx = parts.indexOfFirst { it == "java" || it == "kotlin" }
+            if (javaIdx > 0 && javaIdx + 1 < parts.size && parts[javaIdx + 1] in packageRoots) {
+                return parts.take(javaIdx + 1).joinToString("/") + "/"
             }
         }
         return "app/src/main/java/"
-    }
-
-    private fun addOrMerge(
-        result: MutableList<PlannedTask>,
-        seen: MutableSet<String>,
-        task: PlannedTask
-    ) {
-        val path = task.file
-        if (path.isBlank()) return
-
-        if (path in seen) {
-            val existingIdx = result.indexOfFirst { it.file == path }
-            if (existingIdx >= 0) {
-                val existing = result[existingIdx]
-                if (existing.operation == TaskOperation.MODIFY && task.operation == TaskOperation.MODIFY) {
-                    result[existingIdx] = existing.copy(
-                        instructions = existing.instructions +
-                                "\n\n--- ДОПОЛНИТЕЛЬНО ---\n\n" + task.instructions
-                    )
-                }
-            }
-            return
-        }
-        seen.add(path)
-        result.add(task)
-    }
-
-    private fun callGemini(
-        apiKey: String,
-        model: GeminiModel,
-        userMessage: String
-    ): Result<Triple<String, Int, Int>> {
-        var connection: HttpURLConnection? = null
-        return try {
-            val url = "$BASE_URL/${model.modelId}:generateContent"
-
-            val requestBody = buildJsonObject {
-                put("systemInstruction", buildJsonObject {
-                    put("parts", JsonArray(listOf(
-                        buildJsonObject { put("text", PLANNER_SYSTEM_PROMPT) }
-                    )))
-                })
-                put("contents", JsonArray(listOf(
-                    buildJsonObject {
-                        put("role", "user")
-                        put("parts", JsonArray(listOf(
-                            buildJsonObject { put("text", userMessage) }
-                        )))
-                    }
-                )))
-                put("generationConfig", buildJsonObject {
-                    put("maxOutputTokens", MAX_OUTPUT_TOKENS)
-                    // Оптимизировано: убран temperature 0.0, thinkingLevel зафиксирован на LOW
-                    put("responseMimeType", "application/json")
-                    put("responseJsonSchema", responseSchema)
-                    put("thinkingConfig", buildJsonObject {
-                        put("thinkingLevel", JsonPrimitive("LOW"))
-                    })
-                })
-            }
-
-            connection = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("x-goog-api-key", apiKey)
-                setRequestProperty("Accept", "application/json")
-                connectTimeout = 15_000
-                readTimeout = 45_000
-                doOutput = true
-                doInput = true
-            }
-
-            connection.outputStream.use {
-                it.write(requestBody.toString().toByteArray(Charsets.UTF_8))
-            }
-
-            val responseCode = connection.responseCode
-            if (responseCode !in 200..299) {
-                val errorBody = connection.errorStream?.let {
-                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { r -> r.readText() }
-                } ?: "HTTP $responseCode"
-                return Result.failure(Exception(formatApiError(responseCode, errorBody)))
-            }
-
-            val responseBody = BufferedReader(InputStreamReader(connection.inputStream, Charsets.UTF_8))
-                .use { it.readText() }
-            val json = Json.parseToJsonElement(responseBody).jsonObject
-
-            val candidates = json["candidates"]?.jsonArray
-                ?: return Result.failure(Exception("Планировщик: отсутствует поле candidates"))
-            if (candidates.isEmpty()) {
-                return Result.failure(Exception("Планировщик: пустой список candidates"))
-            }
-
-            val content = candidates[0].jsonObject["content"]?.jsonObject
-                ?: return Result.failure(Exception("Планировщик: отсутствует content"))
-            val parts = content["parts"]?.jsonArray
-                ?: return Result.failure(Exception("Планировщик: отсутствуют parts"))
-
-            val rawJson = parts.filter { part ->
-                part.jsonObject["thought"]?.jsonPrimitive?.booleanOrNull != true
-            }.joinToString("") { part ->
-                part.jsonObject["text"]?.jsonPrimitive?.contentOrNull ?: ""
-            }
-
-            val usage = json["usageMetadata"]?.jsonObject
-            val inputTokens = usage?.get("promptTokenCount")?.jsonPrimitive?.intOrNull ?: 0
-            val outputTokens = usage?.get("candidatesTokenCount")?.jsonPrimitive?.intOrNull ?: 0
-
-            Result.success(Triple(rawJson, inputTokens, outputTokens))
-
-        } catch (e: Exception) {
-            Result.failure(e)
-        } finally {
-            try { connection?.disconnect() } catch (_: Exception) { }
-        }
-    }
-
-    private fun parsePlanResponse(rawJson: String): Result<List<PlannedTask>> {
-        return try {
-            val cleaned = rawJson.trim()
-                .removePrefix("```json").removePrefix("```")
-                .removeSuffix("```")
-                .trim()
-
-            val root = Json.parseToJsonElement(cleaned).jsonObject
-            val tasksArray = root["tasks"]?.jsonArray
-                ?: return Result.failure(Exception("JSON плана не содержит массива 'tasks'"))
-
-            val tasks = tasksArray.mapNotNull { element ->
-                val obj = element.jsonObject
-
-                val opStr = obj["operation"]?.jsonPrimitive?.contentOrNull?.lowercase()
-                val operation = when (opStr) {
-                    "create" -> TaskOperation.CREATE
-                    "delete" -> TaskOperation.DELETE
-                    else -> TaskOperation.MODIFY
-                }
-
-                val file = obj["file"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-                val instructions = obj["instructions"]?.jsonPrimitive?.contentOrNull ?: ""
-                val content = obj["content"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-                val pkg = obj["package"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-
-                when (operation) {
-                    TaskOperation.MODIFY -> {
-                        if (file == null || instructions.isBlank()) null
-                        else PlannedTask(TaskOperation.MODIFY, file, instructions)
-                    }
-                    TaskOperation.CREATE -> {
-                        if (content == null) null
-                        else PlannedTask(TaskOperation.CREATE, file ?: "", instructions, content, pkg)
-                    }
-                    TaskOperation.DELETE -> {
-                        if (file == null) null
-                        else PlannedTask(TaskOperation.DELETE, file, instructions.ifBlank { "Удалить файл" })
-                    }
-                }
-            }
-
-            Result.success(tasks)
-        } catch (e: Exception) {
-            Result.failure(Exception("Не удалось распарсить JSON план: ${e.message}"))
-        }
-    }
-
-    private fun formatApiError(code: Int, body: String): String {
-        val msg = try {
-            val json = Json.parseToJsonElement(body).jsonObject
-            json["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull ?: body.take(200)
-        } catch (_: Exception) { body.take(200) }
-
-        return when (code) {
-            400 -> "Планировщик: ошибка параметров запроса (400): $msg"
-            401 -> "Планировщик: неверный API-ключ Gemini"
-            403 -> "Планировщик: доступ запрещён (403)"
-            429 -> "Планировщик: превышен лимит запросов (429)"
-            500, 502, 503 -> "Планировщик: сервер Gemini временно недоступен"
-            else -> "Планировщик: ошибка $code ($msg)"
-        }
-    }
-
-    private fun isQuotaError(message: String?): Boolean {
-        val m = message?.lowercase() ?: return false
-        return m.contains("429") || m.contains("quota") || m.contains("exceeded") || m.contains("rate limit")
     }
 }
