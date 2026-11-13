@@ -143,12 +143,8 @@ fun PipelineScreen(
                 onToggleBackup = viewModel::toggleBackup
             )
 
-            // ── Селектор моделей (3.5 Lite и 3.1 Lite) ────────────────────
-            ModelSelectorLight(
-                selected = state.selectedModelApiId,
-                interactive = !state.isRunning,
-                onSelect = viewModel::setSelectedModel
-            )
+            // ── Модель (фиксирована: Gemini 3.1 Flash-Lite) ───────────────
+            ModelInfoLight()
 
             // ── Режим работы (Online / Offline) ───────────────────────────
             ModeSelectorLight(
@@ -211,6 +207,15 @@ fun PipelineScreen(
                         viewModel.setLogFilter(if (state.logFilterTaskId == taskId) null else taskId)
                     },
                     onChangeMaxParallel = viewModel::setMaxParallel
+                )
+                // ── Детали плана: что именно сделает каждая задача ─────────
+                Spacer(Modifier.height(8.dp))
+                PlanDetailsLight(
+                    tasks = state.tasks,
+                    notes = state.planNotes,
+                    canRemove = state.phase == PipelinePhase.REVIEWING,
+                    initiallyExpanded = state.phase == PipelinePhase.REVIEWING,
+                    onRemoveTask = viewModel::removeTask
                 )
             }
 
@@ -517,15 +522,11 @@ private fun PipelineOptionsSection(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// ВЫБОР МОДЕЛИ
+// МОДЕЛЬ (ФИКСИРОВАННАЯ)
 // ═══════════════════════════════════════════════════════════════════════════
 
 @Composable
-private fun ModelSelectorLight(
-    selected: String,
-    interactive: Boolean,
-    onSelect: (String) -> Unit
-) {
+private fun ModelInfoLight() {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -534,54 +535,38 @@ private fun ModelSelectorLight(
         colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text("Модель Gemini", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
-            Spacer(Modifier.height(8.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = PipelineTheme.blueSoft
             ) {
-                ModelPill(
-                    title = "⚡ 3.5 Flash-Lite",
-                    subtitle = "LOW thinking · $0.30/M",
-                    isSelected = selected.contains("3.5"),
-                    enabled = interactive,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onSelect("gemini-3.5-flash-lite") }
-                )
-                ModelPill(
-                    title = "💨 3.1 Flash-Lite",
-                    subtitle = "LOW thinking · $0.25/M",
-                    isSelected = selected.contains("3.1"),
-                    enabled = interactive,
-                    modifier = Modifier.weight(1f),
-                    onClick = { onSelect("gemini-3.1-flash-lite") }
+                Text(
+                    "💨",
+                    fontSize = 16.sp,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun ModelPill(
-    title: String,
-    subtitle: String,
-    isSelected: Boolean,
-    enabled: Boolean,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Surface(
-        onClick = onClick,
-        enabled = enabled,
-        shape = RoundedCornerShape(10.dp),
-        color = if (isSelected) PipelineTheme.blueSoft else PipelineTheme.surfaceSecondary,
-        border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, if (isSelected) PipelineTheme.blue else PipelineTheme.border),
-        modifier = modifier
-    ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Text(title, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (isSelected) PipelineTheme.blue else PipelineTheme.textPrimary)
-            Text(subtitle, fontSize = 9.sp, color = if (isSelected) PipelineTheme.blue.copy(alpha = 0.8f) else PipelineTheme.textSecondary)
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(PipelineAiConfig.DISPLAY_NAME, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary)
+                Text(
+                    "${PipelineAiConfig.MODEL_ID} · план: ${PipelineAiConfig.PLANNER_THINKING.apiValue} · " +
+                        "правки: ${PipelineAiConfig.EDIT_THINKING.apiValue}→${PipelineAiConfig.EDIT_RETRY_THINKING.apiValue}",
+                    fontSize = 10.sp,
+                    color = PipelineTheme.textSecondary,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Text(
+                "\$${PipelineAiConfig.INPUT_USD_PER_M}/\$${PipelineAiConfig.OUTPUT_USD_PER_M} за 1M",
+                fontSize = 9.sp,
+                color = PipelineTheme.textTertiary
+            )
         }
     }
 }
@@ -1052,12 +1037,163 @@ private fun TaskChipLight(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(task.status.emoji, fontSize = 12.sp)
+            Spacer(Modifier.width(2.dp))
+            Text(task.operation.emoji, fontSize = 11.sp)
             Spacer(Modifier.width(4.dp))
             Text(task.filePath.substringAfterLast('/'), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, fontFamily = FontFamily.Monospace, color = PipelineTheme.textPrimary)
             if (canRemove) {
                 Spacer(Modifier.width(6.dp))
                 Icon(Icons.Default.Close, null, tint = PipelineTheme.textTertiary, modifier = Modifier.size(14.dp).clickable(onClick = onRemove))
             }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ДЕТАЛИ ПЛАНА
+// ═══════════════════════════════════════════════════════════════════════════
+
+@Composable
+private fun PlanDetailsLight(
+    tasks: List<FileTask>,
+    notes: String?,
+    canRemove: Boolean,
+    initiallyExpanded: Boolean,
+    onRemoveTask: (String) -> Unit
+) {
+    var expanded by remember(initiallyExpanded) { mutableStateOf(initiallyExpanded) }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = PipelineTheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                val warnCount = tasks.count { it.warning != null }
+                Text(
+                    "🗂 План: ${tasks.size} задач" + if (warnCount > 0) " · ⚠️ $warnCount" else "",
+                    fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PipelineTheme.textPrimary
+                )
+                Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = PipelineTheme.textSecondary)
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    if (!notes.isNullOrBlank()) {
+                        Text(
+                            "💬 $notes",
+                            fontSize = 11.sp,
+                            color = PipelineTheme.amber,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(PipelineTheme.amberSoft)
+                                .padding(8.dp)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    tasks.forEach { task ->
+                        PlanTaskRow(task = task, canRemove = canRemove, onRemove = { onRemoveTask(task.id) })
+                        Spacer(Modifier.height(6.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlanTaskRow(task: FileTask, canRemove: Boolean, onRemove: () -> Unit) {
+    var showFull by remember(task.id) { mutableStateOf(false) }
+    val opColor = when (task.operation) {
+        TaskOperation.MODIFY -> PipelineTheme.blue
+        TaskOperation.CREATE -> PipelineTheme.green
+        TaskOperation.DELETE -> PipelineTheme.red
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(PipelineTheme.surfaceSecondary)
+            .clickable { showFull = !showFull }
+            .padding(10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "${task.operation.emoji} ${task.operation.displayName}",
+                fontSize = 10.sp, fontWeight = FontWeight.Bold, color = opColor
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                task.filePath,
+                fontSize = 10.sp,
+                fontFamily = FontFamily.Monospace,
+                color = PipelineTheme.textPrimary,
+                maxLines = if (showFull) 3 else 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Text(task.status.emoji, fontSize = 11.sp)
+            if (canRemove) {
+                Spacer(Modifier.width(6.dp))
+                Icon(
+                    Icons.Default.Close, null, tint = PipelineTheme.textTertiary,
+                    modifier = Modifier.size(16.dp).clickable(onClick = onRemove)
+                )
+            }
+        }
+        if (task.fullContentBlock != null || task.codeBlocks.isNotEmpty()) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                buildString {
+                    if (task.fullContentBlock != null) append("📎 полный файл из блока #${task.fullContentBlock} (дословно)")
+                    val refs = task.codeBlocks.filter { it != task.fullContentBlock }
+                    if (refs.isNotEmpty()) {
+                        if (isNotEmpty()) append(" · ")
+                        append("блоки: ").append(refs.joinToString { "#$it" })
+                    }
+                },
+                fontSize = 10.sp, color = PipelineTheme.purple
+            )
+        }
+        if (task.editPairs.isNotEmpty()) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                "🔁 Найти/Заменить: ${task.editPairs.joinToString { "#$it" }} — дословно, кодом" +
+                    if (task.pairsOnly) " (без модели)" else " + правки моделью",
+                fontSize = 10.sp, color = PipelineTheme.green
+            )
+        }
+        task.warning?.let {
+            Spacer(Modifier.height(3.dp))
+            Text("⚠️ $it", fontSize = 10.sp, color = PipelineTheme.amber)
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(
+            task.instructions,
+            fontSize = 10.sp,
+            lineHeight = 14.sp,
+            color = PipelineTheme.textSecondary,
+            maxLines = if (showFull) Int.MAX_VALUE else 3,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (task.status == TaskStatus.FAILED_FINAL || task.status == TaskStatus.DEFERRED) {
+            task.lastError?.let {
+                Spacer(Modifier.height(3.dp))
+                Text("❌ $it", fontSize = 10.sp, color = PipelineTheme.red, maxLines = if (showFull) 8 else 2, overflow = TextOverflow.Ellipsis)
+            }
+        } else task.resultSummary?.let {
+            Spacer(Modifier.height(3.dp))
+            Text("✓ $it", fontSize = 10.sp, color = PipelineTheme.green, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }
