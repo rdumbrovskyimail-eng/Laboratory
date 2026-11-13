@@ -17,14 +17,16 @@ import javax.inject.Singleton
 /**
  * ═══════════════════════════════════════════════════════════════════════════
  * WORKFLOW WATCHER v1.0
- * ═══════════════════════════════════════════════════════════════════════════
+ * 
+═══════════════════════════════════════════════════════════════════════════
  *
  * После каждого успешного коммита конвейер вызывает watch(commitSha),
  * чтобы отследить, какой GitHub Actions workflow run триггернулся этим
  * коммитом, и публиковать обновления статуса в RepoLog.
  *
  * Стратегия: polling каждые 5 секунд в течение максимум ~3 минут
- * (36 итераций). Этого хватает для большинства Android CI/CD.
+ * (36 итераций). Этого хватает для большинства Android 
+CI/CD.
  *
  * API: GET /repos/{owner}/{repo}/actions/runs?head_sha={sha}&branch={branch}
  * — возвращает workflow runs, привязанные ровно к этому коммиту.
@@ -33,7 +35,8 @@ import javax.inject.Singleton
  * (например, когда конвейер завершён или перешёл к следующему файлу).
  */
 @Singleton
-class WorkflowWatcher @Inject constructor(
+class WorkflowWatcher @Inject 
+constructor(
     private val gitHubClient: GitHubApiClient,
     private val appSettings: AppSettings
 ) {
@@ -41,7 +44,8 @@ class WorkflowWatcher @Inject constructor(
         private const val TAG = "WorkflowWatcher"
         private const val POLL_INTERVAL_MS = 5000L      // 5 секунд
         private const val MAX_POLL_ITERATIONS = 36      // 3 минуты максимум
-        private const val INITIAL_DELAY_MS = 3000L      // даём GH 3с на регистрацию workflow
+        private const val INITIAL_DELAY_MS = 3000L      // даём GH 3с на регистрацию 
+workflow
     }
 
     /**
@@ -52,7 +56,8 @@ class WorkflowWatcher @Inject constructor(
     fun watch(
         commitSha: String,
         taskId: String?,
-        workflowFilterName: String? = null    // если null — берём первый workflow для этого коммита
+        workflowFilterName: String? = null    // если null — берём первый workflow для этого 
+коммита
     ): Flow<RepoLogEvent> = flow {
         Log.d(TAG, "Watching workflows for commit ${commitSha.take(8)}")
 
@@ -62,7 +67,8 @@ class WorkflowWatcher @Inject constructor(
         // Читаем ветку один раз — она не меняется во время watching
         val branch = try {
             appSettings.gitHubConfig.first().branch
-        } catch (e: Exception) {
+        } catch (e: Exception) 
+{
             emit(RepoLogEvent(
                 type = RepoEventType.ERROR,
                 icon = "⚠️",
@@ -75,7 +81,8 @@ class WorkflowWatcher @Inject constructor(
 
         var foundRun: WorkflowRun? = null
         var lastStatus: String? = null
-        var lastConclusion: String? = null
+        var lastConclusion: String? = 
+null
 
         repeat(MAX_POLL_ITERATIONS) { iteration ->
             try {
@@ -87,7 +94,8 @@ class WorkflowWatcher @Inject constructor(
                     runs.firstOrNull()
                 }
 
-                if (match == null) {
+                if (match == null) 
+{
                     if (iteration < 3) {
                         // первые 15 секунд: пишем только один раз "ждём workflow"
                         if (iteration == 0) {
@@ -99,7 +107,8 @@ class WorkflowWatcher @Inject constructor(
                                 commitSha = commitSha
                             ))
                         }
-                    } else if (iteration == MAX_POLL_ITERATIONS - 1) {
+                    } else if (iteration == 
+MAX_POLL_ITERATIONS - 1) {
                         // ничего не нашли за всё время — наверное, нет workflows для этого пути
                         emit(RepoLogEvent(
                             type = RepoEventType.INFO,
@@ -109,7 +118,8 @@ class WorkflowWatcher @Inject constructor(
                             commitSha = commitSha
                         ))
                     }
-                    delay(POLL_INTERVAL_MS)
+                    
+delay(POLL_INTERVAL_MS)
                     return@repeat
                 }
 
@@ -121,7 +131,8 @@ class WorkflowWatcher @Inject constructor(
                         icon = "🚀",
                         message = "Workflow «${match.name}» запущен (#${match.id})",
                         taskId = taskId,
-                        commitSha = commitSha,
+                        commitSha = 
+commitSha,
                         workflowRunId = match.id,
                         workflowRunUrl = match.htmlUrl,
                         workflowStatus = match.status
@@ -132,7 +143,8 @@ class WorkflowWatcher @Inject constructor(
                 if (match.status != lastStatus) {
                     lastStatus = match.status
                     emit(RepoLogEvent(
-                        type = RepoEventType.WORKFLOW_PROGRESS,
+                        type = 
+RepoEventType.WORKFLOW_PROGRESS,
                         icon = statusIcon(match.status),
                         message = "Workflow #${match.id}: ${match.status}",
                         taskId = taskId,
@@ -143,7 +155,8 @@ class WorkflowWatcher @Inject constructor(
                     ))
                 }
 
-                // Финальный статус
+                // Финальный 
+статус
                 val conclusion = match.conclusion
                 if (match.status == "completed" && conclusion != null && conclusion != lastConclusion) {
                     lastConclusion = conclusion
@@ -151,7 +164,8 @@ class WorkflowWatcher @Inject constructor(
                     emit(RepoLogEvent(
                         type = if (isSuccess) RepoEventType.WORKFLOW_SUCCESS
                                else RepoEventType.WORKFLOW_FAILURE,
-                        icon = if (isSuccess) "✅" else "❌",
+                        icon = if (isSuccess) "✅" else 
+"❌",
                         message = "Workflow #${match.id}: ${conclusion.uppercase()}",
                         taskId = taskId,
                         commitSha = commitSha,
@@ -161,7 +175,8 @@ class WorkflowWatcher @Inject constructor(
                         workflowConclusion = conclusion
                     ))
                     return@flow   // финал — выходим
-                }
+                
+}
 
                 delay(POLL_INTERVAL_MS)
 
@@ -184,7 +199,8 @@ class WorkflowWatcher @Inject constructor(
                 taskId = taskId,
                 commitSha = commitSha,
                 workflowRunId = finalRun.id,
-                workflowRunUrl = finalRun.htmlUrl
+                workflowRunUrl = 
+finalRun.htmlUrl
             ))
         }
     }
@@ -197,7 +213,8 @@ class WorkflowWatcher @Inject constructor(
         commitSha: String,
         branch: String
     ): List<WorkflowRun> = withContext(Dispatchers.IO) {
-        // gitHubClient.getWorkflowRuns принимает branch, но не head_sha напрямую.
+        // gitHubClient.getWorkflowRuns 
+принимает branch, но не head_sha напрямую.
         // Делаем list по branch и фильтруем локально.
         val runs = gitHubClient.getWorkflowRuns(
             workflowId = null,
@@ -209,7 +226,8 @@ class WorkflowWatcher @Inject constructor(
         runs.workflowRuns.filter { it.headSha == commitSha }
     }
 
-    private fun statusIcon(status: String): String = when (status) {
+    private fun statusIcon(status: String): String = when (status) 
+{
         "queued" -> "📋"
         "in_progress" -> "🔄"
         "completed" -> "🏁"
