@@ -95,6 +95,23 @@ class LocalRepoManager @Inject constructor(
         return repoDirFor(cfg.owner, cfg.repo)
     }
 
+    /**
+     * Безопасное разрешение относительного пути внутри клона.
+     * Пути вида "../x" или абсолютные отклоняются — модель не может писать вне репозитория.
+     */
+    private fun resolveInside(dir: File, relativePath: String): File {
+        val clean = relativePath.trim().replace('\\', '/').removePrefix("/")
+        val target = File(dir, clean).canonicalFile
+        val root = dir.canonicalFile
+        if (target != root && !target.path.startsWith(root.path + File.separator)) {
+            throw SecurityException("Путь вне репозитория: $relativePath")
+        }
+        if (target.path.contains("${File.separator}.git${File.separator}") || target.name == ".git") {
+            throw SecurityException("Запись в .git запрещена: $relativePath")
+        }
+        return target
+    }
+
     /** Существует ли валидный клон (есть папка .git внутри) */
     suspend fun isCloned(): Boolean = withContext(Dispatchers.IO) {
         val dir = currentRepoDir() ?: return@withContext false
@@ -169,7 +186,7 @@ class LocalRepoManager @Inject constructor(
             val dir = currentRepoDir() ?: return@withContext Result.failure(
                 IllegalStateException("Репозиторий не настроен")
             )
-            val file = File(dir, relativePath)
+            val file = resolveInside(dir, relativePath)
             if (!file.isFile) return@withContext Result.failure(
                 java.io.FileNotFoundException("Файл не найден в клоне: $relativePath")
             )
@@ -188,7 +205,7 @@ class LocalRepoManager @Inject constructor(
             val dir = currentRepoDir() ?: return@withContext Result.failure(
                 IllegalStateException("Репозиторий не настроен")
             )
-            val file = File(dir, relativePath)
+            val file = resolveInside(dir, relativePath)
             file.parentFile?.mkdirs()
             file.writeText(content, Charsets.UTF_8)
             Result.success(Unit)
@@ -206,7 +223,7 @@ class LocalRepoManager @Inject constructor(
             val dir = currentRepoDir() ?: return@withContext Result.failure(
                 IllegalStateException("Репозиторий не настроен")
             )
-            val file = File(dir, relativePath)
+            val file = resolveInside(dir, relativePath)
             if (!file.exists()) {
                 return@withContext Result.failure(
                     java.io.FileNotFoundException("Файл не существует: $relativePath")
@@ -225,7 +242,7 @@ class LocalRepoManager @Inject constructor(
     /** Существует ли файл в клоне */
     suspend fun fileExists(relativePath: String): Boolean = withContext(Dispatchers.IO) {
         val dir = currentRepoDir() ?: return@withContext false
-        File(dir, relativePath).isFile
+        try { resolveInside(dir, relativePath).isFile } catch (_: SecurityException) { false }
     }
 
     /** Список всех файлов в клоне (relative paths), исключая .git/ */
@@ -277,7 +294,8 @@ class LocalRepoManager @Inject constructor(
     }
 
     /**
-     * Push в origin/<branch>. Если non-fast-forward — пытается pull --rebase и retry.
+     * Push в origin/<branch>. Если удалённая ветка ушла вперёд (non-fast-forward) —
+     * делает pull --rebase и повторяет push один раз. При конфликте rebase — abort и ошибка.
      */
     suspend fun push(): Result<Unit> = gitMutex.withLock {
         withContext(Dispatchers.IO) {
@@ -285,20 +303,41 @@ class LocalRepoManager @Inject constructor(
             val dir = repoDirFor(cfg.owner, cfg.repo)
             try {
                 Git.open(dir).use { git ->
-                    _progressMessage.value = "Push to origin/${cfg.branch}..."
                     val creds = UsernamePasswordCredentialsProvider(cfg.token, "")
-                    val result = git.push()
-                        .setCredentialsProvider(creds)
-                        .setRemote("origin")
-                        .add(cfg.branch)
-                        .call()
-                    val failures = result.flatMap { it.remoteUpdates }
-                        .filter { it.status.name != "OK" && it.status.name != "UP_TO_DATE" }
-                    if (failures.isNotEmpty()) {
-                        val msgs = failures.joinToString("; ") {
-                            "${it.remoteName}: ${it.status} ${it.message ?: ""}"
+                    for (attempt in 0..1) {
+                        _progressMessage.value = "Push to origin/${cfg.branch}" + if (attempt > 0) " (после rebase)..." else "..."
+                        val result = git.push()
+                            .setCredentialsProvider(creds)
+                            .setRemote("origin")
+                            .add(cfg.branch)
+                            .call()
+                        val failures = result.flatMap { it.remoteUpdates }
+                            .filter { it.status.name != "OK" && it.status.name != "UP_TO_DATE" }
+                        if (failures.isEmpty()) break
+
+                        val rejected = failures.any {
+                            it.status.name == "REJECTED_NONFASTFORWARD" || it.status.name == "REJECTED_REMOTE_CHANGED"
                         }
-                        return@withContext Result.failure(Exception("Push failed: $msgs"))
+                        val msgs = failures.joinToString("; ") { "${it.remoteName}: ${it.status} ${it.message ?: ""}" }
+                        if (!rejected || attempt > 0) {
+                            return@withContext Result.failure(Exception("Push failed: $msgs"))
+                        }
+
+                        _progressMessage.value = "Remote ушёл вперёд — pull --rebase..."
+                        val pull = git.pull()
+                            .setCredentialsProvider(creds)
+                            .setRemote("origin")
+                            .setRemoteBranchName(cfg.branch)
+                            .setRebase(true)
+                            .call()
+                        if (!pull.isSuccessful) {
+                            runCatching {
+                                git.rebase().setOperation(org.eclipse.jgit.api.RebaseCommand.Operation.ABORT).call()
+                            }
+                            return@withContext Result.failure(Exception(
+                                "Push отклонён, а rebase на свежую ветку дал конфликт — изменения не отправлены"
+                            ))
+                        }
                     }
                 }
                 refreshStatus(dir, cfg)
