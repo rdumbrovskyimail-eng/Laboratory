@@ -2,13 +2,13 @@ package com.opuside.app.feature.pipeline.data
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.util.Base64
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.opuside.app.core.ai.RepoIndexManager
 import com.opuside.app.core.data.AppSettings
 import com.opuside.app.core.network.github.GitHubApiClient
+import com.opuside.app.core.network.github.GitHubApiException
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -24,13 +24,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 🛡️ PIPELINE BACKUP & AUDIT MANAGER v3.2
+ * 🛡️ PIPELINE BACKUP & AUDIT MANAGER v4.0
  *
- * Отвечает за:
- * 1. Сохранение снимков оригиналов перед правками.
- * 2. Полный откат проекта в 1 клик для Offline и Online режимов.
- * 3. Создание 3-секционного TXT-отчета: [Промпт] -> [Оригиналы] -> [Изменения].
- * 4. Защиту от падений при вызове Share Sheet из ApplicationContext.
+ * Исправлено относительно v3.2:
+ *  - оригинал сохраняется для ВСЕХ задач, включая CREATE (если файл на самом деле
+ *    существовал — раньше откат его удалял);
+ *  - «файла не было» и «не удалось прочитать» больше не путаются: при ошибке чтения
+ *    снимок не создаётся вовсе (иначе откат удалил бы живые файлы);
+ *  - offline-снимок требует готового клона (ViewModel клонирует ДО снимка);
+ *  - ошибки отката собираются и возвращаются, а не глотаются.
  */
 @Singleton
 class PipelineBackupManager @Inject constructor(
@@ -71,11 +73,33 @@ class PipelineBackupManager @Inject constructor(
     data class RollbackResult(
         val backupId: String,
         val restoredFilesCount: Int,
-        val commitSha: String?
+        val commitSha: String?,
+        val failures: List<String> = emptyList()
     )
 
     private val baseBackupDir: File
         get() = File(context.filesDir, BACKUPS_DIR).apply { if (!exists()) mkdirs() }
+
+    private sealed class Original {
+        data class Present(val content: String) : Original()
+        object Absent : Original()
+    }
+
+    private suspend fun readOriginal(mode: PipelineMode, relPath: String, branch: String): Original {
+        if (mode == PipelineMode.OFFLINE) {
+            if (!localRepoManager.fileExists(relPath)) return Original.Absent
+            val content = localRepoManager.readFile(relPath).getOrThrow()
+            return Original.Present(content)
+        }
+        val result = gitHubClient.getFileContent(relPath, branch)
+        val file = result.getOrElse { e ->
+            if (e is GitHubApiException && e.isNotFound) return Original.Absent
+            throw IllegalStateException("не удалось прочитать $relPath: ${e.message}", e)
+        }
+        val cleaned = (file.content ?: "").filter { !it.isWhitespace() }
+        val content = if (cleaned.isEmpty()) "" else String(Base64.decode(cleaned, Base64.NO_WRAP), Charsets.UTF_8)
+        return Original.Present(content)
+    }
 
     suspend fun createSnapshot(
         runId: String,
@@ -91,36 +115,24 @@ class PipelineBackupManager @Inject constructor(
             val filesMeta = mutableListOf<BackupFileMeta>()
 
             try {
+                if (mode == PipelineMode.OFFLINE && !localRepoManager.isCloned()) {
+                    throw IllegalStateException("локальный клон не готов")
+                }
+                val seen = mutableSetOf<String>()
                 for (task in tasks) {
                     val relPath = task.filePath.trim().removePrefix("/")
-                    var originalContent: String? = null
-                    var existed = false
+                    if (!seen.add(relPath)) continue
 
-                    if (task.operation != TaskOperation.CREATE) {
-                        if (mode == PipelineMode.OFFLINE) {
-                            val r = localRepoManager.readFile(relPath)
-                            if (r.isSuccess) {
-                                originalContent = r.getOrNull()
-                                existed = true
-                            }
-                        } else {
-                            try {
-                                val file = gitHubClient.getFileContent(relPath, branch).getOrNull()
-                                if (file?.content != null) {
-                                    val cleaned = file.content.filter { !it.isWhitespace() }
-                                    originalContent = String(Base64.decode(cleaned, Base64.NO_WRAP), Charsets.UTF_8)
-                                    existed = true
-                                }
-                            } catch (_: Exception) {}
+                    // Оригинал читаем для КАЖДОЙ операции: CREATE мог указывать на существующий файл.
+                    val existed = when (val o = readOriginal(mode, relPath, branch)) {
+                        is Original.Present -> {
+                            val target = File(originalsDir, relPath)
+                            target.parentFile?.mkdirs()
+                            target.writeText(o.content, Charsets.UTF_8)
+                            true
                         }
+                        Original.Absent -> false
                     }
-
-                    if (originalContent != null) {
-                        val target = File(originalsDir, relPath)
-                        target.parentFile?.mkdirs()
-                        target.writeText(originalContent, Charsets.UTF_8)
-                    }
-
                     filesMeta.add(BackupFileMeta(relPath, task.operation, existed))
                 }
 
@@ -130,6 +142,7 @@ class PipelineBackupManager @Inject constructor(
                     put("timestamp", System.currentTimeMillis())
                     put("userPrompt", userPrompt)
                     put("mode", mode.name)
+                    put("model", PipelineAiConfig.MODEL_ID)
                     put("isRestored", false)
                     val arr = JSONArray()
                     filesMeta.forEach { m ->
@@ -147,7 +160,8 @@ class PipelineBackupManager @Inject constructor(
                 Result.success(backupId)
             } catch (e: Exception) {
                 backupDir.deleteRecursively()
-                Result.failure(e)
+                Log.e(TAG, "createSnapshot failed", e)
+                Result.failure(Exception("Бэкап не создан: ${e.message}", e))
             }
         }
     }
@@ -181,6 +195,7 @@ class PipelineBackupManager @Inject constructor(
             val filesArr = meta.getJSONArray("files")
             val originalsDir = File(backupDir, "originals")
             val branch = try { appSettings.gitHubConfig.first().branch } catch (_: Exception) { "main" }
+            val failures = mutableListOf<String>()
 
             try {
                 var restored = 0
@@ -193,55 +208,77 @@ class PipelineBackupManager @Inject constructor(
                         val p = item.getString("path")
                         if (item.getBoolean("hadOriginalContent")) {
                             val f = File(originalsDir, p)
-                            if (f.exists()) {
-                                localRepoManager.writeFile(p, f.readText(Charsets.UTF_8)).getOrThrow()
-                                restored++
-                            }
-                        } else {
-                            if (localRepoManager.fileExists(p)) {
-                                localRepoManager.deleteFile(p)
-                                restored++
-                            }
+                            if (!f.exists()) { failures += "$p: нет копии оригинала"; continue }
+                            localRepoManager.writeFile(p, f.readText(Charsets.UTF_8))
+                                .onSuccess { restored++ }
+                                .onFailure { failures += "$p: ${it.message}" }
+                        } else if (localRepoManager.fileExists(p)) {
+                            localRepoManager.deleteFile(p)
+                                .onSuccess { restored++ }
+                                .onFailure { failures += "$p: ${it.message}" }
                         }
                     }
                     val commitRes = localRepoManager.stageAndCommit("[Rollback] #$backupId")
                     if (commitRes.isSuccess) {
                         rollbackSha = commitRes.getOrNull()
                         localRepoManager.push().getOrThrow()
+                    } else if (commitRes.exceptionOrNull() !is LocalRepoManager.NoChangesException) {
+                        throw commitRes.exceptionOrNull() ?: Exception("commit failed")
                     }
                 } else {
                     for (i in 0 until filesArr.length()) {
                         val item = filesArr.getJSONObject(i)
                         val p = item.getString("path")
                         val had = item.getBoolean("hadOriginalContent")
-                        val cur = gitHubClient.getFileContent(p, branch).getOrNull()
+
+                        val curResult = gitHubClient.getFileContent(p, branch)
+                        val curErr = curResult.exceptionOrNull()
+                        val notFound = curErr is GitHubApiException && curErr.isNotFound
+                        if (curErr != null && !notFound) {
+                            failures += "$p: не удалось прочитать текущую версию (${curErr.message?.take(80)})"
+                            continue
+                        }
+                        val cur = curResult.getOrNull()
 
                         if (had) {
                             val f = File(originalsDir, p)
-                            if (f.exists()) {
-                                val res = gitHubClient.createOrUpdateFile(
-                                    path = p,
-                                    content = f.readText(Charsets.UTF_8),
-                                    message = "[Rollback] $p",
-                                    sha = cur?.sha,
-                                    branch = branch
-                                )
-                                if (res.isSuccess) {
-                                    restored++
-                                    rollbackSha = res.getOrNull()?.content?.sha
-                                }
+                            if (!f.exists()) { failures += "$p: нет копии оригинала"; continue }
+                            val res = gitHubClient.createOrUpdateFile(
+                                path = p,
+                                content = f.readText(Charsets.UTF_8),
+                                message = "[Rollback] $p",
+                                sha = cur?.sha,
+                                branch = branch
+                            )
+                            if (res.isSuccess) {
+                                restored++
+                                rollbackSha = res.getOrNull()?.content?.sha
+                            } else {
+                                failures += "$p: ${res.exceptionOrNull()?.message?.take(120)}"
                             }
-                        } else if (cur?.sha != null) {
-                            gitHubClient.deleteFile(p, "[Rollback] remove $p", cur.sha, branch)
-                            restored++
+                        } else if (cur != null) {
+                            // Файла до запуска не было — значит, его создал Pipeline → удаляем.
+                            val cfg = appSettings.gitHubConfig.first()
+                            val res = gitHubClient.deleteFileExt(
+                                owner = cfg.owner, repo = cfg.repo, token = cfg.token,
+                                path = p, message = "[Rollback] remove $p", sha = cur.sha, branch = branch
+                            )
+                            if (res.isSuccess) restored++
+                            else failures += "$p: удаление не удалось (${res.exceptionOrNull()?.message?.take(80)})"
                         }
                     }
                 }
 
-                meta.put("isRestored", true)
-                metaFile.writeText(meta.toString(), Charsets.UTF_8)
+                if (failures.isEmpty()) {
+                    meta.put("isRestored", true)
+                    metaFile.writeText(meta.toString(), Charsets.UTF_8)
+                }
                 repoIndexManager.invalidate()
-                Result.success(RollbackResult(backupId, restored, rollbackSha))
+                if (failures.isNotEmpty() && restored == 0) {
+                    Result.failure(Exception("Откат не выполнен: ${failures.joinToString("; ").take(400)}"))
+                } else {
+                    Result.success(RollbackResult(backupId, restored, rollbackSha, failures))
+                }
             } catch (e: Exception) {
                 Result.failure(e)
             }
@@ -267,6 +304,7 @@ class PipelineBackupManager @Inject constructor(
             sb.appendLine("ПОЛНЫЙ АУДИТОРСКИЙ ОТЧЁТ PIPELINE")
             sb.appendLine("Дата: ${dateFormat.format(Date(meta.getLong("timestamp")))}")
             sb.appendLine("Режим: ${meta.optString("mode")}")
+            sb.appendLine("Модель: ${meta.optString("model", PipelineAiConfig.MODEL_ID)}")
             sb.appendLine(div).appendLine()
 
             sb.appendLine("1. ТОЧНЫЙ ПРОМПТ ПОЛЬЗОВАТЕЛЯ:\n$prompt\n")
@@ -294,7 +332,7 @@ class PipelineBackupManager @Inject constructor(
                 sb.appendLine("--- FILE: $p [$op] ---")
                 val f = File(modifiedDir, p)
                 if (f.exists()) sb.appendLine(f.readText(Charsets.UTF_8))
-                else sb.appendLine(if (op == "DELETE") "[Файл удалён]" else "[Без изменений]")
+                else sb.appendLine(if (op == "DELETE") "[Файл удалён или не изменён]" else "[Без изменений]")
                 sb.appendLine()
             }
 
@@ -353,8 +391,6 @@ class PipelineBackupManager @Inject constructor(
                 putExtra(Intent.EXTRA_STREAM, uri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            // КРИТИЧЕСКИЙ ФИКС: Флаг FLAG_ACTIVITY_NEW_TASK добавляется на сам Chooser,
-            // что полностью предотвращает вылет AndroidRuntimeException при вызове с ApplicationContext
             val chooser = Intent.createChooser(intent, "Сохранить отчет").apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
